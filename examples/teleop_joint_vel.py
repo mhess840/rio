@@ -43,15 +43,16 @@ def teleop_joint_vel(args, env, teleop, visualizer=None):
     max_motor_speed = float(getattr(args.arm_cfg, "max_motor_speed", 0.5))
     teleop_mode = TeleopMode.TRANSLATION
     t_last_mode_change = time.now()
-    last_gripper_cmd = 0.0
+    last_gripper_cmd = float(env.robot.gripper.get_state()["gripper_position"]) if env.robot.gripper else 0.0
+    if args.teleop.lower() in ("keyboard", "sshkeyboard"):
+        Interface.set_keyboard_gripper_state(teleop, last_gripper_cmd)
 
     if visualizer:
         visualizer.set_robot_model("world/robot", robot_description=env.robot.urdf_path, variant=None)
         logger.debug(f"Visualizer: set robot model to {env.robot.urdf_path}")
 
     logger.info(
-        f"Kassow joint_vel teleop: axes → joints[0:{min(6, num_joints)}] at "
-        f"±{max_motor_speed:.2f} rad/s via directJControl"
+        f"Kassow joint_vel teleop: axes → joints[0:{min(6, num_joints)}] at ±{max_motor_speed:.2f} rad/s via directJControl"
     )
     input("Press Enter to start")
 

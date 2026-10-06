@@ -143,6 +143,17 @@ def test_explicit_gripper_client_wins_over_arm_moveG():
     assert [c[0] for c in stub.calls] == ["moveJ"]
 
 
+def test_move_gripper_does_not_command_arm():
+    stub = RecordingArm(num_joints=6)
+    gripper = RecordingGripper()
+    robot = SingleArm(arm=stub, gripper=gripper, action_space="TASK_POS")
+
+    robot.move_gripper(0.0, t_cmd_target=1.0)
+
+    assert gripper.calls == [("moveG", [0.0], 1.0)]
+    assert stub.calls == []
+
+
 def test_no_gripper_when_arm_lacks_moveG():
     """A plain arm (no moveG, no client) resolves to no gripper controller."""
     robot = SingleArm(arm=StubArm(num_joints=6), action_space="JOINT_POS")

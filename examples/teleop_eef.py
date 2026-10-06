@@ -18,7 +18,9 @@ TELEOP_IDLE_EPS = 0.05
 def teleop_eef(args, env, teleop, visualizer=None):
     # Initialize target states
     arm_target_pose = env.robot.arm.get_state()["eef_pose"].copy() if env.robot.arm else None
-    _ = env.robot.gripper.get_state()["gripper_position"] if env.robot.gripper else None
+    last_gripper_cmd = float(env.robot.gripper.get_state()["gripper_position"]) if env.robot.gripper else 0.0
+    if args.teleop.lower() in ("keyboard", "sshkeyboard"):
+        Interface.set_keyboard_gripper_state(teleop, last_gripper_cmd)
 
     teleop_mode = TeleopMode.TRANSLATION
     t_last_mode_change = time.now()
@@ -39,7 +41,6 @@ def teleop_eef(args, env, teleop, visualizer=None):
     env.set_start_time(t_start)
     env.set_instruction(args.instruction)
 
-    last_gripper_cmd = 0.0
     try:
         while True:
             t_cycle_end = t_start + (it + 1) * dt
@@ -63,6 +64,8 @@ def teleop_eef(args, env, teleop, visualizer=None):
                     # stops instead of catching up / low-pass coasting.
                     arm_target_pose = env.robot.arm.get_state()["eef_pose"].copy()
                     action = env.robot.build_action(arm_target_pose, gripper_cmd=last_gripper_cmd)
+                    if gripper_pos is not None:
+                        env.robot.move_gripper(last_gripper_cmd, t_cmd_target=t_target)
                 else:
                     arm_target_pose = env.robot.make_teleop_eef_cmd(
                         freq, teleop_mode, delta_tcp_pose, arm_target_pose, max_pos_speed, max_rot_speed

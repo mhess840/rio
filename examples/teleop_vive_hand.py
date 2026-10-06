@@ -151,7 +151,10 @@ def resolve_yaw(args, teleop) -> float:
 
 def held_keys(keyboard_state) -> set[str]:
     """Characters currently held down, from the keyboard node's rollover slots."""
-    return {chr(k) for k in keyboard_state["alphanumeric_state"] if k != 0}
+    keys = {chr(k) for k in keyboard_state["alphanumeric_state"] if k != 0}
+    if 0x2C in keyboard_state["special_state"]:
+        keys.add(" ")
+    return keys
 
 
 def handle_recorder_keys(env, keys: set[str], previous: set[str]) -> None:
@@ -169,13 +172,25 @@ def handle_recorder_keys(env, keys: set[str], previous: set[str]) -> None:
         print("============================================= \n")
 
 
-def teleop_vive_hand(args, env, teleop, teleop2=None, teleop_keyboard=None, visualizer=None):
+def teleop_vive_hand(
+    args,
+    env,
+    teleop,
+    teleop2=None,
+    teleop_keyboard=None,
+    visualizer=None,
+    yaw_deg=None,
+    wait_for_start=True,
+):
     arm = env.robot.arm
     hand = getattr(env.robot, "hand", None)
+    gripper = getattr(env.robot, "gripper", None)
 
     arm_target_pose = np.asarray(arm.get_state()["eef_pose"], dtype=float).copy()
+    gripper_cmd = float(gripper.get_state()["gripper_position"]) if gripper is not None else 0.0
 
-    yaw_deg = resolve_yaw(args, teleop)
+    if yaw_deg is None:
+        yaw_deg = resolve_yaw(args, teleop)
 
     retargeter = ClutchRetargeter(
         pos_scale=args.pos_scale,
@@ -204,11 +219,14 @@ def teleop_vive_hand(args, env, teleop, teleop2=None, teleop_keyboard=None, visu
     print(f"  limits:  {args.max_pos_speed} m/s, {args.max_rot_speed} rad/s, "
           f"radius {args.min_radius}-{args.max_radius} m, z >= {args.min_z} m")
     if hand is None:
-        print("  No hand configured; running arm only.")
-    if teleop2 is None:
+        print("  No dexterous hand configured.")
+    elif teleop2 is None:
         print("  No glove configured; the hand will not be driven.")
+    if gripper is not None:
+        print("  'Space' toggles the gripper open/closed.")
     print("Keep the e-stop within reach.")
-    input(f"Instruction: {args.instruction}\nPress Enter to start")
+    if wait_for_start:
+        input(f"Instruction: {args.instruction}\nPress Enter to start")
     time.sleep(getattr(args, "startup_delay", 0.0))
 
     freq = args.freq
@@ -268,6 +286,9 @@ def teleop_vive_hand(args, env, teleop, teleop2=None, teleop_keyboard=None, visu
             if args.orientation_key in pressed:
                 retargeter.orientation_enabled = not retargeter.orientation_enabled
                 logger.info(f"Orientation tracking: {retargeter.orientation_enabled}")
+            if gripper is not None and " " in pressed:
+                gripper_cmd = float(gripper_cmd < 0.5)
+                logger.info("Gripper target: {}", "open" if gripper_cmd == 1.0 else "closed")
 
             # Walking out of the base stations' view stops motion rather than
             # freezing on the last command.
@@ -293,7 +314,7 @@ def teleop_vive_hand(args, env, teleop, teleop2=None, teleop_keyboard=None, visu
             if hand is not None and teleop2 is not None:
                 hand_cmd = np.asarray(teleop2.get_state()["joint_q"], dtype=float)
 
-            action = env.robot.build_action(arm_target_pose, gripper_cmd=0.0, hand_cmd=hand_cmd)
+            action = env.robot.build_action(arm_target_pose, gripper_cmd=gripper_cmd, hand_cmd=hand_cmd)
             env.move(action, t_cmd_target + args.arm_latency)
 
             step = env.get_state(action=action)
@@ -329,26 +350,34 @@ def teleop_vive_hand(args, env, teleop, teleop2=None, teleop_keyboard=None, visu
 
 def main(args):
     servers, clients, env = make_env(args)
+    teleop2_client = clients.get("teleop2")
+    keyboard_client = clients.get("teleop_keyboard")
+    visualizer_client = clients.get("visualizer")
 
     with ServerManager(args.mw, list(servers.values())):
-        with (
-            env,
-            clients["teleop"]() as teleop,
-            (clients.get("teleop2") or (lambda: nullcontext()))() as teleop2,
-            (clients.get("teleop_keyboard") or (lambda: nullcontext()))() as teleop_keyboard,
-            (clients.get("visualizer") or (lambda: nullcontext()))() as visualizer,
-        ):
-            try:
-                teleop_vive_hand(
-                    args,
-                    env,
-                    teleop,
-                    teleop2=teleop2,
-                    teleop_keyboard=teleop_keyboard,
-                    visualizer=visualizer,
-                )
-            except KeyboardInterrupt:
-                pass
+        with env, clients["teleop"]() as teleop:
+            # Terminal-backed keyboards consume stdin, so finish any interactive
+            # Vive calibration and confirmation before starting their listener.
+            yaw_deg = resolve_yaw(args, teleop)
+            input(f"Instruction: {args.instruction}\nPress Enter to start")
+            with (
+                (teleop2_client() if teleop2_client else nullcontext()) as teleop2,
+                (keyboard_client() if keyboard_client else nullcontext()) as teleop_keyboard,
+                (visualizer_client() if visualizer_client else nullcontext()) as visualizer,
+            ):
+                try:
+                    teleop_vive_hand(
+                        args,
+                        env,
+                        teleop,
+                        teleop2=teleop2,
+                        teleop_keyboard=teleop_keyboard,
+                        visualizer=visualizer,
+                        yaw_deg=yaw_deg,
+                        wait_for_start=False,
+                    )
+                except KeyboardInterrupt:
+                    pass
 
 
 if __name__ == "__main__":

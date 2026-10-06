@@ -121,6 +121,10 @@ class SingleArm(BaseEmbodiment):
     def moveJ(self, arm_cmd: np.ndarray, t_cmd_target: float):
         self.arm.moveJ(arm_cmd.tolist(), t_cmd_target)
 
+    def move_gripper(self, gripper_cmd: float, t_cmd_target: float) -> None:
+        """Command only the gripper without sending an arm waypoint."""
+        self._dispatch_gripper(self._gripper, gripper_cmd, t_cmd_target)
+
     def get_state(self):
         state = {}
         if self.arm:

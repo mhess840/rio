@@ -3,6 +3,7 @@ from .bimanual_yam_station import BimanualYamStation
 from .humanoid import G1Station
 from .kassow import KassowStation
 from .kassow_vive import KassowViveStation
+from .kassow_vive_gripper import KassowViveGripperStation
 from .kassow_vive_inspire import KassowViveInspireStation
 from .manus_inspire import ManusInspireStation
 from .so100 import SO100Station
@@ -17,8 +18,9 @@ __all__ = [
     "BimanualYamStation",
     "G1Station",
     "KassowStation",
-    "KassowViveStation",
+    "KassowViveGripperStation",
     "KassowViveInspireStation",
+    "KassowViveStation",
     "ManusInspireStation",
     "SO100Station",
     "Ur5eTeleopStation",

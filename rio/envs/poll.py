@@ -15,6 +15,12 @@ class TeleopMode(Enum):
 
 class Interface:
     @staticmethod
+    def set_keyboard_gripper_state(kb, gripper_position: float) -> None:
+        """Initialize the keyboard toggle from the measured gripper position."""
+        kb._rio_gripper_open = gripper_position >= 0.5
+        kb._rio_space_pressed = False
+
+    @staticmethod
     def poll(_teleop, teleop, t_sample, t_last_mode_change, teleop_mode):
         name = _teleop.lower()
         # Terminal-friendly alias: same key map as Keyboard, stdin via sshkeyboard.
@@ -58,10 +64,14 @@ class Interface:
         - QE: Z translation
         - IJKL: XY rotation
         - UO: Z rotation
-        - []: gripper open/close
+        - Space: toggle gripper open/closed
+        - [: gripper close
+        - ]: gripper open
         - 0/1/2/3: teleop mode
         """
-        alphanumeric_state = kb.get_state()["alphanumeric_state"]
+        keyboard_state = kb.get_state()
+        alphanumeric_state = keyboard_state["alphanumeric_state"]
+        special_state = keyboard_state["special_state"]
         kb_motion = np.zeros((6,), dtype=np.float32)
         pos_gripper = None
         keys = []
@@ -98,8 +108,10 @@ class Interface:
             # gripper
             if key == "[":
                 pos_gripper = 0.0
+                kb._rio_gripper_open = False
             elif key == "]":
                 pos_gripper = 1.0
+                kb._rio_gripper_open = True
             # teleop mode
             if key == "0":
                 teleop_mode = TeleopMode.TRANSLATION_2D
@@ -109,6 +121,15 @@ class Interface:
                 teleop_mode = TeleopMode.ROTATION
             elif key == "3":
                 teleop_mode = TeleopMode.TRANSLATION_ROTATION
+        # pynput reports Space as ASCII 32, while sshkeyboard may report its USB
+        # HID usage code (0x2C). Toggle only on the rising edge, not every poll.
+        space_pressed = ord(" ") in alphanumeric_state or 0x2C in special_state
+        space_was_pressed = getattr(kb, "_rio_space_pressed", False)
+        if space_pressed and not space_was_pressed:
+            gripper_open = not getattr(kb, "_rio_gripper_open", True)
+            kb._rio_gripper_open = gripper_open
+            pos_gripper = float(gripper_open)
+        kb._rio_space_pressed = space_pressed
         delta_tcp_pose = kb_motion
         return delta_tcp_pose, pos_gripper, t_last_mode_change, teleop_mode
 

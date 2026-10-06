@@ -1,8 +1,9 @@
 from dataclasses import dataclass, field
 
+from rio_hw.robots.kassow_kinematics import DEFAULT_URDF_PATH
+
 from rio.cfg import Camera, VisualizerCfg
 from rio.cfg.common import RecorderCfg
-from rio_hw.robots.kassow_kinematics import DEFAULT_URDF_PATH
 
 TASK = "pick_and_place"
 
@@ -37,7 +38,7 @@ class KassowStation:
         ik_kp: float = 8.0  # task-space P (1/s): lead → twist before Jacobian
         max_joint_accel: float | None = 2.0  # rad/s² — slew-limit qd
         stream_l_mode: str = "time"  # "time" (TT_TIME) | "speed" (TT_WS_TARGET_SPEED)
-        stream_l_tt: float = 0.016  # 2× send period at 125 Hz (real_time_patterns.rst)
+        stream_l_tt: float = 0.016  # 2x send period at 125 Hz (real_time_patterns.rst)
         stream_l_bt: float = 0.008  # ~50% of TT
         stream_l_speed: float = 0.0  # m/s for "speed" mode; 0 derives it
         stream_l_throttle: int = 2  # every 2nd waitSync ≈ 125 Hz
@@ -49,18 +50,45 @@ class KassowStation:
     arm: str = "KassowArm"
     arm_cfg: ArmCfg = field(default_factory=ArmCfg)
 
-    gripper: str | None = None
-    gripper_cfg: None = None
+    @dataclass
+    class GripperCfg:
+        robot_port: str = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_BG004P3Y-if00-port0"
+        connection_type: str = "SERIAL"
+        baudrate: int = 115200
+        member_id: int = 1
+        timeout: float = 0.1
+        # Let the AG95 execute one final position command instead of streaming
+        # interpolated RS-485 waypoints.
+        max_gripper_speed: float | None = None
+        force: int = 100
+        calibrate: bool = False
+        startup_position: float | None = None
+        feedback_freq: float = 2.0
+        freq: int = 30
 
-    # Add entries here to record video, e.g.
-    # "camera_1": Camera(addr="127.0.0.1:5130", cam_type="Realsense", serial="...")
-    cameras: dict[str, Camera] = field(default_factory=dict)
+    gripper: str | None = "AgGripper"
+    gripper_cfg: GripperCfg = field(default_factory=GripperCfg)
+
+    cameras: dict[str, Camera] = field(
+        default_factory=lambda: {
+            "camera_1": Camera(
+                addr="127.0.0.1:5130",
+                cam_type="Realsense",
+                serial="112322070077",
+                model="D400",  # D435i product line
+                enable_depth=False,
+                hardware_reset=False,
+                resolution=(480, 640),
+                resolution_depth=(480, 640),
+            ),
+        }
+    )
 
     @dataclass
     class TeleopCfg:
         addr: str = "127.0.0.1:5000"
         # Spacenav device (X right, Y away, Z up) → Kassow base (Z up).
-        # Cell-tuned: device Z → +X, device X → −Y, device Y → +Z.
+        # Cell-tuned: device Z → +X, device X → -Y, device Y → +Z.
         # Override if your cell is rotated relative to the mouse.
         tx_zup_spnav: tuple[float, ...] = (
             0.0,
@@ -74,7 +102,7 @@ class KassowStation:
             0.0,
         )
 
-    teleop: str = "Spacemouse"  # Gamepad | Keyboard | SshKeyboard | Spacemouse
+    teleop: str = "Keyboard"  # Gamepad | Keyboard | SshKeyboard | Spacemouse
     teleop_cfg: TeleopCfg = field(default_factory=TeleopCfg)
 
     arm_latency: float = 0.0
