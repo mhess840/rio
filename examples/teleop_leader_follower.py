@@ -74,22 +74,15 @@ def teleop_leader_follower(args, env, teleop, teleop2=None, teleop_keyboard=None
             # Handle recorder lifecycle via keyboard
             if env.recorder and teleop_keyboard and key_pressed is not None:
                 recorder_state = env.recorder.get_state()
-                is_saving = recorder_state.get("is_saving", False)
                 is_closed = recorder_state.get("is_closed", False)
                 if chr(key_pressed) == "n" and is_closed:
                     env.recorder.new_trajectory(wait=False)
                     print("\n ============================================= ")
                     logger.info("Started new trajectory recording")
-                elif chr(key_pressed) == "s" and not is_saving:
+                elif chr(key_pressed) == "s" and not is_closed:
                     env.recorder.save(wait=False)
-                    logger.info("Saved trajectory recording")
+                    logger.info("Saved trajectory in background (press 'n' to start the next one)")
                     print("============================================= \n")
-
-            # Skip control while recorder is actively saving
-            if env.recorder and env.recorder.get_state().get("is_saving", False):
-                time.precise_wait(t_cycle_end)
-                it += 1
-                continue
 
             # Read leader state
             teleop_state = teleop.get_state()

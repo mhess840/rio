@@ -3,6 +3,8 @@
 
 import json
 import os
+import threading
+from queue import Queue
 from typing import Any
 
 import numpy as np
@@ -109,8 +111,15 @@ class Recorder(Node):
         if max_queue_size is None:
             max_queue_size = freq * 10  # Default to 10 seconds of queue
 
-        self.is_closed = False
+        self.path = None
+        # Closed until `_new_trajectory` opens the first file (including
+        # `start_recording=True` during `__post_init__`).
+        self.is_closed = True
         self.is_saving = False
+        self._close_queue: Queue = Queue()
+        self._close_thread: threading.Thread | None = None
+        self._pending_closes = 0
+        self._close_lock = threading.Lock()
 
         super().__init__(freq=freq, max_buffer_size=max_buffer_size, max_queue_size=max_queue_size, **kwargs)
         logger.info(f"Recorder initialized with path: {self.base_path} and freq: {self.freq} Hz")
@@ -296,6 +305,8 @@ class Recorder(Node):
             self.pub_ready_event.set()
 
             logger.info("Recorder started, listening for requests...")
+            self._close_thread = threading.Thread(target=self._close_worker, name="recorder-encode", daemon=True)
+            self._close_thread.start()
 
             while not self.exit_event.is_set():
                 while not self.request_queue.empty():
@@ -308,6 +319,8 @@ class Recorder(Node):
                         self._record(req.get("state", {}), req.get("timestamp"))
                     elif req_type == "save":
                         self._save()
+                        if req.get("start_next") and self.is_closed:
+                            self._new_trajectory(req.get("path"))
                     elif req_type == "set_reward":
                         if self.log_stats:
                             self.stats["rewards"].append(req.get("reward", 0.0))
@@ -344,6 +357,9 @@ class Recorder(Node):
             if not self.is_closed:
                 logger.info("Recorder exiting, saving trajectory...")
                 self._save()
+            self._close_queue.put(None)
+            if self._close_thread is not None:
+                self._close_thread.join()
 
     def _put_status(self):
         # Publish minimal status
@@ -360,7 +376,7 @@ class Recorder(Node):
 
     def _record(self, state: dict[str, Any], timestamp: float | None = None):
         """Internal method to record a state dictionary synchronously."""
-        if self.is_saving or self.is_closed:
+        if self.is_closed or self.datamanager is None:
             return
 
         try:
@@ -368,38 +384,54 @@ class Recorder(Node):
         except Exception as e:
             logger.error(f"Error recording dict: {e}")
 
+    def _close_worker(self):
+        """Encode previously recorded trajectories without blocking teleop."""
+        while True:
+            item = self._close_queue.get()
+            if item is None:
+                return
+            datamanager, path = item
+            try:
+                logger.warning("Recorder saving {} in the background...", path)
+                datamanager.close()
+                logger.info("Recorder saved trajectory to {}", path)
+            except Exception as e:
+                logger.error("Error saving recorder {}: {}", path, e)
+            finally:
+                with self._close_lock:
+                    self._pending_closes = max(0, self._pending_closes - 1)
+                    self.is_saving = self._pending_closes > 0
+                self._put_status()
+
     def _save(self):
-        """
-        Internal method to close the recorder and save the trajectory file.
-        """
+        """Hand the current trajectory to the encode worker and mark it closed."""
         if self.is_closed:
             logger.warning("Recorder trajectory already saved")
+            return
 
-        if not (self.is_saving or self.is_closed):
-            if self.log_stats:
-                self._end_stats()
+        if self.log_stats:
+            self._end_stats()
 
-            try:
-                self.is_saving = True
-                self._put_status()
+        datamanager = self.datamanager
+        path = getattr(self, "path", None)
+        self.datamanager = None
+        self.is_closed = True
+        if datamanager is None or path is None:
+            self._put_status()
+            return
 
-                logger.warning("Recorder saving trajectory DO NOT INTERRUPT...")
-                self.datamanager.close()
-                logger.info(f"Recorder saved trajectory to {self.path}")
-
-                self.is_closed = True
-                self.is_saving = False
-                self._put_status()
-
-            except Exception as e:
-                logger.error(f"Error saving recorder: {e}")
+        with self._close_lock:
+            self._pending_closes += 1
+            self.is_saving = True
+        self._put_status()
+        self._close_queue.put((datamanager, path))
 
     def _new_trajectory(self, path: str | None = None):
         """
         Internal method to start a new trajectory in the same recorder instance.
         """
-        if self.is_saving:
-            logger.warning("Cannot start new trajectory while saving current one.")
+        if not self.is_closed:
+            logger.warning("Cannot start new trajectory before saving the current one.")
             return
 
         if self.dataset_path is None or self.traj_prefix is None:
@@ -457,12 +489,16 @@ class Recorder(Node):
         """
         self.request_queue.put({"type": "record", "state": state, "timestamp": timestamp})
 
-    def save(self, wait: bool = True, timeout: float | None = None):
+    def save(self, wait: bool = True, timeout: float | None = None, start_next: bool = False):
         """
         Save the trajectory file and close the recorder.
+
+        Encoding runs in a background thread. If ``start_next`` is True, a new
+        trajectory is opened immediately so teleop can continue.
         """
         req = {
             "type": "save",
+            "start_next": start_next,
         }
         self.request_queue.put(req)
 
@@ -470,17 +506,19 @@ class Recorder(Node):
             start_time = time.now()
             rate = time.Rate(self.freq)
 
-            # Wait for saving to begin
-            while not self.ring_buffer.get().get("is_saving", False):
-                if self.ring_buffer.get().get("is_closed", False):
-                    return
-                rate.sleep()
-
-            # Wait for saving to complete
-            while self.ring_buffer.get().get("is_saving", False):
+            while True:
+                status = self.ring_buffer.get()
+                if not isinstance(status, dict):
+                    rate.sleep()
+                    continue
                 if timeout is not None and time.now() - start_time > timeout:
                     logger.warning("Timeout waiting for recorder to finish saving")
                     return
+                if start_next:
+                    if not status.get("is_closed", True):
+                        break
+                elif status.get("is_closed", False) and not status.get("is_saving", False):
+                    break
                 rate.sleep()
 
             logger.info("Recorder finished saving trajectory.")

@@ -17,7 +17,7 @@ class FakeKeyboard:
         self.pressed = pressed
 
     def get_state(self):
-        return {"alphanumeric_state": [ord(c) for c in self.pressed]}
+        return {"alphanumeric_state": [ord(c) for c in self.pressed], "special_state": []}
 
 
 class FakeStick:
@@ -94,6 +94,35 @@ def test_eef_cmd_rotation_zeroes_translation():
     out = SingleArm.make_teleop_eef_cmd(10, TeleopMode.ROTATION, np.ones(6), np.zeros(6), 1.0, 1.0)
     np.testing.assert_allclose(out[:3], 0.0, atol=1e-9)
     assert np.linalg.norm(out[3:]) > 0
+
+
+def test_n_starts_and_s_ends_recording():
+    from examples.teleop_vive_hand import handle_recorder_save, handle_recorder_start
+
+    class FakeRecorder:
+        def __init__(self):
+            self.calls: list[tuple] = []
+
+        def save(self, wait=False, start_next=False):
+            self.calls.append(("save", wait, start_next))
+
+        def new_trajectory(self, wait=False):
+            self.calls.append(("new_trajectory", wait))
+
+    class FakeEnv:
+        def __init__(self, recorder):
+            self.recorder = recorder
+
+    recorder = FakeRecorder()
+    env = FakeEnv(recorder)
+    recording = handle_recorder_start(env, {"n"}, set(), False)
+    assert recording is True
+    assert recorder.calls == [("new_trajectory", False)]
+
+    recorder.calls.clear()
+    recording = handle_recorder_save(env, {"s"}, set(), recording)
+    assert recording is False
+    assert recorder.calls == [("save", False, False)]
 
 
 def test_gello_cmd_clips_and_deadbands():

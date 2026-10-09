@@ -149,27 +149,71 @@ def resolve_yaw(args, teleop) -> float:
     return args.yaw_offset
 
 
+# Matches rio.envs.poll Logitech presenter mapping.
+_PRESENTER_CLOSE = frozenset({0x4E, 0x4F, 0xFF56, 0xFF53, 109, 106})  # PageDown, Right
+_PRESENTER_OPEN = frozenset({0x4B, 0x50, 0xFF55, 0xFF51, 104, 105})  # PageUp, Left
+
+
 def held_keys(keyboard_state) -> set[str]:
     """Characters currently held down, from the keyboard node's rollover slots."""
     keys = {chr(k) for k in keyboard_state["alphanumeric_state"] if k != 0}
-    if 0x2C in keyboard_state["special_state"]:
+    special = {int(code) for code in keyboard_state["special_state"] if code != 0}
+    if 0x2C in special:
         keys.add(" ")
+    if special & _PRESENTER_CLOSE:
+        keys.add("pagedown")
+    if special & _PRESENTER_OPEN:
+        keys.add("pageup")
     return keys
 
 
-def handle_recorder_keys(env, keys: set[str], previous: set[str]) -> None:
-    """Start a new trajectory on 'n' and save on 's', on key-down only."""
-    if not env.recorder:
-        return
-    state = env.recorder.get_state()
-    if "n" in keys - previous and state.get("is_closed", False):
-        env.recorder.new_trajectory(wait=False)
-        print("\n ============================================= ")
-        logger.info("Started new trajectory recording")
-    elif "s" in keys - previous and not state.get("is_saving", False):
-        env.recorder.save(wait=False)
-        logger.info("Saved trajectory recording")
-        print("============================================= \n")
+def merge_held_keys(*keyboard_states) -> set[str]:
+    """Union key sets from one or more keyboard nodes."""
+    keys: set[str] = set()
+    for state in keyboard_states:
+        if state is not None:
+            keys |= held_keys(state)
+    return keys
+
+
+def handle_recorder_start(env, keys: set[str], previous: set[str], recording: bool) -> bool:
+    """Start a trajectory on 'n' so this tick is the first recorded frame."""
+    if not env.recorder or recording:
+        return recording
+    if "n" not in keys - previous:
+        return recording
+    env.recorder.new_trajectory(wait=False)
+    print("\n ============================================= ")
+    logger.info("Started new trajectory recording")
+    print("============================================= \n")
+    return True
+
+
+def handle_recorder_save(env, keys: set[str], previous: set[str], recording: bool) -> bool:
+    """Save on 's' after this tick has been written, so the file ends with 's'."""
+    if not env.recorder or not recording:
+        return recording
+    if "s" not in keys - previous:
+        return recording
+    env.recorder.save(wait=False)
+    logger.info("Saved trajectory in background (press 'n' to start the next one)")
+    print("============================================= \n")
+    return False
+
+
+def read_gripper_position(gripper, timeout: float = 10.0) -> float:
+    """Wait until the gripper node has published a position sample."""
+    deadline = time.now() + timeout
+    last = None
+    while time.now() < deadline:
+        last = gripper.get_state()
+        if isinstance(last, dict) and "gripper_position" in last:
+            return float(last["gripper_position"])
+        time.sleep(0.05)
+    raise RuntimeError(
+        "AG gripper has not published state yet (setup still running or Modbus failed). "
+        "If the jaws are unhomed, start once with gripper_cfg.calibrate=True."
+    )
 
 
 def teleop_vive_hand(
@@ -178,6 +222,7 @@ def teleop_vive_hand(
     teleop,
     teleop2=None,
     teleop_keyboard=None,
+    teleop_clicker=None,
     visualizer=None,
     yaw_deg=None,
     wait_for_start=True,
@@ -187,7 +232,13 @@ def teleop_vive_hand(
     gripper = getattr(env.robot, "gripper", None)
 
     arm_target_pose = np.asarray(arm.get_state()["eef_pose"], dtype=float).copy()
-    gripper_cmd = float(gripper.get_state()["gripper_position"]) if gripper is not None else 0.0
+    gripper_open = float(getattr(args, "gripper_open", 1.0))
+    gripper_close = float(getattr(args, "gripper_close", 0.0))
+    if gripper is not None:
+        read_gripper_position(gripper)
+        gripper_cmd = gripper_open
+    else:
+        gripper_cmd = 0.0
 
     if yaw_deg is None:
         yaw_deg = resolve_yaw(args, teleop)
@@ -213,8 +264,12 @@ def teleop_vive_hand(
         visualizer.set_robot_model("world/robot", robot_description=env.robot.urdf_path, variant=None)
         logger.debug(f"Visualizer: set robot model to {env.robot.urdf_path}")
 
-    print(f"\nArm follows the tracker only while the clutch is engaged ('{args.clutch_key}').")
-    print(f"  '{args.clutch_key}' clutch    '{args.orientation_key}' orientation    'n' new trajectory    's' save")
+    print("\nEpisode: Enter (ready) → n (record) → c (clutch on) → … → c (clutch off) → s (save).")
+    print("  Recording is only the window from 'n' to 's'. The robot follows only while clutched.")
+    print(
+        f"  '{args.clutch_key}' clutch    '{args.orientation_key}' orientation    "
+        "'n' start recording    's' save"
+    )
     print(f"  TCP now: {np.round(arm_target_pose[:3], 3).tolist()}   yaw offset: {yaw_deg:.1f} deg")
     print(f"  limits:  {args.max_pos_speed} m/s, {args.max_rot_speed} rad/s, "
           f"radius {args.min_radius}-{args.max_radius} m, z >= {args.min_z} m")
@@ -223,7 +278,8 @@ def teleop_vive_hand(
     elif teleop2 is None:
         print("  No glove configured; the hand will not be driven.")
     if gripper is not None:
-        print("  'Space' toggles the gripper open/closed.")
+        print(f"  'Space' toggles the gripper ({gripper_close:.2f} closed / {gripper_open:.2f} open).")
+        print("  Spare Logitech mouse: left click closes, right click opens.")
     print("Keep the e-stop within reach.")
     if wait_for_start:
         input(f"Instruction: {args.instruction}\nPress Enter to start")
@@ -240,6 +296,7 @@ def teleop_vive_hand(
     previous_keys: set[str] = set()
     t_last_valid_pose = time.now()
     action = None
+    recording = False
 
     try:
         while True:
@@ -249,17 +306,12 @@ def teleop_vive_hand(
 
             time.precise_wait(t_sample)
 
-            keys: set[str] = set()
-            if teleop_keyboard:
-                keys = held_keys(teleop_keyboard.get_state())
-                handle_recorder_keys(env, keys, previous_keys)
-
-            # Skip control while the recorder is actively saving
-            if env.recorder and env.recorder.get_state().get("is_saving", False):
-                previous_keys = keys
-                time.precise_wait(t_cycle_end)
-                it += 1
-                continue
+            keys = merge_held_keys(
+                teleop_keyboard.get_state() if teleop_keyboard else None,
+                teleop_clicker.get_state() if teleop_clicker else None,
+            )
+            if teleop_keyboard or teleop_clicker:
+                recording = handle_recorder_start(env, keys, previous_keys, recording)
 
             tracker_state = teleop.get_state()
             pose_valid = float(tracker_state["pose_valid"]) > 0.5
@@ -286,9 +338,17 @@ def teleop_vive_hand(
             if args.orientation_key in pressed:
                 retargeter.orientation_enabled = not retargeter.orientation_enabled
                 logger.info(f"Orientation tracking: {retargeter.orientation_enabled}")
-            if gripper is not None and " " in pressed:
-                gripper_cmd = float(gripper_cmd < 0.5)
-                logger.info("Gripper target: {}", "open" if gripper_cmd == 1.0 else "closed")
+            if gripper is not None:
+                if "pagedown" in pressed:
+                    gripper_cmd = gripper_close
+                    logger.info("Gripper target: closed ({:.2f})", gripper_cmd)
+                elif "pageup" in pressed:
+                    gripper_cmd = gripper_open
+                    logger.info("Gripper target: open ({:.2f})", gripper_cmd)
+                elif " " in pressed:
+                    mid = 0.5 * (gripper_open + gripper_close)
+                    gripper_cmd = gripper_close if gripper_cmd > mid else gripper_open
+                    logger.info("Gripper target: {}", "open" if gripper_cmd > mid else "closed")
 
             # Walking out of the base stations' view stops motion rather than
             # freezing on the last command.
@@ -318,8 +378,10 @@ def teleop_vive_hand(
             env.move(action, t_cmd_target + args.arm_latency)
 
             step = env.get_state(action=action)
-            if env.recorder:
+            if env.recorder and recording:
                 env.recorder.record_step(step)
+            if teleop_keyboard or teleop_clicker:
+                recording = handle_recorder_save(env, keys, previous_keys, recording)
             if visualizer:
                 visualizer.log_frame("world/teleop_target", arm_target_pose, axis_length=0.08)
                 visualizer.log_env_state("env", step)
@@ -327,6 +389,8 @@ def teleop_vive_hand(
             if it % freq == 0:
                 print(
                     f"t: {t_cycle_end - t_start:.1f}s",
+                    "|",
+                    "REC" if recording else "idle (press 'n')",
                     "|",
                     "ENGAGED" if retargeter.engaged else f"released (press '{args.clutch_key}' to engage)",
                     "|",
@@ -352,6 +416,7 @@ def main(args):
     servers, clients, env = make_env(args)
     teleop2_client = clients.get("teleop2")
     keyboard_client = clients.get("teleop_keyboard")
+    clicker_client = clients.get("teleop_clicker")
     visualizer_client = clients.get("visualizer")
 
     with ServerManager(args.mw, list(servers.values())):
@@ -363,6 +428,7 @@ def main(args):
             with (
                 (teleop2_client() if teleop2_client else nullcontext()) as teleop2,
                 (keyboard_client() if keyboard_client else nullcontext()) as teleop_keyboard,
+                (clicker_client() if clicker_client else nullcontext()) as teleop_clicker,
                 (visualizer_client() if visualizer_client else nullcontext()) as visualizer,
             ):
                 try:
@@ -372,6 +438,7 @@ def main(args):
                         teleop,
                         teleop2=teleop2,
                         teleop_keyboard=teleop_keyboard,
+                        teleop_clicker=teleop_clicker,
                         visualizer=visualizer,
                         yaw_deg=yaw_deg,
                         wait_for_start=False,

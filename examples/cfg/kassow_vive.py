@@ -28,20 +28,20 @@ class KassowViveStation:
         port: int = 7582
         session_id: int = 1
         robot_controller: str = "task_pos_ik"
-        max_pos_speed: float = 0.15  # m/s — arm-node envelope behind the retargeter
-        max_rot_speed: float = 0.25  # rad/s
-        max_motor_speed: float = 0.4  # rad/s
+        max_pos_speed: float = 0.45  # m/s — keep at or above the station retargeter limit
+        max_rot_speed: float = 1.0  # rad/s
+        max_motor_speed: float = 1.0  # rad/s
         urdf_path: str = DEFAULT_URDF_PATH
         ee_frame: str = "end_effector"
-        ik_kp: float = 8.0
-        max_joint_accel: float | None = 2.0
+        ik_kp: float = 12.0
+        max_joint_accel: float | None = 4.0
         stream_l_mode: str = "time"
         stream_l_tt: float = 0.016
         stream_l_bt: float = 0.008
         stream_l_speed: float = 0.0
         stream_l_throttle: int = 2
-        lowpass_alpha: float | None = 0.35
-        log_diagnostics: bool = False
+        lowpass_alpha: float | None = 0.65
+        log_diagnostics: bool = True
         cmd_freq: int = 50
         freq: int = 250
 
@@ -85,19 +85,19 @@ class KassowViveStation:
     min_sweep_travel: float = 0.30
     max_sweep_skew: float = 20.0
     # Per-step limits applied by the retargeter, ahead of the arm node's own.
-    max_pos_speed: float = 0.15
-    max_rot_speed: float = 0.5
+    max_pos_speed: float = 0.45
+    max_rot_speed: float = 1.0
     # Reachable shell around the Kassow base (KR1018-scale); tighten for your cell.
     min_radius: float = 0.25
     max_radius: float = 1.40
     min_z: float = 0.05
     tracking_grace: float = 0.25
-    max_lag: float = 0.10
+    max_lag: float = 0.25
 
     arm_latency: float = 0.0
     mw: str = "Thread"
     mp_method: str = "spawn"
-    freq: int = 50
+    freq: int = 100
 
     action_space: str = "task_pos"
     embodiment_type: str = "SINGLE_ARM"

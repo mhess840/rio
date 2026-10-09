@@ -13,12 +13,20 @@ class TeleopMode(Enum):
     ROTATION = 3
 
 
+# Logitech Wireless Presenter (R400/R800) sends Page Down / Page Up.
+# HID, X11 keysyms, and evdev codes are all accepted.
+_PRESENTER_CLOSE = frozenset({0x4E, 0x4F, 0xFF56, 0xFF53, 109, 106})  # PageDown, Right
+_PRESENTER_OPEN = frozenset({0x4B, 0x50, 0xFF55, 0xFF51, 104, 105})  # PageUp, Left
+
+
 class Interface:
     @staticmethod
     def set_keyboard_gripper_state(kb, gripper_position: float) -> None:
         """Initialize the keyboard toggle from the measured gripper position."""
         kb._rio_gripper_open = gripper_position >= 0.5
         kb._rio_space_pressed = False
+        kb._rio_presenter_close = False
+        kb._rio_presenter_open = False
 
     @staticmethod
     def poll(_teleop, teleop, t_sample, t_last_mode_change, teleop_mode):
@@ -65,6 +73,7 @@ class Interface:
         - IJKL: XY rotation
         - UO: Z rotation
         - Space: toggle gripper open/closed
+        - Logitech presenter: Page Down/Right close, Page Up/Left open
         - [: gripper close
         - ]: gripper open
         - 0/1/2/3: teleop mode
@@ -130,6 +139,17 @@ class Interface:
             kb._rio_gripper_open = gripper_open
             pos_gripper = float(gripper_open)
         kb._rio_space_pressed = space_pressed
+        special_codes = {int(code) for code in special_state if code != 0}
+        close_pressed = bool(special_codes & _PRESENTER_CLOSE)
+        open_pressed = bool(special_codes & _PRESENTER_OPEN)
+        if close_pressed and not getattr(kb, "_rio_presenter_close", False):
+            pos_gripper = 0.0
+            kb._rio_gripper_open = False
+        elif open_pressed and not getattr(kb, "_rio_presenter_open", False):
+            pos_gripper = 1.0
+            kb._rio_gripper_open = True
+        kb._rio_presenter_close = close_pressed
+        kb._rio_presenter_open = open_pressed
         delta_tcp_pose = kb_motion
         return delta_tcp_pose, pos_gripper, t_last_mode_change, teleop_mode
 

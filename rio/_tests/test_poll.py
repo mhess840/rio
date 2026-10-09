@@ -72,3 +72,40 @@ def test_keyboard_right_bracket_opens_gripper():
     )
 
     assert gripper == 1.0
+
+
+@pytest.mark.parametrize("code", [0x4E, 0x4F, 109, 106])
+def test_logitech_presenter_close_codes(code):
+    keyboard = StubKeyboard(special=(code,))
+    Interface.set_keyboard_gripper_state(keyboard, gripper_position=1.0)
+
+    _, first_press, _, _ = Interface.poll_keyboard(
+        keyboard,
+        t_sample=0.0,
+        t_last_mode_change=0.0,
+        teleop_mode=TeleopMode.TRANSLATION,
+    )
+    _, held, _, _ = Interface.poll_keyboard(
+        keyboard,
+        t_sample=0.1,
+        t_last_mode_change=0.0,
+        teleop_mode=TeleopMode.TRANSLATION,
+    )
+
+    assert first_press == 0.0
+    assert held is None
+
+
+@pytest.mark.parametrize("code", [0x4B, 0x50, 104, 105])
+def test_logitech_presenter_open_codes(code):
+    keyboard = StubKeyboard(special=(code,))
+    Interface.set_keyboard_gripper_state(keyboard, gripper_position=0.0)
+
+    _, gripper, _, _ = Interface.poll_keyboard(
+        keyboard,
+        t_sample=0.0,
+        t_last_mode_change=0.0,
+        teleop_mode=TeleopMode.TRANSLATION,
+    )
+
+    assert gripper == 1.0

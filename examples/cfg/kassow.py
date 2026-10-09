@@ -81,6 +81,16 @@ class KassowStation:
                 resolution=(480, 640),
                 resolution_depth=(480, 640),
             ),
+            "camera_2": Camera(
+                addr="127.0.0.1:5131",
+                cam_type="Realsense",
+                serial="262522075082",
+                model="D400",  # D435i product line
+                enable_depth=False,
+                hardware_reset=False,
+                resolution=(480, 640),
+                resolution_depth=(480, 640),
+            ),
         }
     )
 
