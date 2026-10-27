@@ -295,6 +295,8 @@ def spawn_resident(identity: dict, extra: dict | None = None) -> subprocess.Pope
         cmd.append("--no-binarize-gripper")
     if extra.get("action_space"):
         cmd.extend(["--action-space", str(extra["action_space"])])
+    if extra.get("rtc_execution_horizon"):
+        cmd.extend(["--rtc-execution-horizon", str(int(extra["rtc_execution_horizon"]))])
     log_file = log_path(identity["device"])
     handle = open(log_file, "ab", buffering=0)
     logger.info("Starting π₀.₅ resident on {} (log {})", identity["device"], log_file)
@@ -410,6 +412,7 @@ def _serve_forever(cfg) -> None:
         compile=cfg.compile,
         binarize_gripper=cfg.binarize_gripper,
         use_rtc=cfg.use_rtc,
+        rtc_execution_horizon=int(getattr(cfg, "rtc_execution_horizon", 18) or 18),
         action_space=cfg.action_space,
     )
     policy.construct_policy(in_process=True)
@@ -518,6 +521,7 @@ if __name__ == "__main__":
         use_rtc: bool = True
         compile: bool = False
         binarize_gripper: bool = True
+        rtc_execution_horizon: int = 18
         action_space: str | None = None
 
     main(tyro.cli(ResidentCfg))

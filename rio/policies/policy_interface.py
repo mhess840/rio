@@ -39,6 +39,7 @@ class PolicyInterface(Node):
         timeout: float = 180.0,
         n_execute: int | None = None,
         chunk_pause_s: float = 0.0,
+        rtc_execution_horizon: int = 18,
     ):
         self.policy = policy
         self.instruction = instruction
@@ -57,6 +58,7 @@ class PolicyInterface(Node):
         self.camera_keys = camera_keys
         self.n_execute = n_execute
         self.chunk_pause_s = chunk_pause_s
+        self.rtc_execution_horizon = rtc_execution_horizon
 
         super().__init__(freq=freq, max_buffer_size=max_buffer_size, timeout=timeout)
 

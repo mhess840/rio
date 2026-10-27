@@ -36,7 +36,7 @@ GRIPPER_OPEN = 0.7
 GRIPPER_THRESHOLD = 0.35
 # Must exceed inference delay (~18 steps at 20 Hz). Keep in sync with
 # examples/policy_inference.py RTC_EXECUTION_HORIZON.
-RTC_EXECUTION_HORIZON = 30
+RTC_EXECUTION_HORIZON = 18
 RTC_MAX_GUIDANCE_WEIGHT = 10.0
 
 

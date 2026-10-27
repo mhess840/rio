@@ -199,7 +199,7 @@ def test_pi05_inference_slices_padding_and_clips_gripper():
 
     if pi05_mod.torch is None:
         return
-    leftover = np.linspace(0, 1, 20 * 7, dtype=np.float32).reshape(20, 7)
+    leftover = np.linspace(0, 1, 12 * 7, dtype=np.float32).reshape(12, 7)
     obs["rtc_leftover"] = leftover
     obs["rtc_inference_delay"] = np.int32(16)
     result = policy.inference(obs)
@@ -242,7 +242,9 @@ def test_pi05_lerobot_cfg_is_cartesian_without_vive():
     assert cfg.policy_node_cfg.action_hz == 20
     assert cfg.policy_node_cfg.freq == 20
     assert cfg.policy_node_cfg.use_rtc is True
-    assert cfg.policy_node_cfg.rtc_queue_threshold == 22
+    assert cfg.policy_node_cfg.n_execute == 30
+    assert cfg.policy_node_cfg.rtc_queue_threshold == 18
+    assert cfg.policy_node_cfg.rtc_execution_horizon == 18
     assert cfg.policy_node_cfg.chunk_pause_s == pytest.approx(0.0)
     assert cfg.policy_cfg.use_rtc is True
     assert cfg.arm_cfg.cmd_freq == 100
@@ -289,8 +291,8 @@ def test_merge_delay_skips_nothing_on_empty_queue():
 def test_should_send_observation_rtc_requests_during_lead():
     kwargs = {"processing_obs": False, "use_rtc": True, "queue_threshold": RTC_QUEUE_THRESHOLD}
     assert not should_send_observation(remaining=40, **kwargs)
-    assert not should_send_observation(remaining=23, **kwargs)
-    assert should_send_observation(remaining=22, **kwargs)
+    assert not should_send_observation(remaining=19, **kwargs)
+    assert should_send_observation(remaining=18, **kwargs)
     assert should_send_observation(remaining=0, **kwargs)
     assert not should_send_observation(remaining=10, processing_obs=True, use_rtc=True)
 

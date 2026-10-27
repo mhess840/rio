@@ -6,8 +6,9 @@ Run with:
         --policy-path ckpts/pi05 \\
         --instruction "pick up the blue cylinder and place it on the red plate"
 
-RTC off (one 50-step chunk to the end, then a pause for the next inference).
-``__post_init__`` copies ``policy_node_cfg.use_rtc`` onto ``policy_cfg``:
+RTC on, playing 30 of the 50 predicted steps. A new chunk is requested while 18
+steps remain, which covers the ~0.35 s inference. ``__post_init__`` copies
+``policy_node_cfg.use_rtc`` onto ``policy_cfg``. Turn the overlap off with:
 
     POLICY=Pi05LerobotCfg uv run --group pi --no-group docs -m examples.policy_inference \\
         --policy-path ckpts/pi05 \\
@@ -44,11 +45,14 @@ class Pi05LerobotCfg(KassowViveGripperStation):
         use_rtc: bool = True
         freq: int = 20
         action_hz: int = 20
-        # Infer when this many 20 Hz steps remain (delay ~18 plus slack).
-        rtc_queue_threshold: int = 22
-        # Play this many 20 Hz steps of each predicted chunk, then replan.
-        # None / 0 → checkpoint ``n_action_steps`` (25 on the current ckpt).
-        n_execute: int | None = None
+        # Play this many 20 Hz steps of each predicted chunk (the ckpt predicts 50).
+        n_execute: int | None = 30
+        # Start the next chunk while this many steps are still queued.
+        # 18 steps is 0.9 s, above the ~0.35 s inference so the queue does not run dry.
+        rtc_queue_threshold: int = 18
+        # Guide the new chunk over this many steps. Must be <= the leftover at the
+        # request (the threshold) or the prefix is padded with zeros.
+        rtc_execution_horizon: int = 18
         # After a chunk finishes, hold the last command this long before the next image.
         # 0 plans as soon as the queue is empty.
         chunk_pause_s: float = 0.0

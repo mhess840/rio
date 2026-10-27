@@ -30,8 +30,8 @@ except ImportError:
 
 # Horizon must exceed inference delay (~18). Keep in sync with rio/policies/pi05.py.
 # Threshold 22 = delay plus slack so more of each 50-step chunk is executed.
-RTC_QUEUE_THRESHOLD = 22
-RTC_EXECUTION_HORIZON = 30
+RTC_QUEUE_THRESHOLD = 18
+RTC_EXECUTION_HORIZON = 18
 RTC_MAX_GUIDANCE_WEIGHT = 10.0
 DEFAULT_DIAG_DIR = Path("/tmp/pi05_diag")
 # First policy waypoint is often 5–15 cm / ~0.1 rad off the live pose. Closing
@@ -407,9 +407,12 @@ def policy_loop(args, env, policy, visualizer=None):
     if ActionQueue is None or ActionInterpolator is None or RTCConfig is None:
         raise ImportError("LeRobot ActionInterpolator / ActionQueue are required. Install with: uv sync --group pi")
 
+    execution_horizon = int(
+        getattr(args.policy_node_cfg, "rtc_execution_horizon", RTC_EXECUTION_HORIZON) or RTC_EXECUTION_HORIZON
+    )
     rtc_cfg = RTCConfig(
         enabled=use_rtc,
-        execution_horizon=RTC_EXECUTION_HORIZON,
+        execution_horizon=execution_horizon,
         max_guidance_weight=RTC_MAX_GUIDANCE_WEIGHT,
     )
     queue_threshold = int(getattr(args.policy_node_cfg, "rtc_queue_threshold", RTC_QUEUE_THRESHOLD) or RTC_QUEUE_THRESHOLD)
@@ -467,6 +470,12 @@ def policy_loop(args, env, policy, visualizer=None):
                 "joints/moveJ" if joint_serve else "tcp/task_pos_ik",
             )
             logger.info("Execute {} steps of each predicted chunk, then replan", n_execute)
+            if use_rtc:
+                logger.info(
+                    "RTC: request the next chunk when {} steps remain, guide the first {}",
+                    queue_threshold,
+                    execution_horizon,
+                )
             if chunk_pause_s > 0:
                 logger.info("Holding the last command {:.1f}s after each chunk before the next image", chunk_pause_s)
             if not use_rtc:
@@ -759,6 +768,9 @@ def main(args):
         compile=bool(getattr(args.policy_cfg, "compile", False)),
         binarize_gripper=bool(getattr(args.policy_cfg, "binarize_gripper", True)),
         action_space=getattr(args.policy_cfg, "action_space", None),
+        rtc_execution_horizon=int(
+            getattr(args.policy_node_cfg, "rtc_execution_horizon", RTC_EXECUTION_HORIZON) or RTC_EXECUTION_HORIZON
+        ),
         timeout_s=float(getattr(args.policy_node_cfg, "timeout", 180.0) or 180.0),
     )
     logger.info(
