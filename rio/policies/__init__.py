@@ -25,6 +25,12 @@ except ImportError:
     logger.debug("Pi0 not available. Install deps via scripts/setup/vla/pi0_setup.sh")
     Pi0 = None
 
+try:
+    from .pi05 import Pi05
+except ImportError:
+    logger.debug("Pi05 (LeRobot) not available. Install with: pip install 'lerobot[pi]'")
+    Pi05 = None
+
 __all__ = [
     "GearSonic",
     "GearSonicPlanner",

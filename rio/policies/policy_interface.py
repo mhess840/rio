@@ -30,9 +30,15 @@ class PolicyInterface(Node):
         chunk_size: int,
         use_rtc: bool = False,
         freq: int = 100,
+        action_hz: int = 20,
+        infer_lead_s: float = 1.0,
+        rtc_queue_threshold: int = 30,
         max_buffer_size: int = 30,
         chunk_request_threshold: float = 0.75,
         camera_keys: list[str] | None = None,
+        timeout: float = 180.0,
+        n_execute: int | None = None,
+        chunk_pause_s: float = 0.0,
     ):
         self.policy = policy
         self.instruction = instruction
@@ -41,13 +47,18 @@ class PolicyInterface(Node):
         self.proprio_dim = proprio_dim
         self.use_rtc = use_rtc
         self.freq = freq
+        self.action_hz = action_hz
+        self.infer_lead_s = infer_lead_s
+        self.rtc_queue_threshold = rtc_queue_threshold
         self.chunk_size = chunk_size
         self.max_buffer_size = max_buffer_size
         self.last_timestamp = time.now()
         self.chunk_request_threshold = chunk_request_threshold
         self.camera_keys = camera_keys
+        self.n_execute = n_execute
+        self.chunk_pause_s = chunk_pause_s
 
-        super().__init__()
+        super().__init__(freq=freq, max_buffer_size=max_buffer_size, timeout=timeout)
 
     # NOTE: Defines request/pub schemas in post_init following other constructors
     def __post_init__(self):
@@ -62,7 +73,8 @@ class PolicyInterface(Node):
         for i, resolution in enumerate(self.resolutions):
             obs_schema[self.camera_keys[i]] = np.zeros(shape=(*resolution, 3), dtype=np.float32)
 
-        action_schema = {"actions": np.zeros(shape=(self.chunk_size, self.action_dim), dtype=np.float32)}
+        action_chunk = np.zeros(shape=(self.chunk_size, self.action_dim), dtype=np.float32)
+        action_schema = {"actions": action_chunk, "original_actions": action_chunk.copy()}
 
         self.example_request = {**obs_schema}
         self.example_data = {**action_schema, "timestamp": time.now(), "ready": False, "policy_loaded": False}
@@ -81,9 +93,11 @@ class PolicyInterface(Node):
         self.policy.set_instruction(self.instruction)
         self.policy.construct_policy()
         logger.info("PolicyInterface: Policy constructed.")
+        empty_chunk = np.zeros((self.chunk_size, self.action_dim), dtype=np.float32)
         self.ring_buffer.put(
             {
-                "actions": np.zeros((self.chunk_size, self.action_dim), dtype=np.float32),
+                "actions": empty_chunk,
+                "original_actions": empty_chunk.copy(),
                 "timestamp": time.now(),
                 "ready": False,
                 "policy_loaded": True,
@@ -94,16 +108,28 @@ class PolicyInterface(Node):
         try:
             # Main loop
             rate = time.Rate(self.freq)
+            if self.req_ready_event is not None:
+                self.req_ready_event.set()
             self.pub_ready_event.set()
             while not self.exit_event.is_set():
                 # Pop from request queue
                 if not self.request_queue.empty():
                     obs = self.request_queue.get()
                     receive_time = time.now()
-                    # Inference
-                    action_chunk = self.policy.inference(obs)
-                    # Store action chunk in ring buffer
-                    data = {"actions": action_chunk, "timestamp": receive_time, "ready": True, "policy_loaded": True}
+                    result = self.policy.inference(obs)
+                    if isinstance(result, dict):
+                        action_chunk = result["actions"]
+                        original_chunk = result.get("original_actions", action_chunk)
+                    else:
+                        action_chunk = result
+                        original_chunk = action_chunk
+                    data = {
+                        "actions": np.asarray(action_chunk, dtype=np.float32),
+                        "original_actions": np.asarray(original_chunk, dtype=np.float32),
+                        "timestamp": receive_time,
+                        "ready": True,
+                        "policy_loaded": True,
+                    }
                     self.ring_buffer.put(data, wait=False)
 
                 rate.precise_sleep()
@@ -123,8 +149,10 @@ class PolicyInterface(Node):
         # TODO: is there a better way to mark stale action chunks?
 
         if not isinstance(data, dict) or data.get("timestamp") is None or data["timestamp"] <= self.last_timestamp:
+            empty_chunk = np.zeros((self.chunk_size, self.action_dim), dtype=np.float32)
             empty_data = {
-                "actions": np.zeros((self.chunk_size, self.action_dim)),
+                "actions": empty_chunk,
+                "original_actions": empty_chunk.copy(),
                 "timestamp": time.now(),
                 "ready": False,
                 "policy_loaded": False,
@@ -135,9 +163,13 @@ class PolicyInterface(Node):
             return data
 
     def get_action_chunk_blocking(self, obs):
-        action_chunk = self.policy.inference(obs)
-        data = {"actions": action_chunk}
-        return data
+        result = self.policy.inference(obs)
+        if isinstance(result, dict):
+            return {
+                "actions": result["actions"],
+                "original_actions": result.get("original_actions", result["actions"]),
+            }
+        return {"actions": result, "original_actions": result}
 
     def reset(self):
         # TODO: addpt to use the middleware reset method
@@ -156,8 +188,20 @@ class PolicyInterface(Node):
             self.policy.reset()
             logger.info("PolicyInterface: Policy reset.")
 
-        # Clear ring buffer and put initial state
+        # Clear ring buffer and restore the loaded marker so serve does not
+        # think the 9 GB weights vanished.
         self.ring_buffer.clear()
+        empty_chunk = np.zeros((self.chunk_size, self.action_dim), dtype=np.float32)
+        self.ring_buffer.put(
+            {
+                "actions": empty_chunk,
+                "original_actions": empty_chunk.copy(),
+                "timestamp": time.now(),
+                "ready": False,
+                "policy_loaded": True,
+            },
+            wait=False,
+        )
 
         logger.debug("PolicyInterface: Reset complete.")
 

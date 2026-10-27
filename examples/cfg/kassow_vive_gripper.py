@@ -29,8 +29,8 @@ class KassowViveGripperStation(KassowViveStation):
         ready_timeout: float = 30.0
         max_gripper_speed: float | None = None
         force: int = 50
-        # One full 0xA5 homing at start; set False again after a successful run.
-        calibrate: bool = True
+        # One full 0xA5 homing at start. Off after a successful home.
+        calibrate: bool = False
         startup_position: float = 0.7
         feedback_freq: float = 2.0
         freq: int = 30
@@ -65,10 +65,9 @@ class KassowViveGripperStation(KassowViveStation):
 
     # Read clutch, orientation, recorder, and gripper keys from this terminal.
     teleop_keyboard: str | None = "SshKeyboard"
-    teleop_keyboard_cfg: NodeCfg | None = field(
-        default_factory=lambda: NodeCfg(addr="127.0.0.1:5582", freq=100)
-    )
-    # Spare Logitech Unifying mouse (not the HP desk mouse). Left=close, right=open.
+    teleop_keyboard_cfg: NodeCfg | None = field(default_factory=lambda: NodeCfg(addr="127.0.0.1:5582", freq=100))
+    # Spare Logitech Unifying mouse (not the HP desk mouse).
+    # Left=close, right=open, back=finer scale, forward=coarser scale.
     teleop_clicker: str | None = "Clicker"
     teleop_clicker_cfg: NodeCfg | None = field(
         default_factory=lambda: NodeCfg(

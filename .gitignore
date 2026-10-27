@@ -97,6 +97,8 @@ celerybeat-schedule
 # Environments
 .env
 .venv
+.venv-pi
+.venv-py311
 env/
 venv/
 ENV/

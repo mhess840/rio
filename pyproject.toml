@@ -39,6 +39,11 @@ visualizers = ["rerun-sdk", "mujoco", "robot_descriptions", "rerun-loader-mjcf"]
 
 [dependency-groups]
 rlds = ["tensorflow>=2.11.0", "tensorflow-datasets>=4.9.0"]
+# LeRobot 0.6+ needs Python >=3.12,<3.14. Hardware and π₀.₅ share this env.
+pi = [
+    "lerobot[pi,training]==0.6.1; python_version >= '3.12' and python_version < '3.14'",
+    "imageio-ffmpeg; python_version >= '3.12'",
+]
 docs = [
     "mkdocs",
     "mkdocs-material",
@@ -51,6 +56,13 @@ docs = [
 
 # This removes version constraints from transitive dependencies
 [tool.uv]
+# Docs (mkdocs-multirepo-plugin) and LeRobot pin incompatible typing-inspect.
+conflicts = [
+    [
+        { group = "docs" },
+        { group = "pi" },
+    ],
+]
 # ruckig<0.19 is sdist-only and its pinned scikit-build-core no longer builds.
 # cmeel-urdfdom/tinyxml2: keep ABI matching libpinocchio 3.8 (Kassow IK).
 override-dependencies = [
@@ -60,6 +72,8 @@ override-dependencies = [
     "ruckig>=0.19",
     "cmeel-urdfdom>=4,<5",
     "cmeel-tinyxml2==10.0.0",
+    # 2.54 has no cp312 Linux wheel; D435i does not need the L515-era pin.
+    "pyrealsense2>=2.59.1; python_version >= '3.12' and sys_platform != 'darwin'",
 ]
 
 # Local checkout, so the Kassow arm node and the _kord_bridge build tree stay in sync.

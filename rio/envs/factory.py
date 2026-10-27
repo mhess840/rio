@@ -106,6 +106,8 @@ def instantiate_station_cfg(args, **kwargs) -> tuple[dict, dict, dict]:
 
     # Policies
     try:
+        if not getattr(args, "policy", None):
+            raise AttributeError("policy disabled")
         policy_module = kwargs.get("policy_module", "policies")
         policy_node_cfg = kwargs.get("policy_node_cfg", asdict(args.policy_node_cfg))
         policy_config = kwargs.get("policy_config", dataclass_to_dict(args.policy_cfg))

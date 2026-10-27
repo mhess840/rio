@@ -6,6 +6,7 @@ from enum import Enum, auto
 from typing import Generic, TypeVar
 
 import numpy as np
+from rio_hw import time
 
 from ..schema import ActionSpace, Observation
 
@@ -78,4 +79,9 @@ class BaseEmbodiment(ABC, Generic[ObsType]):
             return
         if binarize:
             gripper_cmd = gripper_cmd if gripper_cmd > 0.5 else gripper_cmd - 0.1
+        now = time.now()
+        if t_cmd_target <= now:
+            # Background encode or a hitch can make the 100 Hz stamp late;
+            # AG95 moveG asserts on past times and would kill teleop.
+            t_cmd_target = now + 0.01
         gripper.moveG([float(gripper_cmd)], t_cmd_target)

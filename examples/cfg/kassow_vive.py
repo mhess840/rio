@@ -40,6 +40,7 @@ class KassowViveStation:
         stream_l_bt: float = 0.008
         stream_l_speed: float = 0.0
         stream_l_throttle: int = 2
+        stream_j_speed: float = 0.3
         lowpass_alpha: float | None = 0.65
         log_diagnostics: bool = True
         cmd_freq: int = 50
@@ -78,13 +79,17 @@ class KassowViveStation:
     orientation_key: str = "o"
     pos_scale: float = 1.0
     rot_scale: float = 1.0
+    # Relative step on mouse back/forward; pos and rot share the same factor.
+    scale_step: float = 1.2
+    min_scale: float = 0.5
+    max_scale: float = 1.5
     orientation_enabled: bool = True
     yaw_offset: float = 0.0
     yaw_calibration_file: str | None = "vive_yaw_cal.json"
     calibrate_yaw: bool = False
     min_sweep_travel: float = 0.30
     max_sweep_skew: float = 20.0
-    # Per-step limits applied by the retargeter, ahead of the arm node's own.
+    # Speed ceilings at scale 1.0; live mouse scale multiplies these with pos/rot.
     max_pos_speed: float = 0.45
     max_rot_speed: float = 1.0
     # Reachable shell around the Kassow base (KR1018-scale); tighten for your cell.
@@ -93,6 +98,14 @@ class KassowViveStation:
     min_z: float = 0.05
     tracking_grace: float = 0.25
     max_lag: float = 0.25
+    # Snapshot joints at teleop start; enable with --go-home-on-save.
+    # After Enter, and after each 's', one official KORD moveJ (VelCmd paused).
+    # Streamed speedJ/moveJ mixed into task_pos_ik trips JTORQUE.
+    go_home_on_save: bool = False
+    capture_home: bool = False
+    home_pos_speed: float = 0.20
+    home_rot_speed: float = 0.70
+    home_joint_speed: float = 0.15  # rad/s used to size the moveJ duration
 
     arm_latency: float = 0.0
     mw: str = "Thread"
