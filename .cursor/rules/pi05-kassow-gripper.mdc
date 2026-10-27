@@ -1,0 +1,27 @@
+---
+description: π₀.₅ Kassow gripper must match at convert and on jarvis inference
+globs: "**/*pi05*"
+alwaysApply: false
+---
+
+# π₀.₅ gripper: convert and serve must match
+
+AG95 demos are two-state (`0.0` closed / `0.7` open, not `1.0`). Do not silently analog-ize or rescale to 1.0.
+
+## Convert (`rio/data/convert_pi05.py`)
+
+- Default: `binarize_gripper=True`, `gripper_open=0.7`, `gripper_close=0.0`, threshold = midpoint.
+- Analog / continuous future dataset: `--no-binarize-gripper`.
+- Other two states: `--gripper-open` / `--gripper-close` / `--gripper-threshold`.
+
+## Inference (`examples/policy_cfgs/pi05_lerobot.py` → `PolicyConfig`)
+
+- Default: `binarize_gripper=True` (snaps live state and policy output in `rio/policies/pi05.py`).
+- Analog checkpoint: `--policy-cfg.binarize-gripper false` (then clip `[0, 1]`, no snap).
+- Flip **both** convert and inference. Never only one side.
+
+## Teleop hardware only
+
+`examples/cfg/kassow_vive_gripper.py` `gripper_open` / `gripper_close` are clicker/keyboard targets, not the π₀.₅ snap.
+
+Train/eval details: `docs/workflow/pi05_kassow_cluster_training.md`.

@@ -1,0 +1,17 @@
+---
+description: Explain results and experiments in full sentences for Maximilian
+alwaysApply: true
+---
+
+# Explanations
+
+When explaining an experiment, a result, or a recommendation, write it out. Short verdict sentences are not enough.
+
+Cover, in prose:
+
+- What question the step was meant to answer.
+- What was actually done, including what was held fixed.
+- What each number means and how it was measured.
+- What follows from that, including what the test does not show.
+
+A table can hold the numbers. The surrounding text has to make the procedure understandable on its own.
