@@ -111,8 +111,9 @@ def test_bimanual_valid_proprio_is_concatenated():
     assert obs.proprio.shape == (14,)
 
 
-def test_integrated_gripper_commanded_via_arm_moveG():
+def test_integrated_gripper_commanded_via_arm_moveG(monkeypatch):
     """An arm exposing moveG drives its own gripper; moveJ gets joints only."""
+    monkeypatch.setattr("rio.embodiments.base.time.now", lambda: 0.0)
     stub = RecordingArm(num_joints=6)
     robot = SingleArm(arm=stub, action_space="JOINT_POS")
     assert robot._gripper is stub  # integrated gripper resolved to the arm
@@ -128,8 +129,9 @@ def test_integrated_gripper_commanded_via_arm_moveG():
     np.testing.assert_array_equal(movej[0][1], np.arange(6.0))
 
 
-def test_explicit_gripper_client_wins_over_arm_moveG():
+def test_explicit_gripper_client_wins_over_arm_moveG(monkeypatch):
     """A dedicated gripper client takes precedence even if the arm has moveG."""
+    monkeypatch.setattr("rio.embodiments.base.time.now", lambda: 0.0)
     stub = RecordingArm(num_joints=6)
     gripper = RecordingGripper()
     robot = SingleArm(arm=stub, gripper=gripper, action_space="JOINT_POS")
@@ -143,7 +145,8 @@ def test_explicit_gripper_client_wins_over_arm_moveG():
     assert [c[0] for c in stub.calls] == ["moveJ"]
 
 
-def test_move_gripper_does_not_command_arm():
+def test_move_gripper_does_not_command_arm(monkeypatch):
+    monkeypatch.setattr("rio.embodiments.base.time.now", lambda: 0.0)
     stub = RecordingArm(num_joints=6)
     gripper = RecordingGripper()
     robot = SingleArm(arm=stub, gripper=gripper, action_space="TASK_POS")
@@ -152,6 +155,13 @@ def test_move_gripper_does_not_command_arm():
 
     assert gripper.calls == [("moveG", [0.0], 1.0)]
     assert stub.calls == []
+
+
+def test_past_gripper_deadline_is_rescheduled_without_changing_the_command(monkeypatch):
+    monkeypatch.setattr("rio.embodiments.base.time.now", lambda: 100.0)
+    gripper = RecordingGripper()
+    SingleArm._dispatch_gripper(gripper, 0.0, 99.0)
+    assert gripper.calls == [("moveG", [0.0], pytest.approx(100.01))]
 
 
 def test_no_gripper_when_arm_lacks_moveG():

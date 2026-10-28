@@ -1,9 +1,10 @@
 from dataclasses import dataclass, field
 
+from rio_hw.robots.kassow_kinematics import DEFAULT_URDF_PATH
+
 from rio.cfg import Camera, VisualizerCfg
 from rio.cfg.common import RecorderCfg
 from rio.cfg.node import NodeCfg
-from rio_hw.robots.kassow_kinematics import DEFAULT_URDF_PATH
 
 TASK = "kassow_vive_teleop"
 
@@ -43,6 +44,7 @@ class KassowViveStation:
         stream_j_speed: float = 0.3
         lowpass_alpha: float | None = 0.65
         log_diagnostics: bool = True
+        clear_alarms_on_start: bool = False
         cmd_freq: int = 50
         freq: int = 250
 
@@ -55,7 +57,7 @@ class KassowViveStation:
     cameras: dict[str, Camera] = field(default_factory=dict)
 
     # Leader: Vive tracker worn on the wrist / held in hand
-    teleop: str = "ViveTracker"
+    teleop: str | None = "ViveTracker"
     teleop_cfg: NodeCfg | None = field(
         default_factory=lambda: NodeCfg(
             addr="127.0.0.1:5580",

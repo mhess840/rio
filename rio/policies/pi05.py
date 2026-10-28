@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+from rio.gripper import GripperBinarizer
+
 try:
     import torch
     from lerobot.configs.policies import PreTrainedConfig
@@ -48,9 +50,7 @@ def snap_gripper(
     gripper_threshold: float | None = None,
 ) -> np.ndarray:
     """Map gripper readings to two targets. ``None`` threshold uses the midpoint."""
-    values = np.asarray(values, dtype=np.float32)
-    threshold = gripper_threshold if gripper_threshold is not None else 0.5 * (gripper_close + gripper_open)
-    return np.where(values >= threshold, gripper_open, gripper_close).astype(np.float32)
+    return GripperBinarizer(gripper_close, gripper_open, gripper_threshold).action(values)
 
 
 def _load_pi05_class():
@@ -73,6 +73,20 @@ def _load_pi05_class():
     raise ImportError("LeRobot π₀.₅ is not installed. Install with: pip install 'lerobot[pi]'") from last_error
 
 
+def normalize_rgb_image(image: np.ndarray) -> np.ndarray:
+    """Convert HWC RGB bytes or normalized floats to contiguous float32 in [0, 1]."""
+    array = np.asarray(image)
+    if array.ndim != 3 or array.shape[-1] != 3 or not array.size:
+        raise ValueError(f"Expected a non-empty HWC RGB image, got {array.shape}")
+    if array.dtype == np.uint8:
+        return np.ascontiguousarray(array, dtype=np.float32) / 255.0
+    if not np.issubdtype(array.dtype, np.floating):
+        raise TypeError(f"Expected uint8 or floating-point RGB pixels, got {array.dtype}")
+    if not np.isfinite(array).all() or np.min(array) < 0.0 or np.max(array) > 1.0:
+        raise ValueError("Floating-point RGB pixels must be finite and normalized to [0, 1]")
+    return np.ascontiguousarray(array, dtype=np.float32)
+
+
 def format_rio_obs(
     obs: dict,
     instruction: str,
@@ -81,11 +95,12 @@ def format_rio_obs(
     gripper_close: float = GRIPPER_CLOSE,
     gripper_open: float = GRIPPER_OPEN,
     gripper_threshold: float | None = None,
+    gripper_binarizer: GripperBinarizer | None = None,
 ) -> dict:
     """Map a RIO observation dict to π₀.₅ numpy inputs.
 
     Args:
-        obs: Keys ``camera_1`` / ``camera_2`` (H, W, C), ``proprio_joints`` (7,),
+        obs: Keys ``camera_1`` / ``camera_2`` (H, W, C), uint8 or floats in [0, 1], ``proprio_joints`` (7,),
             ``gripper_position`` scalar. Optional pre-concatenated ``proprio``.
         instruction: Language task string.
         binarize_gripper: Snap analog gripper state to the two dataset targets.
@@ -105,21 +120,17 @@ def format_rio_obs(
         joints = np.asarray(obs["proprio_joints"], dtype=np.float32).reshape(-1)
         gripper = np.asarray(obs.get("gripper_position", 0.0), dtype=np.float32).reshape(-1)
         state = np.concatenate([joints, gripper])
-    if state.shape[0] < STATE_JOINTS + 1:
-        raise ValueError(f"Expected at least {STATE_JOINTS + 1} state dims, got {state.shape}")
+    if state.shape[0] != STATE_JOINTS + 1 or not np.isfinite(state).all():
+        raise ValueError(f"Expected exactly {STATE_JOINTS + 1} finite state dims, got {state.shape}")
     state = state.astype(np.float32, copy=True)
     if binarize_gripper:
-        state[-1] = snap_gripper(
-            state[-1],
-            gripper_close=gripper_close,
-            gripper_open=gripper_open,
-            gripper_threshold=gripper_threshold,
-        ).reshape(-1)[0]
+        encoder = gripper_binarizer or GripperBinarizer(gripper_close, gripper_open, gripper_threshold)
+        state[-1] = encoder.update(state[-1])
 
     images = {}
     for key in ("camera_1", "camera_2"):
         if key in obs and obs[key] is not None:
-            images[key] = np.asarray(obs[key])
+            images[key] = normalize_rgb_image(obs[key])
     if not images:
         raise ValueError("π₀.₅ observation needs camera_1 and/or camera_2 images")
 
@@ -151,23 +162,28 @@ def _to_action_chunk(tensor, action_dim: int = ACTION_DIM) -> np.ndarray:
     arr = np.squeeze(arr)
     if arr.ndim == 1:
         arr = arr[None, :]
-    return np.asarray(arr, dtype=np.float32)[:, :action_dim]
+    return np.array(arr[:, :action_dim], dtype=np.float32, copy=True)
 
 
 def _rtc_predict_kwargs(observation: dict, device: str, execution_horizon: int = RTC_EXECUTION_HORIZON) -> dict:
-    """Match ``RTCInferenceEngine``: leftover padded to ``execution_horizon``, delay only.
-
-    LeRobot does not pass ``execution_horizon`` into ``predict_action_chunk``; the
-    processor reads it from ``policy.config.rtc_config``.
-    """
+    """Pad the transport prefix but guide only steps that actually exist in the old plan."""
     leftover = observation.get("rtc_leftover")
-    if leftover is None or _normalize_prev_actions_length is None:
+    if leftover is None or _normalize_prev_actions_length is None or torch is None:
         return {}
     leftover = np.asarray(leftover, dtype=np.float32)
     if leftover.size == 0:
         return {}
     if leftover.ndim == 1:
         leftover = leftover[None, :]
+    available = int(np.asarray(observation.get("rtc_leftover_length", len(leftover))).reshape(-1)[0])
+    if available < 0 or available > len(leftover):
+        raise ValueError("Invalid RTC leftover length")
+    if available == 0:
+        return {}
+    if leftover.ndim != 2 or not np.isfinite(leftover).all() or execution_horizon < 1:
+        raise ValueError("RTC leftovers must be a finite action matrix with a positive horizon")
+    leftover = leftover[:available]
+    available = min(available, int(execution_horizon))
     delay = observation.get("rtc_inference_delay", 0)
     delay_i = int(np.asarray(delay, dtype=np.int32).reshape(-1)[0])
     leftover_t = torch.as_tensor(leftover, dtype=torch.float32, device=device)
@@ -175,6 +191,7 @@ def _rtc_predict_kwargs(observation: dict, device: str, execution_horizon: int =
     return {
         "prev_chunk_left_over": leftover_t,
         "inference_delay": delay_i,
+        "execution_horizon": available,
     }
 
 
@@ -229,6 +246,7 @@ class Pi05(Policy):
         self.gripper_close = gripper_close
         self.gripper_open = gripper_open
         self.gripper_threshold = gripper_threshold
+        self._gripper_binarizer = GripperBinarizer(gripper_close, gripper_open, gripper_threshold)
         self.use_rtc = use_rtc
         self.rtc_execution_horizon = rtc_execution_horizon
         self.rtc_max_guidance_weight = rtc_max_guidance_weight
@@ -246,6 +264,8 @@ class Pi05(Policy):
     def construct_policy(self, *, in_process: bool = False):
         from rio.policies.pi05_resident import resident_identity, try_connect
 
+        if PreTrainedConfig is None or make_pre_post_processors is None or torch is None:
+            raise ImportError("LeRobot and Torch are required to construct the policy") from IMPORT_ERROR
         self._policy_cls = _load_pi05_class()
         self.policy_cfg = PreTrainedConfig.from_pretrained(self.policy_path)
         self.action_space = infer_action_space(self.policy_cfg, self.requested_action_space)
@@ -253,7 +273,17 @@ class Pi05(Policy):
         self.policy_cfg.device = self.device
         if not in_process:
             identity = resident_identity(
-                self.policy_path, self.device, use_rtc=self.use_rtc, compile=self.compile
+                self.policy_path,
+                self.device,
+                use_rtc=self.use_rtc,
+                compile=self.compile,
+                binarize_gripper=self.binarize_gripper,
+                gripper_close=self.gripper_close,
+                gripper_open=self.gripper_open,
+                gripper_threshold=self.gripper_threshold,
+                rtc_execution_horizon=self.rtc_execution_horizon,
+                rtc_max_guidance_weight=self.rtc_max_guidance_weight,
+                action_space=self.requested_action_space,
             )
             client = try_connect(identity)
             if client is not None:
@@ -270,6 +300,8 @@ class Pi05(Policy):
                 return
         self.policy = self._policy_cls.from_pretrained(self.policy_path, config=self.policy_cfg)
         if self.use_rtc:
+            if RTCConfig is None:
+                raise ImportError("The installed LeRobot version has no RTC support")
             self.policy.config.rtc_config = RTCConfig(
                 enabled=True,
                 execution_horizon=self.rtc_execution_horizon,
@@ -285,19 +317,48 @@ class Pi05(Policy):
         )
 
     def set_instruction(self, instruction):
+        if instruction != self.instruction:
+            self.reset()
         self.instruction = instruction
         resident = getattr(self, "_resident", None)
         if resident is not None:
             resident.set_instruction(instruction)
 
-    def _process_observation(self, obs):
+    def reset(self):
+        """Start a new rollout without carrying over gripper, processor, or action history."""
+        encoder = getattr(self, "_gripper_binarizer", None)
+        if encoder is not None:
+            encoder.reset()
+        resident = getattr(self, "_resident", None)
+        if resident is not None:
+            resident.reset()
+            return
+        for component in (self.policy, self.preprocessor, self.postprocessor):
+            reset = getattr(component, "reset", None)
+            if callable(reset):
+                reset()
+
+    def _process_observation(self, observation):
+        if torch is None:
+            raise ImportError("Torch is required to process policy observations") from IMPORT_ERROR
+        instruction = self.instruction
+        if not isinstance(instruction, str) or not instruction:
+            raise ValueError("Set a non-empty task instruction before inference")
+        preprocessor = self.preprocessor
+        if preprocessor is None:
+            raise RuntimeError("The policy preprocessor has not been constructed")
+        encoder = getattr(self, "_gripper_binarizer", None)
+        if encoder is None:
+            encoder = GripperBinarizer(self.gripper_close, self.gripper_open, self.gripper_threshold)
+            self._gripper_binarizer = encoder
         packed = format_rio_obs(
-            obs,
-            self.instruction,
+            observation,
+            instruction,
             binarize_gripper=self.binarize_gripper,
             gripper_close=self.gripper_close,
             gripper_open=self.gripper_open,
             gripper_threshold=self.gripper_threshold,
+            gripper_binarizer=encoder,
         )
         batch = {
             "observation.state": torch.as_tensor(packed["state"], device=self.device),
@@ -308,7 +369,7 @@ class Pi05(Policy):
             if tensor.ndim == 3 and tensor.shape[-1] == 3:
                 tensor = tensor.permute(2, 0, 1)
             batch[f"observation.images.{name}"] = tensor
-        return self.preprocessor(batch)
+        return preprocessor(batch)
 
     def inference(self, observation, current_plan=None):
         resident = getattr(self, "_resident", None)
@@ -322,7 +383,10 @@ class Pi05(Policy):
         action_dim = int(getattr(self, "action_dim", ACTION_DIM) or ACTION_DIM)
         action_space = getattr(self, "action_space", "tcp")
         original = _to_action_chunk(actions, action_dim)
-        postprocessed = self.postprocessor(actions)
+        postprocessor = self.postprocessor
+        if postprocessor is None:
+            raise RuntimeError("The policy postprocessor has not been constructed")
+        postprocessed = postprocessor(actions)
         chunk = _to_action_chunk(postprocessed, action_dim)
         if action_space == "tcp":
             chunk[:, _ROTVEC_SLICE] = principal_rotvec(chunk[:, _ROTVEC_SLICE])

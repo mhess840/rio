@@ -21,6 +21,8 @@ import numpy as np
 import robodm
 from loguru import logger
 
+from rio.gripper import GripperBinarizer
+
 try:
     import lerobot.datasets.lerobot_dataset as lerobot_dataset
     import lerobot.datasets.video_utils as video_utils
@@ -137,6 +139,7 @@ CAM1_KEY = "observation/cameras/camera_1/rgb"
 CAM2_KEY = "observation/cameras/camera_2/rgb"
 JOINTS_KEY = "observation/proprio_joints"
 GRIPPER_KEY = "observation/gripper_position"
+GRIPPER_COMMANDED_KEY = "observation/gripper_commanded_position"
 ACTION_KEY = "action"
 INSTRUCTION_KEY = "instruction"
 
@@ -171,6 +174,7 @@ class ConvertPi05Cfg:
     gripper_close: float = 0.0
     gripper_open: float = 0.7
     gripper_threshold: float | None = None
+    gripper_state_source: str = "measured"
     min_frames: int = 16
     unwrap_rotvec: bool = True
     trim_idle: bool = True
@@ -190,6 +194,8 @@ class ConvertPi05Cfg:
         if space not in {"tcp", "joints"}:
             raise ValueError(f"action_space must be 'tcp' or 'joints', got {self.action_space!r}")
         self.action_space = space
+        if self.gripper_state_source not in {"measured", "commanded"}:
+            raise ValueError("gripper_state_source must be 'measured' or 'commanded'")
         if self.workers < 1:
             raise ValueError(f"workers must be >= 1, got {self.workers}")
 
@@ -393,9 +399,7 @@ def binarize_action_gripper(
     Values at or above the threshold become ``gripper_open``. Do not low-pass
     the action — π₀.₅ would imitate the smear.
     """
-    values = np.asarray(values, dtype=np.float32).reshape(-1)
-    threshold = resolve_gripper_threshold(gripper_close, gripper_open, gripper_threshold)
-    return np.where(values >= threshold, gripper_open, gripper_close).astype(np.float32)
+    return GripperBinarizer(gripper_close, gripper_open, gripper_threshold).action(values).reshape(-1)
 
 
 def binarize_state_gripper(
@@ -405,20 +409,7 @@ def binarize_state_gripper(
     gripper_threshold: float | None = None,
 ) -> np.ndarray:
     """Hysteresis-snap measured gripper position so the state does not chatter."""
-    values = np.asarray(values, dtype=np.float32).reshape(-1)
-    threshold = resolve_gripper_threshold(gripper_close, gripper_open, gripper_threshold)
-    span = gripper_open - gripper_close
-    low = threshold - 0.2 * span
-    high = threshold + 0.15 * span
-    state = gripper_open if (values[0] if len(values) else threshold) >= threshold else gripper_close
-    out = np.empty_like(values, dtype=np.float32)
-    for i, value in enumerate(values):
-        if value <= low:
-            state = gripper_close
-        elif value >= high:
-            state = gripper_open
-        out[i] = state
-    return out
+    return GripperBinarizer(gripper_close, gripper_open, gripper_threshold).sequence(values)
 
 
 def _parse_range_key(key: str) -> tuple[int, int]:
@@ -1009,15 +1000,25 @@ def convert(cfg: ConvertPi05Cfg) -> dict:
                         cfg.gripper_open,
                         resolve_gripper_threshold(cfg.gripper_close, cfg.gripper_open, cfg.gripper_threshold),
                     )
+                state_values = (
+                    data.get(GRIPPER_COMMANDED_KEY, data[ACTION_KEY][:, -1])
+                    if cfg.gripper_state_source == "commanded"
+                    else data[GRIPPER_KEY]
+                )
                 state_g = binarize_state_gripper(
-                    data[GRIPPER_KEY],
+                    state_values,
                     cfg.gripper_close,
                     cfg.gripper_open,
                     cfg.gripper_threshold,
                 )
             else:
                 snapped = action_g
-                state_g = np.asarray(data[GRIPPER_KEY], dtype=np.float32).reshape(-1)
+                state_values = (
+                    data.get(GRIPPER_COMMANDED_KEY, data[ACTION_KEY][:, -1])
+                    if cfg.gripper_state_source == "commanded"
+                    else data[GRIPPER_KEY]
+                )
+                state_g = np.asarray(state_values, dtype=np.float32).reshape(-1)
             for frame_idx in range(n):
                 frame = build_pi05_frame(
                     data,

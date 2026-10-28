@@ -3,6 +3,9 @@ cache/
 assets/
 ckpts/
 data
+!examples/data/
+examples/data/*
+!examples/data/convert_to_lerobot_pi05.py
 scripts/setup/gello/configs/
 examples/station_cfgs/data/
 examples/scratch

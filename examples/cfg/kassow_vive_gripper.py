@@ -31,7 +31,7 @@ class KassowViveGripperStation(KassowViveStation):
         force: int = 50
         # One full 0xA5 homing at start. Off after a successful home.
         calibrate: bool = False
-        startup_position: float = 0.7
+        startup_position: float | None = 0.7
         feedback_freq: float = 2.0
         freq: int = 30
 

@@ -1,5 +1,7 @@
 # Data Conversion
 
+For Kassow + AG95 and LeRobot v3 / pi05, use the [Kassow pipeline](pi05_kassow_pipeline.md). This page describes the separate DROID/OpenPI export path.
+
 Convert collected `.vla` trajectories to [LeRobot](https://github.com/huggingface/lerobot) / DROID format for use with the openpi training pipeline.
 
 ## DROID Schema

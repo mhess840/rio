@@ -80,3 +80,18 @@ def test_precise_sleep_is_bounded():
     rio_time.precise_sleep(0.02)
     elapsed = _time.perf_counter() - t0
     assert 0.015 < elapsed < 0.5  # actually sleeps, but never hangs
+
+
+def test_precise_rate_skips_missed_ticks_instead_of_emitting_a_burst(monkeypatch):
+    clock = [1.0]
+    waits = []
+    monkeypatch.setattr(rio_time, "now", lambda: clock[0])
+    monkeypatch.setattr(rio_time, "precise_wait", waits.append)
+    rate = rio_time.Rate(100)
+    rate.start_time = 0.0
+    rate.precise_sleep()
+    assert rate.start_time == 1.0
+    assert waits == []
+    clock[0] = 1.001
+    rate.precise_sleep()
+    assert waits == [pytest.approx(1.01)]

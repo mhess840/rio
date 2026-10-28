@@ -1,0 +1,52 @@
+LeRobot is 0.6.1, Python is 3.12.14, and the policy runs on GPU 1, an NVIDIA GeForce RTX 3090 with 24 GB. The machine has four of those cards. The driver is 580.178.04, and PyTorch uses CUDA 12.8.
+
+The rest of the stack this run is built on:
+
+Piece	Version / model
+OS
+Ubuntu 22.04.5, kernel 6.8.0-138
+PyTorch
+2.10.0
+Transformers
+5.5.4
+NumPy
+2.5.3
+PyAV
+13.1.0
+pyrealsense2
+2.59.1
+Policy
+π₀.₅, checkpoint ckpts/pi05, started from lerobot/pi05_base
+Arm
+Kassow KR2, Cartesian task_pos_ik, ik_kp 12
+Arm controller
+KORD API 3.0.2, CBun 3.0.4, from the last connection
+Gripper
+AG95, open 0.7 / closed 0.0, feedback at 2 Hz
+Cameras
+Two RealSense D400, 480×640, wrist camera_1 and overview camera_2
+Control rate
+100 Hz commands, 20 Hz actions
+The robot and the cameras are on this PC. The weights for the run sit on GPU 1. GPUs 0, 2, and 3 are the other three 3090s and are not the one this policy uses.
+
+
+
+Command to start:
+
+POLICY=Pi05LerobotCfg uv run --group pi --no-group docs -m examples.policy_inference   --policy-path ckpts/pi05   --instruction "pick up the blue object and place it on the red plate"   --policy-cfg.device cuda:1   --diag-dir /tmp/pi05_diag/run2
+
+
+
+
+
+
+
+
+Konvertirungs command: uv run python -m examples.data.convert_to_lerobot_pi05 \
+  --input data/kassow_vive_gripper \
+  --output data/lerobot/kassow_pi05_pick_notrim \
+  --tasks data/kassow_vive_gripper/tasks.yaml \
+  --repo-id local/kassow_pi05_pick_notrim \
+  --clean \
+  --no-trim-idle \
+  --workers 6

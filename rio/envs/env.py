@@ -124,6 +124,8 @@ class Env:
             state = camera.get_state()
             meta = {
                 "depth_units": state.get("depth_units", None),
+                "camera_capture_timestamp": state.get("camera_capture_timestamp", None),
+                "camera_receive_timestamp": state.get("camera_receive_timestamp", state.get("timestamp", None)),
             }
             obs[key] = Camera(
                 rgb=state.get("color"),

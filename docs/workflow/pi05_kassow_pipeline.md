@@ -31,7 +31,7 @@ What it does:
 
 - A Vive tracker gives an absolute wrist pose. Motion is applied only while the clutch is held (`c`). The clutch snapshots the tracker and the current TCP together; later motion is the delta from that pair. There is no fixed SteamVR-to-robot calibration.
 - The arm follows in Cartesian space. `KassowViveStation.ArmCfg.robot_controller` is `task_pos_ik` (`ik_kp=12`). The recorded action is the commanded TCP (`arm_target_pose`), not a second measured pose.
-- The gripper is an AG95 on serial (`AgGripper`). Open is `0.7`, close is `0.0`. Finger position is read from the hardware at `feedback_freq=2` Hz (`gripper.state / 1000`).
+- The gripper is an AG95 on serial (`AgGripper`). Open is `0.7`, close is `0.0`. `gripper_position` is the hardware reading at `feedback_freq=2` Hz; `gripper_commanded_position` is the last successfully written target. A command no longer overwrites the measured opening.
 - Two RealSense cameras, color only, 480×640. `camera_1` is serial `112322070077` (wrist). `camera_2` is serial `262522075082` (overview). Each camera thread runs at 30 Hz and writes the newest frame into a ring buffer.
 - The teleop loop runs at 100 Hz. On each tick it builds the action, sends it, then calls `env.get_state(action=action)`. That call copies the latest camera frames from the ring buffers and the current joint and gripper readings. Those are not given one shared capture timestamp.
 - Recording: `n` starts a trajectory, `s` saves it. Files go to `data/kassow_vive_gripper/` as robodm `traj_XXXX.vla`.
@@ -44,6 +44,7 @@ Keys inside a `.vla` that the converter requires:
 | `observation/cameras/camera_2/rgb` | overview RGB |
 | `observation/proprio_joints` | 7 joint angles, rad |
 | `observation/gripper_position` | AG95 opening, about 0–1 |
+| `observation/gripper_commanded_position` | optional, last AG95 target; new recordings preserve it separately |
 | `action` | commanded TCP: xyz (m) + rotvec + gripper |
 
 Language labels are not taken from the `.vla`. They come from `data/kassow_vive_gripper/tasks.yaml`. The current file is one range:
@@ -62,21 +63,19 @@ The index is the number in `traj_XXXX.vla`. The string has to match inference ex
 **Config:** `ConvertPi05Cfg`  
 **Call:** `convert(cfg)`
 
-There is no `python -m` entry point. A run looks like this:
+The CLI forwards to the same `convert(cfg)` implementation:
 
 ```bash
-uv run --group pi --no-group docs python -c "
-from pathlib import Path
-from rio.data.convert_pi05 import ConvertPi05Cfg, convert
-convert(ConvertPi05Cfg(
-    input=Path('data/kassow_vive_gripper'),
-    output=Path('data/lerobot/kassow_pi05_pick_notrim'),
-    tasks=Path('data/kassow_vive_gripper/tasks.yaml'),
-    repo_id='local/kassow_pi05_pick_notrim',
-    trim_idle=False,
-))
-"
+uv run --group pi --no-group docs -m examples.data.convert_to_lerobot_pi05 \
+      --input data/kassow_vive_gripper \
+      --output data/lerobot/kassow_pi05_pick_notrim \
+      --tasks data/kassow_vive_gripper/tasks.yaml \
+      --repo-id local/kassow_pi05_pick_notrim \
+      --no-trim-idle \
+      --gripper-state-source commanded
 ```
+
+Choose `--gripper-state-source measured` for genuinely measured proprioception. The default converter source remains `measured` to avoid silently changing older conversions. `commanded` reads the separate recorded command when available, otherwise the recorded action's gripper slot. Use the same source at inference. The existing Kassow policy configuration defaults to `commanded`, matching the predominantly command-like states in the older recordings. This does not turn the binary gripper command into a grasp-success sensor.
 
 `trim_idle` defaults to `True` (drop the stationary prefix until the TCP has moved 1 cm). The set used for the current runs is `data/lerobot/kassow_pi05_pick_notrim`: 428 episodes, 84407 frames, 20 Hz, idle prefix kept.
 
@@ -144,7 +143,11 @@ POLICY=Pi05LerobotCfg uv run --group pi --no-group docs -m examples.policy_infer
   --policy-node-cfg.chunk-pause-s 0
 ```
 
-`Pi05LerobotCfg` turns Vive, clicker, and the recorder off. It forces `robot_controller=task_pos_ik`. The control loop is 100 Hz. Policy steps are 20 Hz. `ActionInterpolator` fills the four ticks between policy steps.
+`Pi05LerobotCfg` turns Vive, clicker, and the recorder off. It forces `robot_controller=task_pos_ik`. The control loop is 100 Hz. Policy steps are 20 Hz. `rio_hw.interpolators.ActionInterpolator` fills the intermediate ticks with linear position interpolation and SO(3) SLERP for TCP orientation. Joint actions remain linear. Principal rotvecs are never linearly blended as ordinary Cartesian components.
+
+Policy startup defaults to `gripper_cfg.startup_position=None`: the driver does not send an initial position target, and playback does not issue a fabricated open command while waiting for inference. This preserves an already-held object for a placement rollout. The interpolation anchor reads the actual gripper state/last command instead of assuming `0.7`. Binary gripper commands switch directly at their waypoint; only an explicitly continuous gripper is interpolated. Custom open/close/threshold values are propagated through inference, startup and playback.
+
+Before a driver has received its first position target, the commanded-position proxy is initialized from the measured opening. Once a target has been written, this channel stays distinct from feedback. It is not a contact or grasp-success flag.
 
 Each observation (`create_obs`):
 
@@ -152,19 +155,44 @@ Each observation (`create_obs`):
 - `proprio`: the seven joint angles concatenated with the gripper
 - `task`: the `--instruction` string
 
-`rio/policies/pi05.py` permutes images from HWC to CHW, runs the LeRobot preprocessor, calls `predict_action_chunk`, then the postprocessor. The 32-wide π₀.₅ vector is sliced to 7. The rotvec is folded back to `|r| ≤ π`. With `binarize_gripper=True` (the default, matching conversion) the gripper is snapped to `0.0` or `0.7`.
+`rio/policies/pi05.py` converts uint8 RGB to float32 `[0, 1]` exactly once, preserves already normalized float images, permutes HWC to CHW, and runs the LeRobot preprocessor. Unnormalized float images and nonfinite inputs are rejected. The output is postprocessed and sliced to seven dimensions. TCP interpolation follows SO(3) even when rotvec components cross the pi branch cut. Commands snap to `0.0` or `0.7`; observation hysteresis is shared with the converter and reset between rollouts.
 
 The chunk is queued and sent as absolute TCP targets. `limit_tcp_action_step` caps how far the command may move in one 100 Hz tick (`max_pos_speed`, `max_rot_speed`), so a jump in the plan becomes a short ramp instead of one huge step.
 
 `--policy-node-cfg.no-use-rtc` is real. `Pi05LerobotCfg.__post_init__` copies that flag onto `policy_cfg.use_rtc`, and the resident is started with the same flag. With RTC off, a new observation is requested only when the action queue is empty. The new chunk is not shifted forward by the inference latency. With RTC on, the leftover tail of the previous chunk is passed in and the queues are merged.
 
-`--policy-node-cfg.n-execute 25` plays 25 of the 50 predicted steps, then replans. `--policy-node-cfg.chunk-pause-s` holds the last command for that many seconds after a chunk ends, before the next image is taken. `0` takes the image as soon as the queue is empty.
+`--policy-node-cfg.n-execute 25` limits the prediction prefix to 25 steps; the default is 30. With RTC, merging replaces the queue and skips only steps actually consumed during inference, so this is not a promise to execute every one of those 25 steps. Guidance never extends into padded, nonexistent leftovers. Without RTC the prefix plays out before requesting the next image. `--policy-node-cfg.chunk-pause-s` adds an optional hold before the next request.
 
-`ensure_resident` leaves a daemon on the GPU after the process exits. A later run reuses it only if `use_rtc` and the checkpoint match. `--unload-policy` stops it.
+`ensure_resident` leaves the weights resident after the rollout. Reuse requires matching checkpoint file fingerprints, runtime code/library versions, RTC and gripper options. A mismatched authenticated resident must exit before replacement weights are loaded. Startup remains serialized until readiness. IPC keys live in an owner-only runtime directory; use the per-rollout diagnostic folders for sharing rather than copying resident credentials.
 
 Enter toggles pause. `q` quits.
 
-The default `instruction` inside `Pi05LerobotCfg` is still the older “blue cylinder” sentence. The command above overrides it. The string has to match `tasks.yaml` byte for byte.
+The default instruction matches the current "blue object" dataset. Pass the exact task string for any other checkpoint. Offline diagnosis uses each dataset frame's task label unless explicitly overridden and preserves normalized float pixels without a byte round trip.
+
+### Safety and diagnostics
+
+`--safety-cfg` exposes fail-closed software limits: 5 cm TCP position error, 0.35 rad orientation error, 0.25 rad per-joint error, 0.25 s feedback age and 2 s inference timeout. Alarms, stale feedback/camera frames, invalid chunks and exceeded limits end playback, clear buffered actions and request a stream stop. They never acknowledge controller Safety. Pause/resume also invalidates in-flight inference generations. These guards are not a certified emergency stop or collision detector.
+
+The KORD bridge discards streams after an alarm or a command timeout. Python feedback is only republished when the controller tick advances. Missed control deadlines are skipped, not replayed in a burst, and stale streaming goals are coalesced without dropping stop or discrete requests. `clear_alarms_on_start` now defaults to `False`; resolve controller alarms explicitly before starting.
+
+The optional native `task_pos` fallback retains KORD's XYZ-Euler TCP convention and interpolates orientation through quaternions, including a stable pitch-singularity branch. It does not interpret Euler components as RIO rotation vectors. The default `task_pos_ik` path does not use this fallback. The native changes require compilation and supervised validation on the robot host; analytic formula checks are not a substitute for that build.
+
+Every start/resume creates a unique `session_*` directory below `--diag-dir`, containing the effective configuration, camera snapshots, chunk files and CSVs. The command log records rotation error, alarm code and state age; joint logs label radians rather than metres. Reusing the same diagnostic root cannot overwrite an earlier session.
+
+### Deploying these changes
+
+Update both checkouts. On the robot's Linux machine, rebuild the native bridge against its existing KORD SDK before launching hardware:
+
+```bash
+cd ../rio-hw
+cmake -S kord_bridge -B kord_bridge/build -DCMAKE_BUILD_TYPE=Release
+cmake --build kord_bridge/build --target _kord_bridge -j2
+cmake --install kord_bridge/build --component kord_bridge
+```
+
+An older `_kord_bridge` is rejected before connecting to the controller. After updating, unload old policy residents and run offline diagnosis with corrected pixels first. A legacy resident that cannot authenticate or terminate causes startup to fail instead of spawning a second GPU process; inspect and stop the verified old process manually in that case. Real robot validation still requires operator supervision, a clear workcell and the physical emergency stop.
+
+Existing `.vla`, LeRobot datasets and checkpoints are not rewritten by these changes. Dataset trimming, geometric augmentation and phase-dependent camera masking remain training/design choices. The restored converter entry point does not invent the unprovided two-task/masking implementation; that path still needs its own matching conversion and deployment contract.
 
 ---
 

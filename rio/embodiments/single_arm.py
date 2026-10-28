@@ -19,6 +19,7 @@ class SingleArmObs(Observation):
     proprio_eef: np.ndarray | None = None
     proprio_joints: np.ndarray | None = None
     gripper_position: float | None = None
+    gripper_commanded_position: float | None = None
 
     hand_pose: np.ndarray | None = None
     hand_joints: np.ndarray | None = None
@@ -146,9 +147,11 @@ class SingleArm(BaseEmbodiment):
 
         if "gripper" in robot_state.keys():
             gripper_pos = robot_state["gripper"].get("gripper_position", None)
+            gripper_commanded = robot_state["gripper"].get("gripper_commanded_position", None)
         else:
             # Integrated gripper: position is published in the arm state.
             gripper_pos = robot_state["arm"].get("gripper_position", 0.0)
+            gripper_commanded = robot_state["arm"].get("gripper_commanded_position", None)
 
         default_proprio = eef_pose if self.action_space == "EEF_POSE" else joint_q
         default_proprio = np.concatenate([default_proprio, [gripper_pos]])
@@ -160,6 +163,7 @@ class SingleArm(BaseEmbodiment):
             proprio_eef=eef_pose,
             proprio_joints=joint_q,
             gripper_position=gripper_pos,
+            gripper_commanded_position=gripper_commanded,
             hand_joints=hand_joints,
             cameras=cams,
         )

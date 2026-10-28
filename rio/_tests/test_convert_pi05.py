@@ -150,6 +150,62 @@ def test_binarize_state_hysteresis_ignores_mid_noise():
     np.testing.assert_allclose(snapped, [0.7, 0.7, 0.7, 0.7, 0.0, 0.0])
 
 
+@pytest.mark.parametrize(
+    "source,published,expected",
+    [("measured", False, [0.7, 0.7]), ("commanded", False, [0.0, 0.7]), ("commanded", True, [0.7, 0.0])],
+)
+def test_convert_uses_the_explicit_gripper_state_source(tmp_path, monkeypatch, source, published, expected):
+    from types import SimpleNamespace
+
+    from rio.data import convert_pi05 as converter
+
+    path = tmp_path / "traj_0000.vla"
+    path.write_bytes(b"")
+    tasks = tmp_path / "tasks.yaml"
+    tasks.write_text("0: pick up the cylinder\n")
+    data = {
+        converter.CAM1_KEY: np.zeros((2, 4, 4, 3), dtype=np.uint8),
+        converter.CAM2_KEY: np.zeros((2, 4, 4, 3), dtype=np.uint8),
+        converter.JOINTS_KEY: np.zeros((2, 7), dtype=np.float32),
+        converter.GRIPPER_KEY: np.array([0.7, 0.7], dtype=np.float32),
+        converter.ACTION_KEY: np.zeros((2, 7), dtype=np.float32),
+    }
+    data[converter.ACTION_KEY][:, -1] = [0.0, 0.7]
+    if published:
+        data[converter.GRIPPER_COMMANDED_KEY] = np.array([0.7, 0.0], dtype=np.float32)
+    frames = []
+    dataset = SimpleNamespace(add_frame=frames.append, save_episode=lambda: None)
+    monkeypatch.setattr(converter.robodm, "Trajectory", lambda **kwargs: SimpleNamespace(load=lambda: data))
+    monkeypatch.setattr(converter, "LeRobotDataset", object())
+    monkeypatch.setattr(converter, "_patch_lerobot_pyav", lambda: None)
+    monkeypatch.setattr(converter, "_create_lerobot_dataset", lambda *args: dataset)
+    result = convert(
+        ConvertPi05Cfg(
+            input=path,
+            output=tmp_path / "output",
+            tasks=tasks,
+            src_fps=20,
+            dst_fps=20,
+            min_frames=1,
+            trim_idle=False,
+            gripper_state_source=source,
+        )
+    )
+    assert result["kept"] == 1
+    np.testing.assert_allclose([frame["observation.state"][-1] for frame in frames], expected)
+    np.testing.assert_allclose([frame["action"][-1] for frame in frames], [0.0, 0.7])
+
+
+def test_documented_converter_entrypoint_forwards_to_the_shared_implementation(monkeypatch, tmp_path):
+    from examples.data import convert_to_lerobot_pi05 as cli
+
+    cfg = ConvertPi05Cfg(input=tmp_path, dry_run=True)
+    calls = []
+    monkeypatch.setattr(cli, "convert", lambda value: calls.append(value) or {"dry_run": True})
+    assert cli.main(cfg) == {"dry_run": True}
+    assert calls == [cfg]
+
+
 def test_parse_task_map_ranges(tmp_path: Path):
     path = tmp_path / "tasks.yaml"
     path.write_text(

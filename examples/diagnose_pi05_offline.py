@@ -45,7 +45,7 @@ import numpy as np
 import tyro
 from loguru import logger
 
-from rio.policies.pi05 import Pi05, principal_rotvec, snap_gripper
+from rio.policies.pi05 import Pi05, normalize_rgb_image, principal_rotvec, snap_gripper
 
 DEFAULT_INSTRUCTION = "pick up the blue cylinder and place it on the red plate"
 DEFAULT_DATASET = "data/lerobot/kassow_pi05"
@@ -138,7 +138,7 @@ def episode_frac_index(from_i: int, to_i: int, horizon: int, frac: float) -> int
         raise ValueError(f"frac must be in [0, 1], got {frac}")
     latest = int(to_i) - int(horizon)
     span = latest - int(from_i)
-    return int(from_i) + int(round(frac * span))
+    return int(from_i) + round(frac * span)
 
 
 def parse_sample_at(sample_at: str) -> list[float]:
@@ -157,12 +157,30 @@ def parse_sample_at(sample_at: str) -> list[float]:
     return fracs
 
 
+def resolve_instruction(frame: dict, override: str | None = None) -> str:
+    """Use the frame's actual task label unless the caller explicitly overrides it."""
+    task = override if override is not None else frame.get("task")
+    if isinstance(task, (list, tuple)):
+        task = task[0] if task else None
+    if not isinstance(task, str) or not task.strip():
+        raise ValueError("Offline inference needs the dataset task label or an explicit instruction")
+    return task
+
+
+def to_hwc_float32(image) -> np.ndarray:
+    """Preserve normalized dataset pixels while converting CHW images to HWC."""
+    array = np.asarray(image)
+    if array.ndim == 3 and array.shape[0] == 3 and array.shape[-1] != 3:
+        array = np.transpose(array, (1, 2, 0))
+    return normalize_rgb_image(array)
+
+
 def rio_obs_from_frame(frame: dict, instruction: str) -> dict:
     """Build a Serve-style observation dict from a LeRobot frame."""
     state = np.asarray(frame["observation.state"], dtype=np.float32).reshape(-1)
     return {
-        "camera_1": to_hwc_uint8(frame["observation.images.camera_1"]),
-        "camera_2": to_hwc_uint8(frame["observation.images.camera_2"]),
+        "camera_1": to_hwc_float32(frame["observation.images.camera_1"]),
+        "camera_2": to_hwc_float32(frame["observation.images.camera_2"]),
         "proprio": state,
         "proprio_joints": state[:7],
         "gripper_position": float(state[-1]),
@@ -221,7 +239,7 @@ class DiagnoseOfflineCfg:
     policy_path: str = "ckpts/pi05"
     dataset_root: str = DEFAULT_DATASET
     repo_id: str = DEFAULT_REPO_ID
-    instruction: str = DEFAULT_INSTRUCTION
+    instruction: str | None = None
     device: str = "cuda:1"
     out_dir: str = str(DEFAULT_OUT)
     num_samples: int = 20
@@ -272,13 +290,15 @@ def main(cfg: DiagnoseOfflineCfg) -> None:
                 logger.warning("skip episode {} frac {}: {}", ep, frac, exc)
                 continue
             frame = ds[t0]
-            task = cfg.instruction
+            task = resolve_instruction(frame, cfg.instruction)
             if frame.get("task"):
                 raw = frame["task"]
                 task = raw[0] if isinstance(raw, list) else str(raw)
-                if task != cfg.instruction:
+                if cfg.instruction is not None and task != cfg.instruction:
                     logger.warning("episode {} task {!r} != eval instruction", ep, task)
-            obs = rio_obs_from_frame(frame, cfg.instruction)
+            task = resolve_instruction(frame, cfg.instruction)
+            policy.set_instruction(task)
+            obs = rio_obs_from_frame(frame, task)
             pred = policy.inference(obs)["actions"][:horizon]
             gt = _action_window(ds, t0, horizon)
             n = min(len(pred), len(gt))

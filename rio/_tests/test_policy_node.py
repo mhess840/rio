@@ -1,7 +1,9 @@
 # SPDX-FileCopyrightText: 2026 RIO Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import multiprocessing as mp
 import os
+import threading
 import time
 from dataclasses import dataclass
 
@@ -24,6 +26,166 @@ else:
     POLICIES_TO_TEST = [POLICY_ENV]
 
 
+class _BlockingPolicy:
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.resets = 0
+
+    def set_instruction(self, instruction):
+        self.instruction = instruction
+
+    def construct_policy(self):
+        pass
+
+    def reset(self):
+        self.resets += 1
+
+    def inference(self, observation):
+        value = int(observation["proprio"][0])
+        if value == 1:
+            self.started.set()
+            if not self.release.wait(timeout=2):
+                raise TimeoutError("Test did not release the inference")
+        if value < 0:
+            raise ValueError("Invalid test observation")
+        return np.full((2, 7), value, dtype=np.float32)
+
+
+def _worker_observation(value):
+    proprio = np.zeros(8, dtype=np.float32)
+    proprio[0] = value
+    return {"proprio": proprio}
+
+
+def _thread_policy_client(policy, *, with_camera=False):
+    return PolicyInterfaceClient(
+        "Thread",
+        policy=policy,
+        instruction="test",
+        resolutions=[(4, 4)] if with_camera else [],
+        action_dim=7,
+        proprio_dim=8,
+        chunk_size=2,
+        freq=100,
+    )
+
+
+@pytest.mark.unit
+def test_reset_discards_in_flight_policy_response(monkeypatch):
+    policy = _BlockingPolicy()
+    client = _thread_policy_client(policy)
+    published = []
+    ready = threading.Event()
+    original_put = client.ring_buffer.put
+
+    def put(data, **kwargs):
+        original_put(data, **kwargs)
+        if data.get("ready"):
+            published.append(data["actions"].copy())
+            ready.set()
+
+    monkeypatch.setattr(client.ring_buffer, "put", put)
+    try:
+        with client:
+            client.send_observation(_worker_observation(1))
+            assert policy.started.wait(timeout=2)
+            client.reset()
+            client.send_observation(_worker_observation(2))
+            policy.release.set()
+            assert ready.wait(timeout=2)
+            result = client.get_action_chunk()
+            assert result["ready"]
+            np.testing.assert_array_equal(result["actions"], np.full((2, 7), 2))
+    finally:
+        policy.release.set()
+    assert len(published) == 1
+    assert policy.resets >= 2
+
+
+@pytest.mark.unit
+def test_policy_failure_is_reported_without_losing_loaded_state(monkeypatch):
+    client = _thread_policy_client(_BlockingPolicy())
+    failed = threading.Event()
+    original_put = client.ring_buffer.put
+
+    def put(data, **kwargs):
+        original_put(data, **kwargs)
+        if data.get("inference_failed"):
+            failed.set()
+
+    monkeypatch.setattr(client.ring_buffer, "put", put)
+    with client:
+        client.send_observation(_worker_observation(-1))
+        assert failed.wait(timeout=2)
+        result = client.get_action_chunk()
+        assert result["inference_failed"]
+        assert not result["ready"]
+        assert client.policy_loaded
+
+
+@pytest.mark.unit
+def test_policy_request_schema_preserves_rgb_bytes_and_default_camera_names():
+    client = _thread_policy_client(_BlockingPolicy(), with_camera=True)
+    assert client.camera_keys == ["camera_1"]
+    assert client.example_request["camera_1"].dtype == np.uint8
+    assert "_request_generation" in client.example_request
+
+
+def _advance_request_generation(generation):
+    with generation.get_lock():
+        generation.value += 1
+
+
+@pytest.mark.unit
+def test_request_generation_is_shared_with_spawned_worker():
+    client = _thread_policy_client(_BlockingPolicy())
+    process = mp.get_context("spawn").Process(target=_advance_request_generation, args=(client._request_generation,))
+    try:
+        process.start()
+        process.join(timeout=5)
+        assert process.exitcode == 0
+        assert client._request_generation.value == 1
+        client.send_observation(_worker_observation(2))
+        assert int(client.request_queue.get()["_request_generation"]) == 1
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+
+
+@pytest.mark.unit
+def test_policy_observation_transport_preserves_rtc_length_and_image_range():
+    client = _thread_policy_client(_BlockingPolicy(), with_camera=True)
+    observation = _worker_observation(2)
+    observation.update(
+        camera_1=np.full((4, 4, 3), 0.5, dtype=np.float32),
+        proprio_joints=np.zeros(7),
+        rtc_leftover=np.ones((3, 7), dtype=np.float32),
+        rtc_inference_delay=2,
+    )
+    client.send_observation(observation)
+    request = client.request_queue.get()
+    assert set(request) == set(client.example_request)
+    assert request["camera_1"].dtype == np.uint8
+    np.testing.assert_array_equal(request["camera_1"], 128)
+    assert request["rtc_leftover_length"] == 3
+    assert request["rtc_leftover"].shape == (18, 7)
+    np.testing.assert_array_equal(request["rtc_leftover"][:3], 1.0)
+    np.testing.assert_array_equal(request["rtc_leftover"][3:], 0.0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [-0.1, 128.0, np.nan, np.inf])
+def test_policy_transport_rejects_invalid_float_camera_pixels(value):
+    client = _thread_policy_client(_BlockingPolicy(), with_camera=True)
+    observation = _worker_observation(2)
+    observation["camera_1"] = np.full((4, 4, 3), value)
+    with pytest.raises(ValueError, match="RGB"):
+        client.send_observation(observation)
+    assert client.request_queue.empty()
+
+
 @dataclass
 class PolicyConfig:
     policy_path: str = "lerobot/smolvla_base"
@@ -34,7 +196,7 @@ class PolicyConfig:
 @dataclass
 class PolicyInterfaceConfig:
     instruction: str = "Move the robot arm to the left."
-    resolutions: list[tuple[int, int]] = None
+    resolutions: list[tuple[int, int]] | None = None
     action_dim: int = 6
     chunk_size: int = 50
     use_rtc: bool = False

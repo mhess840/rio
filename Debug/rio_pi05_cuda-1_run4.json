@@ -1,0 +1,11 @@
+{
+  "policy_path": "/home/hme2lo/Documents/rio/ckpts/pi05",
+  "device": "cuda:1",
+  "use_rtc": true,
+  "compile": false,
+  "pid": 1121182,
+  "address": "/tmp/rio_pi05_cuda-1.sock",
+  "authkey": "3245b4d7eca7b5b5cf044e5ddb662200",
+  "action_space": "tcp",
+  "action_dim": 7
+}

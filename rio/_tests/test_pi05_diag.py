@@ -3,6 +3,9 @@
 
 """Unit tests for π₀.₅ model-vs-control diagnostics (no GPU, no robot)."""
 
+import csv
+import json
+
 import numpy as np
 import pytest
 
@@ -11,16 +14,18 @@ from examples.diagnose_pi05_offline import (
     episode_mid_index,
     episode_start_index,
     gripper_match,
-    parse_sample_at,
     joint_ade_rad,
     joint_span_rad,
+    parse_sample_at,
+    resolve_instruction,
     rio_obs_from_frame,
+    to_hwc_float32,
     to_hwc_uint8,
     xyz_ade_m,
     xyz_span_m,
 )
 from examples.policy_cfgs.pi05_lerobot import Pi05LerobotCfg
-from examples.policy_inference import append_cmd_eef, write_chunk_dump
+from examples.policy_inference import append_cmd_eef, create_diagnostic_session, write_chunk_dump
 
 pytestmark = pytest.mark.unit
 
@@ -97,6 +102,41 @@ def test_rio_obs_from_frame_matches_serve_keys():
     assert obs["gripper_position"] == pytest.approx(7.0)
 
 
+def test_offline_input_preserves_float_pixels_without_byte_quantization():
+    image = np.full((3, 4, 5), 0.1234567, dtype=np.float32)
+    result = to_hwc_float32(image)
+    assert result.dtype == np.float32
+    assert result.shape == (4, 5, 3)
+    np.testing.assert_array_equal(result, np.transpose(image, (1, 2, 0)))
+
+
+def test_offline_instruction_uses_the_actual_dataset_task():
+    assert resolve_instruction({"task": ["pick up the blue object"]}) == "pick up the blue object"
+    assert resolve_instruction({"task": "place the object"}, "explicit test") == "explicit test"
+    with pytest.raises(ValueError, match="task label"):
+        resolve_instruction({})
+
+
+def test_camera_capture_timestamps_are_retained_in_observations():
+    from types import SimpleNamespace
+
+    from rio.envs.env import Env
+
+    env = object.__new__(Env)
+    env.cameras = {
+        "camera_1": SimpleNamespace(
+            get_state=lambda: {
+                "color": np.zeros((4, 4, 3), dtype=np.uint8),
+                "camera_capture_timestamp": 9.9,
+                "camera_receive_timestamp": 10.0,
+            }
+        )
+    }
+    camera = env.get_cameras()["camera_1"]
+    assert camera.meta["camera_capture_timestamp"] == 9.9
+    assert camera.meta["camera_receive_timestamp"] == 10.0
+
+
 def test_write_chunk_dump_and_cmd_eef(tmp_path):
     leftover = np.zeros((8, 7), dtype=np.float32)
     leftover[-1, :3] = [0.05, 0.0, 0.0]
@@ -119,3 +159,40 @@ def test_pi05_lerobot_cfg_rtc_off_syncs_policy_cfg():
     Pi05LerobotCfg.__post_init__(cfg)
     assert cfg.policy_node_cfg.use_rtc is False
     assert cfg.policy_cfg.use_rtc is False
+
+
+def test_diagnostic_sessions_never_overwrite_an_earlier_run(tmp_path):
+    first = create_diagnostic_session(tmp_path, {"n_execute": 30})
+    second = create_diagnostic_session(tmp_path, {"n_execute": 25})
+    assert first != second
+    assert json.loads((first / "session.json").read_text())["n_execute"] == 30
+    assert json.loads((second / "session.json").read_text())["n_execute"] == 25
+    actions = np.zeros((2, 7), dtype=np.float32)
+    write_chunk_dump(first, 0, actions, np.zeros(6), delay=0, qsize=2, latency_s=0.1)
+    write_chunk_dump(second, 0, actions + 1, np.zeros(6), delay=0, qsize=2, latency_s=0.1)
+    np.testing.assert_array_equal(np.load(first / "chunks/chunk_0000.npy", allow_pickle=False), actions)
+
+
+def test_diagnostics_record_rotation_alarm_and_feedback_age(tmp_path, monkeypatch):
+    from examples import policy_inference
+
+    monkeypatch.setattr(policy_inference.time, "now", lambda: 10.0)
+    cmd = np.array([0.11, 0.2, 0.3, 0.1, 0.0, 0.0, 0.7])
+    eef = np.array([0.1, 0.2, 0.3, 0.0, 0.0, 0.0])
+    append_cmd_eef(tmp_path, 1.0, cmd, eef, 20, 0, arm_state={"alarm_code": 123, "timestamp": 9.9})
+    with (tmp_path / "cmd_vs_eef.csv").open() as handle:
+        row = next(csv.DictReader(handle))
+    assert float(row["err_m"]) == pytest.approx(0.01)
+    assert float(row["err_rot_rad"]) == pytest.approx(0.1)
+    assert float(row["alarm_code"]) == 123
+    assert float(row["state_age_s"]) == pytest.approx(0.1)
+    assert float(row["cmd_gripper"]) == pytest.approx(0.7)
+
+
+def test_joint_diagnostics_do_not_label_radians_as_metres(tmp_path):
+    append_cmd_eef(tmp_path, 1.0, np.zeros(8), np.ones(7) * 0.01, 20, 0, joint_serve=True)
+    with (tmp_path / "cmd_vs_eef.csv").open() as handle:
+        row = next(csv.DictReader(handle))
+    assert "err_m" not in row
+    assert "cmd_j7" in row
+    assert float(row["err_joint_rad"]) == pytest.approx(np.sqrt(7) * 0.01, abs=1e-6)
