@@ -23,7 +23,6 @@ from pathlib import Path
 
 import numpy as np
 
-from examples.cfg.kassow_vive import KassowViveStation
 from examples.cfg.kassow_vive_gripper import KassowViveGripperStation
 from rio.cfg.common import VisualizerCfg
 from rio.cfg.node import NodeCfg
@@ -122,7 +121,7 @@ class Pi05LerobotCfg(KassowViveGripperStation):
     )
 
     def __post_init__(self):
-        KassowViveStation.__post_init__(self)
+        KassowViveGripperStation.__post_init__(self)
         if not self.policy_path:
             raise ValueError("policy_path is required — pass --policy-path to the LeRobot checkpoint folder")
         self.policy_cfg.policy_path = self.policy_path

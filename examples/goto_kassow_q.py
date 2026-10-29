@@ -10,6 +10,11 @@ Mean TCP 1.0 s into the pick demos (approach, still open)::
 Mean first-close pose (where the cylinder usually sits)::
 
     uv run python -m examples.goto_kassow_q --pose cylinder
+
+Named homes::
+
+    uv run python -m examples.goto_kassow_q --pose sort
+    uv run python -m examples.goto_kassow_q --pose pick
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from loguru import logger
 from rio_hw import time
 from rio_hw.middleware import ServerManager
 
+from examples.cfg.kassow_experiments import EXPERIMENTS
 from examples.cfg.kassow_vive_gripper import KassowViveGripperStation
 from examples.teleop_vive_hand import (
     HOME_POST_MOVE_S,
@@ -39,6 +45,7 @@ from rio.envs.env import make_env
 PRESETS = {
     "start": Path("data/kassow_vive_gripper/eval_start.json"),
     "cylinder": Path("data/kassow_vive_gripper/eval_cylinder.json"),
+    **{name: spec.home_path for name, spec in EXPERIMENTS.items()},
 }
 
 

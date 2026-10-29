@@ -36,6 +36,7 @@ from rio_hw.interfaces.vive_retarget import (
 )
 from rio_hw.middleware import ServerManager
 
+from examples.cfg.kassow_experiments import resolve_experiment
 from rio.envs.env import make_env
 
 # Directions the operator is asked to sweep, in the robot base frame.
@@ -339,7 +340,13 @@ def capture_home_state(arm, gripper_cmd: float) -> dict:
 
 
 def home_q_path(args) -> Path | None:
-    """JSON next to the recorder folder, or None if recording is off."""
+    """Named experiment home, explicit ``home_file``, or ``home_q.json`` next to the recorder."""
+    explicit = getattr(args, "home_file", None)
+    if explicit:
+        return Path(explicit)
+    name = getattr(args, "experiment", None)
+    if name:
+        return resolve_experiment(name).home_path
     recorder_cfg = getattr(args, "recorder_cfg", None)
     base = getattr(recorder_cfg, "path", None) if recorder_cfg is not None else None
     if not base:
@@ -656,7 +663,7 @@ def teleop_vive_hand(
             f"{np.round(home['joint_q'], 3).tolist()} "
             f"at {home_joint_speed:.2f} rad/s (accept {math.degrees(HOME_JOINT_EPS):.0f} deg)."
         )
-        print("  After Enter the arm homes to home_q.json. Wait for Home reached, then n → c.")
+        print(f"  After Enter the arm homes to {home_file}. Wait for Home reached, then n → c.")
         print("  'n' works immediately after 's' (encode runs in the background). Wait for Home reached, then clutch.")
     print(f"  TCP now: {np.round(arm_target_pose[:3], 3).tolist()}   yaw offset: {yaw_deg:.1f} deg")
     print(

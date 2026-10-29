@@ -1,4 +1,8 @@
-"""Run the Kassow + Vive + AG95 + RealSense setup."""
+"""Run the Kassow + Vive + AG95 + RealSense setup.
+
+Default ``--experiment sort`` uses the new overview camera and ``home_sort``.
+``--experiment pick`` restores the previous overview serial and ``home_pick``.
+"""
 
 import multiprocessing as mp
 

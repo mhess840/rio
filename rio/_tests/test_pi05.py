@@ -669,6 +669,8 @@ def test_pi05_lerobot_cfg_is_cartesian_without_vive():
     assert cfg.arm_cfg.max_pos_speed == pytest.approx(0.45)
     assert cfg.arm_cfg.max_rot_speed == pytest.approx(1.0)
     assert list(cfg.cameras) == ["camera_1", "camera_2"]
+    assert cfg.experiment == "sort"
+    assert cfg.cameras["camera_2"].serial == "261222078043"
 
 
 def test_chunk_hold_pending_blocks_until_deadline():
