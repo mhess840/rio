@@ -12,6 +12,9 @@ flowchart LR
 
     A --> B --> C --> D --> E
 ```
+
+The Kassow + AG95 station has its own end-to-end guide with experiment switching (pick, sort, organize, open) and the Jev crate orchestrator: [Kassow π₀.₅ pipeline](pi05_kassow_pipeline.md).
+
 ## Steps
 
 ### 1. Setup

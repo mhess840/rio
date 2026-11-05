@@ -234,12 +234,8 @@ def apply_live_scale(
     scales share one step so a 20% finer translation is also 20% finer wrist
     motion. Speed ceilings, if bases are given, track the same factor.
     """
-    new_pos = step_motion_scale(
-        retargeter.pos_scale, up=up, step=step, min_scale=min_scale, max_scale=max_scale
-    )
-    new_rot = step_motion_scale(
-        retargeter.rot_scale, up=up, step=step, min_scale=min_scale, max_scale=max_scale
-    )
+    new_pos = step_motion_scale(retargeter.pos_scale, up=up, step=step, min_scale=min_scale, max_scale=max_scale)
+    new_rot = step_motion_scale(retargeter.rot_scale, up=up, step=step, min_scale=min_scale, max_scale=max_scale)
     changed = new_pos != retargeter.pos_scale or new_rot != retargeter.rot_scale
     retargeter.pos_scale = new_pos
     retargeter.rot_scale = new_rot
@@ -346,7 +342,11 @@ def home_q_path(args) -> Path | None:
         return Path(explicit)
     name = getattr(args, "experiment", None)
     if name:
-        return resolve_experiment(name).home_path
+        experiment = resolve_experiment(name)
+        return experiment.select_home(
+            str(getattr(args, "instruction", "") or ""),
+            str(getattr(args, "pose", "") or ""),
+        )
     recorder_cfg = getattr(args, "recorder_cfg", None)
     base = getattr(recorder_cfg, "path", None) if recorder_cfg is not None else None
     if not base:
@@ -357,20 +357,52 @@ def home_q_path(args) -> Path | None:
     return path / HOME_Q_FILENAME
 
 
-def write_home_state(path: Path, home: dict) -> None:
-    """Persist home joints so later eval can reuse the same start."""
+def write_home_state(path: Path, home: dict, experiment: str | None = None, instruction: str | None = None) -> None:
+    """Persist home joints so later eval can reuse the same start.
+
+    Args:
+        path: JSON file to write.
+        home: Snapshot from ``capture_home_state``.
+        experiment: Stored as ``name`` so the file cannot be loaded for another experiment.
+        instruction: Task sentence this pose belongs to, when an experiment has several homes.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "joint_q": np.asarray(home["joint_q"], dtype=float).tolist(),
         "eef_pose": np.asarray(home["eef_pose"], dtype=float).tolist(),
         "gripper": float(home["gripper"]),
     }
+    if experiment:
+        payload = {"name": experiment, **payload}
+    if instruction:
+        payload["instruction"] = instruction
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
-def load_home_state(path: Path, gripper_fallback: float) -> dict:
-    """Load a previously written home snapshot."""
+def load_home_state(
+    path: Path,
+    gripper_fallback: float,
+    experiment: str | None = None,
+    instruction: str | None = None,
+) -> dict:
+    """Load a previously written home snapshot.
+
+    Args:
+        path: JSON written by ``write_home_state``.
+        gripper_fallback: Gripper value when the file has none.
+        experiment: Reject a file whose ``name`` belongs to another experiment.
+        instruction: Reject a file captured for a different task sentence.
+
+    Raises:
+        ValueError: If the file was captured for a different experiment or sentence.
+    """
     payload = json.loads(path.read_text())
+    owner = payload.get("name")
+    if experiment and owner and owner != experiment:
+        raise ValueError(f"{path} is the home of '{owner}', not '{experiment}'")
+    filed = payload.get("instruction")
+    if instruction and filed and filed != instruction:
+        raise ValueError(f"{path} is the home for {filed!r}, not {instruction!r}")
     return {
         "joint_q": np.asarray(payload["joint_q"], dtype=float).copy(),
         "eef_pose": np.asarray(payload["eef_pose"], dtype=float).copy(),
@@ -586,22 +618,38 @@ def teleop_vive_hand(
     arm_target_pose = np.asarray(arm.get_state()["eef_pose"], dtype=float).copy()
     gripper_open = float(getattr(args, "gripper_open", 1.0))
     gripper_close = float(getattr(args, "gripper_close", 0.0))
+    gripper_start = getattr(args, "gripper_start", None)
     if gripper is not None:
         read_gripper_position(gripper)
-        gripper_cmd = gripper_open
+        gripper_cmd = float(gripper_start) if gripper_start is not None else gripper_open
     else:
         gripper_cmd = 0.0
 
     home_file = home_q_path(args)
     capture_home = bool(getattr(args, "capture_home", False))
+    experiment = getattr(args, "experiment", None) or None
+    instruction = str(getattr(args, "instruction", "") or "") or None
     if home_file is not None and home_file.is_file() and not capture_home:
-        home = load_home_state(home_file, gripper_cmd)
-        logger.info("Loaded home from {}  tcp={}", home_file, np.round(home["eef_pose"][:3], 3).tolist())
+        home = load_home_state(home_file, gripper_cmd, experiment=experiment, instruction=instruction)
+        gripper_cmd = float(home["gripper"])
+        logger.info(
+            "Loaded home from {}  instruction={}  tcp={}",
+            home_file,
+            instruction,
+            np.round(home["eef_pose"][:3], 3).tolist(),
+        )
+    elif home_file is not None and experiment and not capture_home:
+        sentence = f" for {instruction!r}" if instruction else ""
+        flag = f" --instruction {instruction!r}" if instruction else ""
+        raise RuntimeError(
+            f"No home pose for experiment '{experiment}'{sentence} ({home_file}). Move the arm to "
+            f"that start pose and run once with --capture-home{flag}."
+        )
     else:
         home = capture_home_state(arm, gripper_cmd)
         if home_file is not None:
-            write_home_state(home_file, home)
-            logger.info("Home snapshot written to {}", home_file)
+            write_home_state(home_file, home, experiment=experiment, instruction=instruction)
+            logger.info("Home snapshot for '{}' written to {}", experiment, home_file)
     logger.info(
         "Home q={}  tcp={}",
         np.round(home["joint_q"], 3).tolist(),
@@ -663,7 +711,8 @@ def teleop_vive_hand(
             f"{np.round(home['joint_q'], 3).tolist()} "
             f"at {home_joint_speed:.2f} rad/s (accept {math.degrees(HOME_JOINT_EPS):.0f} deg)."
         )
-        print(f"  After Enter the arm homes to {home_file}. Wait for Home reached, then n → c.")
+        sentence = f" ({instruction})" if instruction else ""
+        print(f"  After Enter the arm homes to {home_file}{sentence}. Wait for Home reached, then n → c.")
         print("  'n' works immediately after 's' (encode runs in the background). Wait for Home reached, then clutch.")
     print(f"  TCP now: {np.round(arm_target_pose[:3], 3).tolist()}   yaw offset: {yaw_deg:.1f} deg")
     print(
@@ -673,7 +722,7 @@ def teleop_vive_hand(
     print(
         f"  motion scale: pos {retargeter.pos_scale:.2f}  rot {retargeter.rot_scale:.2f}  "
         f"→ {retargeter.max_pos_speed:.2f} m/s, {retargeter.max_rot_speed:.2f} rad/s  "
-        f"(mouse back/forward ×{scale_step:g}, clamp {min_scale:g}–{max_scale:g})"
+        f"(mouse back/forward x{scale_step:g}, clamp {min_scale:g}-{max_scale:g})"
     )
     if hand is None:
         print("  No dexterous hand configured.")
@@ -830,6 +879,7 @@ def teleop_vive_hand(
                 elif home_settle >= HOME_SETTLE_TICKS or timed_out:
                     homing = False
                     arm_streaming = False
+                    gripper_cmd = float(home["gripper"])
                     home_holdoff_until = t_sample + HOME_POST_MOVE_S
                     retargeter.hold_pose(eef_pose)
                     arm_target_pose = eef_pose.copy()
@@ -939,10 +989,10 @@ def main(args):
             yaw_deg = resolve_yaw(args, teleop)
             input(f"Instruction: {args.instruction}\nPress Enter to start")
             with (
-                (teleop2_client() if teleop2_client else nullcontext()) as teleop2,
-                (keyboard_client() if keyboard_client else nullcontext()) as teleop_keyboard,
-                (clicker_client() if clicker_client else nullcontext()) as teleop_clicker,
-                (visualizer_client() if visualizer_client else nullcontext()) as visualizer,
+                teleop2_client() if teleop2_client else nullcontext() as teleop2,
+                keyboard_client() if keyboard_client else nullcontext() as teleop_keyboard,
+                clicker_client() if clicker_client else nullcontext() as teleop_clicker,
+                visualizer_client() if visualizer_client else nullcontext() as visualizer,
             ):
                 try:
                     teleop_vive_hand(

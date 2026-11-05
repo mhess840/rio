@@ -1,20 +1,19 @@
 """Kassow + AG95 + 2× RealSense inference for a LeRobot π₀.₅ checkpoint.
 
-Run with:
+Run the selected model of the active experiment (``uv run -m examples.experiment``):
 
     POLICY=Pi05LerobotCfg uv run --group pi --no-group docs -m examples.policy_inference \\
-        --policy-path ckpts/pi05 \\
-        --instruction "pick up the blue cylinder and place it on the red plate"
+        --policy-cfg.device cuda:1
+
+Without ``--instruction`` the first task string of the model's training dataset
+is used. A string the model was not trained on is rejected unless
+``--allow-unlisted-instruction`` is set. ``--policy-path`` still serves any
+checkpoint folder; a registered model of another experiment is rejected.
 
 RTC on, playing 30 of the 50 predicted steps. A new chunk is requested while 18
 steps remain, which covers the ~0.35 s inference. ``__post_init__`` copies
-``policy_node_cfg.use_rtc`` onto ``policy_cfg``. Turn the overlap off with:
-
-    POLICY=Pi05LerobotCfg uv run --group pi --no-group docs -m examples.policy_inference \\
-        --policy-path ckpts/pi05 \\
-        --instruction "pick up the blue cylinder and place it on the red plate" \\
-        --policy-cfg.device cuda:1 \\
-        --policy-node-cfg.no-use-rtc
+``policy_node_cfg.use_rtc`` onto ``policy_cfg``. Turn the overlap off with
+``--policy-node-cfg.no-use-rtc``.
 """
 
 import json
@@ -22,7 +21,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+from loguru import logger
 
+from examples.cfg.kassow_experiments import find_model_owner, resolve_experiment, resolve_model
 from examples.cfg.kassow_vive_gripper import KassowViveGripperStation
 from rio.cfg.common import VisualizerCfg
 from rio.cfg.node import NodeCfg
@@ -32,8 +33,11 @@ from rio.cfg.node import NodeCfg
 class Pi05LerobotCfg(KassowViveGripperStation):
     """Live π₀.₅ on the Kassow station. Vive/clicker are off; action is TCP + gripper."""
 
-    policy_path: str = "ckpts/pi05"
-    instruction: str = "pick up the blue object and place it on the red plate"
+    # Empty: the selected model of the experiment.
+    policy_path: str = ""
+    # Empty: the first task the model was trained on.
+    instruction: str = ""
+    allow_unlisted_instruction: bool = False
 
     @dataclass
     class PolicyInterfaceConfig:
@@ -82,6 +86,8 @@ class Pi05LerobotCfg(KassowViveGripperStation):
         use_rtc: bool = True
         # ``tcp`` (7D xyz+rotvec) or ``joints`` (8D q + gripper). Must match the checkpoint.
         action_space: str = "tcp"
+        # Named resident on the device. Two slots keep two checkpoints on one GPU.
+        resident_slot: str = ""
 
     policy: str = "Pi05"
     policy_node_cfg: PolicyInterfaceConfig = field(default_factory=PolicyInterfaceConfig)
@@ -122,8 +128,7 @@ class Pi05LerobotCfg(KassowViveGripperStation):
 
     def __post_init__(self):
         KassowViveGripperStation.__post_init__(self)
-        if not self.policy_path:
-            raise ValueError("policy_path is required — pass --policy-path to the LeRobot checkpoint folder")
+        self._bind_experiment_model()
         self.policy_cfg.policy_path = self.policy_path
         self.policy_cfg.use_rtc = bool(self.policy_node_cfg.use_rtc) and bool(self.policy_cfg.use_rtc)
         self.policy_node_cfg.use_rtc = self.policy_cfg.use_rtc
@@ -139,13 +144,9 @@ class Pi05LerobotCfg(KassowViveGripperStation):
             names = tuple(data.get("action_feature_names") or ())
             requested = str(getattr(self.policy_cfg, "action_space", "tcp") or "tcp").lower()
             if names[:6] == ("x", "y", "z", "rx", "ry", "rz") and requested == "joints":
-                raise ValueError(
-                    f"{self.policy_path} is a TCP checkpoint; use POLICY=Pi05LerobotCfg, not JointCfg"
-                )
+                raise ValueError(f"{self.policy_path} is a TCP checkpoint; use POLICY=Pi05LerobotCfg, not JointCfg")
             if names[:7] == ("j1", "j2", "j3", "j4", "j5", "j6", "j7") and requested == "tcp":
-                raise ValueError(
-                    f"{self.policy_path} is a joint checkpoint; use POLICY=Pi05LerobotJointCfg"
-                )
+                raise ValueError(f"{self.policy_path} is a joint checkpoint; use POLICY=Pi05LerobotJointCfg")
         requested = self.policy_node_cfg.n_execute
         effective = min(
             int(requested) if requested is not None and requested > 0 else checkpoint_steps,
@@ -166,3 +167,31 @@ class Pi05LerobotCfg(KassowViveGripperStation):
         self.policy_node_cfg.resolutions = [cam.cfg["resolution"] for cam in self.cameras.values()]
         if len(self.policy_node_cfg.camera_keys) != len(self.policy_node_cfg.resolutions):
             raise ValueError("Length of camera_keys must match length of resolutions")
+
+    def _bind_experiment_model(self) -> None:
+        """Fill ``policy_path``/``instruction`` from the experiment and refuse mismatches."""
+        if getattr(self, "unload_policy", False):
+            return
+        experiment = resolve_experiment(self.experiment)
+        if not self.policy_path:
+            name, path = resolve_model(experiment)
+            self.policy_path = str(path)
+            logger.info("Experiment '{}': model '{}' ({})", experiment.name, name, path.resolve())
+        owner = find_model_owner(self.policy_path)
+        if owner is not None and owner[0] != experiment.name:
+            raise ValueError(
+                f"{self.policy_path} is model '{owner[1]}' of experiment '{owner[0]}', but the station "
+                f"is set up for '{experiment.name}' (camera, home). Pass --experiment {owner[0]}."
+            )
+        instructions = list(owner[2].get("instructions") or []) if owner is not None else []
+        if not self.instruction:
+            if not instructions:
+                raise ValueError(f"{self.policy_path} is not a registered model; pass --instruction")
+            self.instruction = instructions[0]
+            logger.info("Instruction (model default): {!r}", self.instruction)
+        elif instructions and self.instruction not in instructions and not self.allow_unlisted_instruction:
+            listed = "\n  ".join(repr(text) for text in instructions)
+            raise ValueError(
+                f"Instruction {self.instruction!r} is not a task of this model. Trained tasks:\n  {listed}\n"
+                "Pass --allow-unlisted-instruction to use it anyway."
+            )

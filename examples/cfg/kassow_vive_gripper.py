@@ -16,13 +16,15 @@ TASK = "kassow_vive_gripper"
 class KassowViveGripperStation(KassowViveStation):
     """Kassow arm driven by Vive, with an AG95 gripper and RealSense cameras.
 
-    ``--experiment sort`` (default) uses the new overview camera and ``home_sort``.
-    ``--experiment pick`` restores the previous overview serial and ``home_pick``.
-    Wrist ``camera_1`` is the same in both. Override the overview with
+    The experiment (``pick``, ``sort``, ``organize``, ``open``) picks the overview
+    camera, the home pose, and the ``.vla`` folder. Empty ``--experiment`` uses
+    the one set with ``uv run -m examples.experiment use <name>`` (``sort`` if
+    none). ``open`` has one home per task sentence, so pass ``--instruction``.
+    Wrist ``camera_1`` is the same in all. Override the overview with
     ``--overview-serial`` or the home JSON with ``--home-file``.
     """
 
-    experiment: str = "sort"
+    experiment: str = ""
     overview_serial: str | None = None
     home_file: str | None = None
 

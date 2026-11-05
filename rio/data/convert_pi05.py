@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import json
 import multiprocessing as mp
@@ -21,6 +22,7 @@ import numpy as np
 import robodm
 from loguru import logger
 
+from rio.data.dagger import CONTROL_KEY, SEGMENT_MODES, dagger_segments
 from rio.gripper import GripperBinarizer
 
 try:
@@ -133,6 +135,14 @@ def _patch_lerobot_pyav() -> None:
     concatenate_video_files._rio_av13_patch = True
     video_utils.concatenate_video_files = concatenate_video_files
     lerobot_dataset.concatenate_video_files = concatenate_video_files
+    # LeRobot 0.6 appends episodes below video_files_size_in_mb (short DAgger segments) from these.
+    for name in ("lerobot.datasets.dataset_writer", "lerobot.datasets.aggregate"):
+        try:
+            module = importlib.import_module(name)
+        except ImportError:
+            continue
+        if hasattr(module, "concatenate_video_files"):
+            module.concatenate_video_files = concatenate_video_files  # type: ignore
 
 
 CAM1_KEY = "observation/cameras/camera_1/rgb"
@@ -161,7 +171,8 @@ RANGE_RE = re.compile(r"^(\d+)(?:\s*-\s*(\d+))?$")
 class ConvertPi05Cfg:
     """CLI/config for Kassow ``.vla`` → LeRobot v3 conversion."""
 
-    input: Path
+    # Required unless a wrapper fills it (e.g. from an experiment's raw/ folder).
+    input: Path | None = None
     output: Path | None = None
     tasks: Path | None = None
     repo_id: str = "local/kassow_pi05"
@@ -188,6 +199,18 @@ class ConvertPi05Cfg:
     image_writer_threads: int = 4
     # Parallel episode encodes. Same codec settings as workers=1; only the schedule changes.
     workers: int = 1
+    # DAgger rollouts (``meta/control_source``): ``whole`` writes each file as one
+    # episode; ``human`` keeps the operator runs, ``all`` also the policy frames
+    # (see ``rio.data.dagger.dagger_segments``). Each kept range is one episode.
+    segments: str = "whole"
+    include_autonomous: bool = False
+    pre_takeover_cut_s: float = 1.0
+    min_segment_s: float = 1.0
+    # Cut operator stillness caused by the handover: the reaction time after a
+    # takeover and pauses of at least max_pause_s (e.g. clutch released to re-grip).
+    # The sort demos never paused longer than 0.3 s mid-task.
+    trim_operator_pauses: bool = True
+    max_pause_s: float = 0.3
 
     def __post_init__(self):
         space = str(self.action_space).strip().lower()
@@ -198,6 +221,8 @@ class ConvertPi05Cfg:
             raise ValueError("gripper_state_source must be 'measured' or 'commanded'")
         if self.workers < 1:
             raise ValueError(f"workers must be >= 1, got {self.workers}")
+        if self.segments not in SEGMENT_MODES:
+            raise ValueError(f"segments must be one of {SEGMENT_MODES}, got {self.segments!r}")
 
 
 def list_vla_files(path: Path) -> list[Path]:
@@ -352,6 +377,30 @@ def prepare_episode(data: dict[str, np.ndarray], cfg: ConvertPi05Cfg) -> tuple[d
 
     info["frames_dst"] = len(np.asarray(data[ACTION_KEY]))
     return data, info
+
+
+def episode_ranges(data: dict[str, np.ndarray], cfg: ConvertPi05Cfg, name: str) -> list[tuple[int, int]]:
+    """``[start, end)`` ranges of a prepared trajectory, one per LeRobot episode.
+
+    Raises:
+        KeyError: If ``cfg.segments`` needs ``meta/control_source`` and the file has none.
+    """
+    n = len(np.asarray(data[ACTION_KEY]))
+    if cfg.segments == "whole":
+        return [(0, n)]
+    if CONTROL_KEY not in data:
+        raise KeyError(f"{name} has no {CONTROL_KEY}; --segments {cfg.segments} needs a DAgger rollout")
+    ranges = dagger_segments(
+        np.asarray(data[CONTROL_KEY])[:n],
+        mode=cfg.segments,
+        fps=cfg.dst_fps,
+        include_autonomous=cfg.include_autonomous,
+        pre_takeover_cut_s=cfg.pre_takeover_cut_s,
+        min_segment_s=cfg.min_segment_s,
+        action=np.asarray(data[ACTION_KEY])[:n],
+        max_pause_s=cfg.max_pause_s if cfg.trim_operator_pauses else None,
+    )
+    return [(start, end) for start, end in ranges if end - start >= cfg.min_frames]
 
 
 def joints_as_action(data: dict[str, np.ndarray]) -> np.ndarray:
@@ -639,154 +688,36 @@ def _convert_shard(cfg: ConvertPi05Cfg, files: list[str], shard_in: str, shard_o
     return shard_out
 
 
-def _list_parquet(root: Path) -> list[Path]:
-    return sorted(path for path in root.rglob("*.parquet") if path.is_file())
+def merge_lerobot_datasets(shard_dirs: list[Path], output: Path, repo_id: str) -> dict:
+    """Concatenate LeRobot datasets (worker shards, or a base dataset plus DAgger rounds).
 
-
-def _shift_list_column(table, name: str, offset: float):
-    """Add ``offset`` to every element of a ``list<number>`` column."""
-    import pyarrow as pa
-    import pyarrow.compute as pc
-
-    column = table.column(name)
-    lengths = pc.list_value_length(column).to_numpy()
-    offsets = np.zeros(len(lengths) + 1, dtype=np.int32)
-    offsets[1:] = np.cumsum(lengths)
-    values = pc.add(pc.list_flatten(column), offset).combine_chunks()
-    shifted = pa.ListArray.from_arrays(pa.array(offsets), values)
-    index = table.schema.get_field_index(name)
-    return table.set_column(index, name, shifted)
-
-
-def _set_list_column_from_ints(table, name: str, values: np.ndarray):
-    """Replace a ``list<double>`` column with one float per row."""
-    import pyarrow as pa
-
-    flat = pa.array(np.asarray(values, dtype=np.float64))
-    offsets = pa.array(np.arange(len(values) + 1, dtype=np.int32))
-    column = pa.ListArray.from_arrays(offsets, flat)
-    index = table.schema.get_field_index(name)
-    return table.set_column(index, name, column)
-
-
-def _merge_lerobot_shards(shard_dirs: list[Path], output: Path) -> dict:
-    """Concatenate per-worker datasets without re-encoding video.
-
-    Episode order follows ``shard_dirs``. Video files stay one MP4 per episode.
-    Numeric stats are combined with LeRobot's ``aggregate_stats``.
+    Each source numbers its tasks in its own first-seen order, so ``task_index``
+    must be remapped onto one shared task table; LeRobot's ``aggregate_datasets``
+    does that, plus episode, frame, video-file, and stats bookkeeping. Episode
+    order follows ``shard_dirs``; every source MP4 is copied as is (no
+    concatenation, no re-encode) and the sources are only read.
     """
-    import pyarrow as pa
-    import pyarrow.compute as pc
-    import pyarrow.parquet as pq
-    from lerobot.datasets.compute_stats import aggregate_stats
-    from lerobot.datasets.io_utils import load_stats, write_stats
+    from lerobot.datasets.aggregate import aggregate_datasets
 
+    output = Path(output)
+    if any(Path(shard).resolve() == output.resolve() for shard in shard_dirs):
+        raise ValueError(f"{output} is one of the merge sources")
+    shards = [
+        shard for shard in shard_dirs if int(json.loads((shard / "meta" / "info.json").read_text())["total_episodes"]) > 0
+    ]
+    if not shards:
+        raise RuntimeError("All shards were empty")
     if output.exists():
         shutil.rmtree(output)
-    output.mkdir(parents=True)
-
-    info = json.loads((shard_dirs[0] / "meta" / "info.json").read_text())
-    video_keys = [key for key, spec in info["features"].items() if spec.get("dtype") == "video"]
-    index_shift_cols = [
-        f"stats/index/{stat}" for stat in ("min", "max", "mean", "q01", "q10", "q50", "q90", "q99")
-    ]
-    episode_stat_cols = [
-        f"stats/episode_index/{stat}" for stat in ("min", "max", "mean", "q01", "q10", "q50", "q90", "q99")
-    ]
-
-    data_parts = []
-    episode_parts = []
-    stats_parts = []
-    episode_offset = 0
-    frame_offset = 0
-    for shard in shard_dirs:
-        shard_info = json.loads((shard / "meta" / "info.json").read_text())
-        n_episodes = int(shard_info["total_episodes"])
-        n_frames = int(shard_info["total_frames"])
-        if n_episodes == 0:
-            continue
-
-        data = pa.concat_tables([pq.read_table(path) for path in _list_parquet(shard / "data")])
-        data = data.set_column(
-            data.schema.get_field_index("episode_index"),
-            "episode_index",
-            pc.add(data.column("episode_index"), episode_offset),
-        )
-        data = data.set_column(
-            data.schema.get_field_index("index"),
-            "index",
-            pc.add(data.column("index"), frame_offset),
-        )
-        data_parts.append(data)
-
-        episodes = pq.read_table(_list_parquet(shard / "meta" / "episodes")[0])
-        new_episode_index = pc.add(episodes.column("episode_index"), episode_offset)
-        episodes = episodes.set_column(
-            episodes.schema.get_field_index("episode_index"),
-            "episode_index",
-            new_episode_index,
-        )
-        episodes = episodes.set_column(
-            episodes.schema.get_field_index("dataset_from_index"),
-            "dataset_from_index",
-            pc.add(episodes.column("dataset_from_index"), frame_offset),
-        )
-        episodes = episodes.set_column(
-            episodes.schema.get_field_index("dataset_to_index"),
-            "dataset_to_index",
-            pc.add(episodes.column("dataset_to_index"), frame_offset),
-        )
-        for key in video_keys:
-            column_name = f"videos/{key}/file_index"
-            episodes = episodes.set_column(
-                episodes.schema.get_field_index(column_name),
-                column_name,
-                new_episode_index,
-            )
-        for column_name in index_shift_cols:
-            episodes = _shift_list_column(episodes, column_name, float(frame_offset))
-        for column_name in episode_stat_cols:
-            episodes = _set_list_column_from_ints(episodes, column_name, new_episode_index.to_numpy())
-        episode_parts.append(episodes)
-
-        for key in video_keys:
-            for row in range(episodes.num_rows):
-                # file_index was rewritten; the source name is the pre-merge local index.
-                local_index = int(row)
-                global_index = episode_offset + local_index
-                src = shard / "videos" / key / "chunk-000" / f"file-{local_index:03d}.mp4"
-                dst = output / "videos" / key / "chunk-000" / f"file-{global_index:03d}.mp4"
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                if not src.is_file():
-                    raise FileNotFoundError(src)
-                os_link = dst
-                shutil.copy2(src, os_link)
-
-        loaded = load_stats(shard)
-        if loaded:
-            stats_parts.append(loaded)
-        episode_offset += n_episodes
-        frame_offset += n_frames
-
-    if not data_parts:
-        raise RuntimeError("All shards were empty")
-
-    data_dir = output / "data" / "chunk-000"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.concat_tables(data_parts), data_dir / "file-000.parquet")
-    episodes_dir = output / "meta" / "episodes" / "chunk-000"
-    episodes_dir.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.concat_tables(episode_parts), episodes_dir / "file-000.parquet")
-    shutil.copy2(shard_dirs[0] / "meta" / "tasks.parquet", output / "meta" / "tasks.parquet")
-
-    info["total_episodes"] = episode_offset
-    info["total_frames"] = frame_offset
-    info["splits"] = {"train": f"0:{episode_offset}"}
-    (output / "meta").mkdir(parents=True, exist_ok=True)
-    (output / "meta" / "info.json").write_text(json.dumps(info, indent=4) + "\n")
-    if stats_parts:
-        write_stats(aggregate_stats(stats_parts), output)
-    return {"episodes": episode_offset, "frames": frame_offset}
+    aggregate_datasets(
+        repo_ids=[f"{repo_id}_shard{i}" for i in range(len(shards))],
+        aggr_repo_id=repo_id,
+        roots=shards,
+        aggr_root=output,
+        concatenate_videos=False,
+    )
+    info = json.loads((output / "meta" / "info.json").read_text())
+    return {"episodes": int(info["total_episodes"]), "frames": int(info["total_frames"])}
 
 
 def _convert_parallel(cfg: ConvertPi05Cfg, vla_files: list[Path]) -> dict:
@@ -795,10 +726,14 @@ def _convert_parallel(cfg: ConvertPi05Cfg, vla_files: list[Path]) -> dict:
     Codec, fps, gripper, and idle-trim settings are unchanged. Workers only
     split the file list.
     """
+    if cfg.output is None:
+        raise ValueError("output is required")
+    output = Path(cfg.output)
     workers = min(int(cfg.workers), len(vla_files))
     chunks = [chunk.tolist() for chunk in np.array_split(np.array(vla_files, dtype=object), workers) if len(chunk)]
-    logger.info("Converting {} episodes on {} workers", len(vla_files), len(chunks))
-    shard_root = Path(tempfile.mkdtemp(prefix=f"{Path(cfg.output).name}.", dir=Path(cfg.output).parent))
+    logger.info("Converting {} episodes on {} workers (~8 GB RAM each)", len(vla_files), len(chunks))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    shard_root = Path(tempfile.mkdtemp(prefix=f"{output.name}.", dir=output.parent))
     try:
         payloads = []
         for i, chunk in enumerate(chunks):
@@ -824,7 +759,7 @@ def _convert_parallel(cfg: ConvertPi05Cfg, vla_files: list[Path]) -> dict:
         if failed:
             raise RuntimeError(f"Shard conversion failed, exit codes {failed}")
         shard_dirs = [Path(payload[3]) for payload in payloads]
-        summary = _merge_lerobot_shards(shard_dirs, Path(cfg.output))
+        summary = merge_lerobot_datasets(shard_dirs, output, cfg.repo_id)
     finally:
         shutil.rmtree(shard_root, ignore_errors=True)
     logger.info(
@@ -837,7 +772,8 @@ def _convert_parallel(cfg: ConvertPi05Cfg, vla_files: list[Path]) -> dict:
     return {
         "output": str(cfg.output),
         "kept": summary["episodes"],
-        "skipped": len(vla_files) - summary["episodes"],
+        # Segmented files can yield several episodes each, so a file count says nothing there.
+        "skipped": len(vla_files) - summary["episodes"] if cfg.segments == "whole" else None,
         "n_files": len(vla_files),
         "workers": len(chunks),
     }
@@ -849,6 +785,8 @@ def convert(cfg: ConvertPi05Cfg) -> dict:
     Returns:
         Summary dict with episode counts. Does not upload to the Hub.
     """
+    if cfg.input is None:
+        raise ValueError("input is required: a .vla file or a folder of them")
     vla_files = list_vla_files(cfg.input)
     if cfg.write_tasks_template is not None:
         write_task_template(vla_files, cfg.write_tasks_template)
@@ -859,8 +797,9 @@ def convert(cfg: ConvertPi05Cfg) -> dict:
         task_map = parse_task_map(cfg.tasks)
         logger.info("Loaded {} task labels from {}", len(task_map), cfg.tasks)
 
+    # DAgger rollouts carry the served instruction in every frame.
     unlabeled = [traj_index(path) for path in vla_files if traj_index(path) not in task_map]
-    if unlabeled and not cfg.allow_missing_tasks and not cfg.dry_run:
+    if unlabeled and not cfg.allow_missing_tasks and not cfg.dry_run and cfg.segments == "whole":
         template = Path(cfg.input) / "tasks.yaml" if Path(cfg.input).is_dir() else Path(cfg.input).with_name("tasks.yaml")
         if not template.exists():
             write_task_template(vla_files, template)
@@ -901,19 +840,20 @@ def convert(cfg: ConvertPi05Cfg) -> dict:
                 missing_task=cfg.missing_task,
             )
             action_g = np.asarray(prepared[ACTION_KEY], dtype=np.float32)[:, -1]
-            rows.append(
-                {
-                    "file": path.name,
-                    "index": idx,
-                    "frames_src": n,
-                    "frames_dst": info["frames_dst"],
-                    "idle_start": info["idle_start"],
-                    "unwrap_jump_before": info["unwrap_jump_before"],
-                    "unwrap_jump_after": info["unwrap_jump_after"],
-                    "task": task,
-                    "action_gripper_unique": np.unique(np.round(action_g, 3)).tolist(),
-                }
-            )
+            row = {
+                "file": path.name,
+                "index": idx,
+                "frames_src": n,
+                "frames_dst": info["frames_dst"],
+                "idle_start": info["idle_start"],
+                "unwrap_jump_before": info["unwrap_jump_before"],
+                "unwrap_jump_after": info["unwrap_jump_after"],
+                "task": task,
+                "action_gripper_unique": np.unique(np.round(action_g, 3)).tolist(),
+            }
+            if cfg.segments != "whole":
+                row["segments"] = episode_ranges(prepared, cfg, path.name)
+            rows.append(row)
             del data
         n_with_task = sum(1 for row in rows if row["task"])
         logger.info("Dry-run: {} files, {} with a task", len(rows), n_with_task)
@@ -925,7 +865,7 @@ def convert(cfg: ConvertPi05Cfg) -> dict:
     if cfg.action_space == "joints" and output.name in TCP_DATASET_DIR_NAMES:
         raise ValueError(
             f"Refusing to write joint actions over the TCP dataset {output}. "
-            "Use --output data/lerobot/kassow_pi05_joints --repo-id local/kassow_pi05_joints"
+            "Write joints to a new variant, e.g. --variant joints_notrim"
         )
     if output.exists():
         if not cfg.clean:
@@ -969,6 +909,13 @@ def convert(cfg: ConvertPi05Cfg) -> dict:
                 logger.warning("Skip {}: {} frames after prepare (min {})", path.name, n, cfg.min_frames)
                 skipped += 1
                 continue
+            ranges = episode_ranges(data, cfg, path.name)
+            if not ranges:
+                logger.info("Skip {}: no {} segment of at least {:.1f} s", path.name, cfg.segments, cfg.min_segment_s)
+                skipped += 1
+                continue
+            if cfg.segments != "whole":
+                logger.info("{}: {} segment(s) {}", path.name, len(ranges), ranges)
             task = _resolve_task(
                 idx,
                 data,
@@ -1019,19 +966,20 @@ def convert(cfg: ConvertPi05Cfg) -> dict:
                     else data[GRIPPER_KEY]
                 )
                 state_g = np.asarray(state_values, dtype=np.float32).reshape(-1)
-            for frame_idx in range(n):
-                frame = build_pi05_frame(
-                    data,
-                    frame_idx,
-                    task,
-                    binarize_gripper=False,
-                )
-                # Sequence-level gripper (raw or hysteresis), not per-frame restart.
-                frame["observation.state"][-1] = state_g[frame_idx]
-                frame["action"][-1] = snapped[frame_idx]
-                dataset.add_frame(frame)
-            dataset.save_episode()
-            kept += 1
+            for start, end in ranges:
+                for frame_idx in range(start, end):
+                    frame = build_pi05_frame(
+                        data,
+                        frame_idx,
+                        task,
+                        binarize_gripper=False,
+                    )
+                    # Sequence-level gripper (raw or hysteresis), not per-frame restart.
+                    frame["observation.state"][-1] = state_g[frame_idx]
+                    frame["action"][-1] = snapped[frame_idx]
+                    dataset.add_frame(frame)
+                dataset.save_episode()
+                kept += 1
         finally:
             del data
 

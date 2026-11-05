@@ -98,6 +98,12 @@ if __name__ == "__main__":
         mw: str = "Thread"
         mp_method: str | None = "spawn"
         freq: int = 50
+        # Playback does not record and does not drive to a home.
+        recorder: str | None = None
+
+        def __post_init__(self) -> None:
+            self.bind_home = False
+            StationCfg.__post_init__(self)
 
     args = tyro.cli(Args)
     print(args)

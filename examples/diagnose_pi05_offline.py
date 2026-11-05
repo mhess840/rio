@@ -3,37 +3,18 @@
 
 """Open-loop π₀.₅ vs dataset ground truth. No robot.
 
-Run:
+Selected model on the selected dataset of the active experiment
+(``uv run -m examples.experiment``); each frame uses its own task label:
+
+    uv run --group pi --no-group docs -m examples.diagnose_pi05_offline --device cuda:1
+
+Another model/dataset of the experiment, first frames instead of mid-episode:
 
     uv run --group pi --no-group docs -m examples.diagnose_pi05_offline \\
-        --policy-path ckpts/pi05 --device cuda:1
+        --model run2 --dataset crop_v1 --sample-at start
 
-Joint checkpoint against the joint dataset:
-
-    uv run --group pi --no-group docs -m examples.diagnose_pi05_offline \\
-        --policy-path ckpts/pi05_joints --device cuda:1 \\
-        --dataset-root data/lerobot/kassow_pi05_joints \\
-        --repo-id local/kassow_pi05_joints \\
-        --out-dir /tmp/pi05_diag/offline_joints
-
-Writes ADE tables and xyz plots to ``/tmp/pi05_diag/offline/``.
-
-Home/start frames (post-idle first frame, not episode middle):
-
-    uv run --group pi --no-group docs -m examples.diagnose_pi05_offline \\
-        --policy-path ckpts/pi05 --device cuda:1 \\
-        --dataset-root data/lerobot/kassow_pi05_pick \\
-        --repo-id local/kassow_pi05_pick \\
-        --sample-at start \\
-        --out-dir /tmp/pi05_diag/offline_pick_start
-
-RTC-off live recipe (separate, E-Stop ready):
-
-    POLICY=Pi05LerobotCfg uv run --group pi --no-group docs -m examples.policy_inference \\
-        --policy-path ckpts/pi05 \\
-        --instruction "pick up the blue cylinder and place it on the red plate" \\
-        --policy-cfg.device cuda:1 \\
-        --policy-node-cfg.no-use-rtc
+``--policy-path``/``--dataset-root`` still take explicit folders. Writes ADE
+tables and xyz plots to ``/tmp/pi05_diag/offline/``.
 """
 
 from __future__ import annotations
@@ -45,11 +26,15 @@ import numpy as np
 import tyro
 from loguru import logger
 
+from examples.cfg.kassow_experiments import (
+    active_experiment_name,
+    dataset_repo_id,
+    resolve_dataset,
+    resolve_experiment,
+    resolve_model,
+)
 from rio.policies.pi05 import Pi05, normalize_rgb_image, principal_rotvec, snap_gripper
 
-DEFAULT_INSTRUCTION = "pick up the blue cylinder and place it on the red plate"
-DEFAULT_DATASET = "data/lerobot/kassow_pi05"
-DEFAULT_REPO_ID = "local/kassow_pi05"
 DEFAULT_OUT = Path("/tmp/pi05_diag/offline")
 
 
@@ -236,9 +221,15 @@ def _load_dataset(root: Path, repo_id: str):
 
 @dataclass
 class DiagnoseOfflineCfg:
-    policy_path: str = "ckpts/pi05"
-    dataset_root: str = DEFAULT_DATASET
-    repo_id: str = DEFAULT_REPO_ID
+    # Empty: the active experiment.
+    experiment: str = ""
+    # Registered model / LeRobot variant of the experiment; empty: the selected one.
+    model: str = ""
+    dataset: str = ""
+    # Explicit folders override model/dataset.
+    policy_path: str = ""
+    dataset_root: str = ""
+    repo_id: str = ""
     instruction: str | None = None
     device: str = "cuda:1"
     out_dir: str = str(DEFAULT_OUT)
@@ -250,7 +241,22 @@ class DiagnoseOfflineCfg:
     action_space: str | None = None
 
 
+def resolve_experiment_inputs(cfg: DiagnoseOfflineCfg) -> DiagnoseOfflineCfg:
+    """Fill ``policy_path``, ``dataset_root``, and ``repo_id`` from the experiment."""
+    experiment = resolve_experiment(cfg.experiment or active_experiment_name())
+    if not cfg.policy_path:
+        cfg.policy_path = str(resolve_model(experiment, cfg.model or None)[1])
+    if not cfg.dataset_root:
+        variant, root = resolve_dataset(experiment, cfg.dataset or None)
+        cfg.dataset_root = str(root)
+        cfg.repo_id = cfg.repo_id or dataset_repo_id(experiment, variant)
+    cfg.repo_id = cfg.repo_id or f"local/{Path(cfg.dataset_root).name}"
+    logger.info("Experiment {}: model {}  dataset {}", experiment.name, cfg.policy_path, cfg.dataset_root)
+    return cfg
+
+
 def main(cfg: DiagnoseOfflineCfg) -> None:
+    cfg = resolve_experiment_inputs(cfg)
     out = Path(cfg.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     logger.info("Loading dataset {}", cfg.dataset_root)

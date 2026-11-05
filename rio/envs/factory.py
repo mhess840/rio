@@ -100,22 +100,29 @@ def make_cameras(mw, cameras, **kwargs):
     return servers, clients
 
 
+def make_policy_node(args, **kwargs):
+    """Server and client factories of the ``PolicyInterface`` node for ``args.policy``.
+
+    Raises:
+        AttributeError: If the config has no policy or no policy node config.
+    """
+    if not getattr(args, "policy", None):
+        raise AttributeError("policy disabled")
+    policy_module = kwargs.get("policy_module", "policies")
+    policy_node_cfg = kwargs.get("policy_node_cfg", asdict(args.policy_node_cfg))
+    policy_config = kwargs.get("policy_config", dataclass_to_dict(args.policy_cfg))
+    policy = make_policy(args.policy, policy_config)
+    policy_node_cfg["policy"] = policy
+    return make_node(args.mw, policy_module, "PolicyInterface", policy_node_cfg, package="rio")
+
+
 def instantiate_station_cfg(args, **kwargs) -> tuple[dict, dict, dict]:
     servers = {}
     clients = {}
 
     # Policies
     try:
-        if not getattr(args, "policy", None):
-            raise AttributeError("policy disabled")
-        policy_module = kwargs.get("policy_module", "policies")
-        policy_node_cfg = kwargs.get("policy_node_cfg", asdict(args.policy_node_cfg))
-        policy_config = kwargs.get("policy_config", dataclass_to_dict(args.policy_cfg))
-        policy = make_policy(args.policy, policy_config)
-        policy_node_cfg["policy"] = policy
-        servers["policy"], clients["policy"] = make_node(
-            args.mw, policy_module, "PolicyInterface", policy_node_cfg, package="rio"
-        )
+        servers["policy"], clients["policy"] = make_policy_node(args, **kwargs)
     except AttributeError:
         servers["policy"], clients["policy"] = None, None
 

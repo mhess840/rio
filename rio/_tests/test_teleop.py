@@ -266,9 +266,7 @@ def test_begin_kord_home_queues_movej_when_offset():
     current = np.zeros(7)
     goal = np.array([0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     arm = FakeArm()
-    homing, streaming, move_until, timeout = begin_kord_home(
-        arm, current, {"joint_q": goal}, 0.15, 10.0
-    )
+    homing, streaming, move_until, timeout = begin_kord_home(arm, current, {"joint_q": goal}, 0.15, 10.0)
     assert homing is True
     assert streaming is False
     assert move_until == pytest.approx(10.0 + HOME_MIN_DURATION_S)

@@ -4,6 +4,7 @@ import multiprocessing as mp
 import sys
 import tempfile
 import threading
+from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -156,6 +157,30 @@ def apply_serve_control(cmd: str, pause: threading.Event, quit_ev: threading.Eve
         pause.set()
 
 
+@dataclass
+class RolloutControl:
+    """Run one rollout from a caller instead of the stdin pause/quit keys.
+
+    The rollout starts at once and ends, with the arm stopped, when ``stop`` is
+    set or ``stop_when`` returns True for the command just sent. ``reason``
+    then says which.
+    """
+
+    stop_when: Callable[[np.ndarray], bool] | None = None
+    stop: threading.Event = field(default_factory=threading.Event)
+    reason: str = ""
+
+    def should_stop(self, last_sent: np.ndarray, has_action: bool) -> bool:
+        """Check both stop sources once per control tick."""
+        if self.stop.is_set():
+            self.reason = self.reason or "stopped"
+            return True
+        if has_action and self.stop_when is not None and self.stop_when(last_sent):
+            self.reason = "stop_when"
+            return True
+        return False
+
+
 def _serve_control_watcher(pause: threading.Event, quit_ev: threading.Event) -> None:
     """Enter toggles run/pause; ``q`` quits. Daemon thread so Ctrl+C can still exit."""
     while not quit_ev.is_set():
@@ -196,9 +221,7 @@ def resolve_n_execute(policy_path: str, override: int | None, default: int = 16)
     return chunk_size_from_ckpt(policy_path, default=default)
 
 
-def slice_action_chunk(
-    processed: np.ndarray, original: np.ndarray, n_execute: int
-) -> tuple[np.ndarray, np.ndarray]:
+def slice_action_chunk(processed: np.ndarray, original: np.ndarray, n_execute: int) -> tuple[np.ndarray, np.ndarray]:
     """Keep the first ``n_execute`` waypoints of a predicted chunk."""
     n = min(len(processed), len(original))
     processed = processed[:n]
@@ -604,20 +627,38 @@ def append_cmd_eef(
         f.write(",".join(f"{float(value):.6f}" for value in values) + "\n")
 
 
-def policy_loop(args, env, policy, visualizer=None):
+def policy_loop(args, env, policy, visualizer=None, dagger=None, control: RolloutControl | None = None):
+    """Serve the policy at the station rate.
+
+    Args:
+        args: Policy station config.
+        env: Started environment.
+        policy: Policy interface client.
+        visualizer: Optional Rerun client.
+        dagger: ``DaggerSession`` for operator takeover and episode recording;
+            its keys replace the stdin pause/quit control.
+        control: Run exactly one rollout, started and ended by the caller; no
+            stdin watcher. Not combinable with ``dagger``.
+    """
+    if control is not None and dagger is not None:
+        raise ValueError("control and dagger cannot be combined")
     require_arm_controller(env.robot.arm)
     if visualizer:
         visualizer.set_robot_model("world/robot", robot_description=env.robot.urdf_path, variant=None)
     logger.info("Waiting for the policy to finish loading (9 GB weights onto GPU)...")
     while not policy.policy_loaded:
         time.sleep(0.5)
-    logger.info(
-        "Policy ready. Enter starts/resumes; Enter or p pauses (weights stay on GPU); q or Ctrl+C quits."
-    )
     pause = threading.Event()
     quit_ev = threading.Event()
     pause.set()
-    threading.Thread(target=_serve_control_watcher, args=(pause, quit_ev), daemon=True).start()
+    if control is not None:
+        pause.clear()
+        logger.info("Policy ready. One rollout of {!r}, ended by the caller.", args.instruction)
+    elif dagger is None:
+        logger.info("Policy ready. Enter starts/resumes; Enter or p pauses (weights stay on GPU); q or Ctrl+C quits.")
+        threading.Thread(target=_serve_control_watcher, args=(pause, quit_ev), daemon=True).start()
+    else:
+        logger.info("Policy ready. DAgger: n starts an episode; c takeover, r hand back, s save, x discard, q quit.")
     freq = args.freq
     if freq <= 0:
         raise ValueError("The control frequency must be positive")
@@ -668,7 +709,11 @@ def policy_loop(args, env, policy, visualizer=None):
     started_once = False
     try:
         while not quit_ev.is_set():
-            if pause.is_set():
+            if pause.is_set() and dagger is not None:
+                if not dagger.wait_for_episode():
+                    break
+                pause.clear()
+            elif pause.is_set():
                 if started_once:
                     logger.info("Paused. Arm stopped; weights stay on GPU. Enter resumes, q quits.")
                 while pause.is_set() and not quit_ev.is_set():
@@ -756,25 +801,60 @@ def policy_loop(args, env, policy, visualizer=None):
                     freq,
                 )
             logger.info("Diag dumps under {}", diag_dir)
+            # A chunk requested before a takeover/handback must not be merged afterwards.
+            stale_inflight = False
+            need_policy_reset = False
+            if dagger is not None:
+                dagger.begin_episode()
 
             try:
                 while not pause.is_set() and not quit_ev.is_set():
                     it, t_cycle_end, t_cmd_target = resolve_control_tick(t_start, it, dt, time.now())
+                    limits = safety if dagger is None else dagger.limits(safety)
                     require_arm_state_safe(
-                        env.robot.arm.get_state(), last_sent, now=time.now(), joint_serve=joint_serve, limits=safety
+                        env.robot.arm.get_state(), last_sent, now=time.now(), joint_serve=joint_serve, limits=limits
                     )
                     if processing_obs and t_request is not None and time.now() - t_request > safety.inference_timeout_s:
                         raise RuntimeError("Policy inference exceeded the rollout timeout")
 
+                    if dagger is not None:
+                        event = dagger.poll(last_sent)
+                        if event in ("save", "discard"):
+                            dagger.end_episode(saved=event == "save")
+                            pause.set()
+                            continue
+                        if event == "quit":
+                            dagger.end_episode(saved=False, reason="quit")
+                            quit_ev.set()
+                            continue
+                        if event in ("takeover", "handback"):
+                            # Neither the old plan nor its RTC leftover fits the pose after a switch;
+                            # after a handback the policy starts like a fresh rollout.
+                            action_queue = ActionQueue(rtc_cfg)
+                            interpolator.reset()
+                            index_before_inference = 0
+                            startup_goal = None
+                            hold_until = None
+                            stale_inflight = processing_obs
+                            need_policy_reset = event == "handback"
+
                     policy_loaded = policy.policy_loaded
 
                     if policy_loaded:
+                        if need_policy_reset and not processing_obs:
+                            policy.reset()
+                            need_policy_reset = False
                         remaining = action_queue.qsize()
-                        want_obs = should_send_observation(
-                            processing_obs=processing_obs,
-                            remaining=remaining,
-                            use_rtc=use_rtc,
-                            queue_threshold=queue_threshold,
+                        operator_driving = dagger is not None and dagger.operator_driving
+                        want_obs = (
+                            not operator_driving
+                            and not need_policy_reset
+                            and should_send_observation(
+                                processing_obs=processing_obs,
+                                remaining=remaining,
+                                use_rtc=use_rtc,
+                                queue_threshold=queue_threshold,
+                            )
                         )
                         if want_obs and chunk_pause_s > 0 and chunk_idx > 0:
                             now = time.now()
@@ -822,7 +902,13 @@ def policy_loop(args, env, policy, visualizer=None):
                             response = policy.get_action_chunk()
                             if response.get("inference_failed"):
                                 raise RuntimeError("Policy inference failed; see the policy worker log")
-                            if response["ready"]:
+                            if response["ready"] and stale_inflight:
+                                stale_inflight = False
+                                processing_obs = False
+                                t_request = None
+                                leftover_at_request = False
+                                logger.info("Dropped a chunk planned before the control switch")
+                            elif response["ready"]:
                                 processed = validate_action_chunk(response["actions"], action_dim)
                                 original = validate_action_chunk(response.get("original_actions", processed), action_dim)
                                 if original.shape != processed.shape:
@@ -905,97 +991,118 @@ def policy_loop(args, env, policy, visualizer=None):
                                     )
                                     chunk_idx += 1
 
-                        # Same dispatch as lerobot.rollout.strategies.core.send_next_action.
-                        # Prime _prev once so later adds blend. The first waypoint is
-                        # crept to at startup speed instead of the interpolator's 50 ms
-                        # blend — that blend from idle trips Kassow JTORQUE.
-                        if interpolator.needs_new_action() and startup_goal is None:
-                            next_act = action_queue.get()
-                            if next_act is not None:
-                                if not interpolator.has_previous:
-                                    if joint_serve:
-                                        last_sent = measured_joint_action(
-                                            env, action_dim, binarize_gripper=binarize_gripper, **gripper_encoding
+                        if dagger is not None and dagger.operator_driving:
+                            eef_now = np.asarray(env.robot.arm.get_state()["eef_pose"], dtype=float)
+                            action = dagger.human_command(eef_now, dt)
+                            last_sent = action
+                            move_action_checked(
+                                env, action, t_cmd_target + args.arm_latency, joint_serve=joint_serve, limits=limits
+                            )
+                            has_action = True
+                        else:
+                            # Same dispatch as lerobot.rollout.strategies.core.send_next_action.
+                            # Prime _prev once so later adds blend. The first waypoint is
+                            # crept to at startup speed instead of the interpolator's 50 ms
+                            # blend — that blend from idle trips Kassow JTORQUE.
+                            if interpolator.needs_new_action() and startup_goal is None:
+                                next_act = action_queue.get()
+                                if next_act is not None:
+                                    if not interpolator.has_previous:
+                                        if joint_serve:
+                                            last_sent = measured_joint_action(
+                                                env, action_dim, binarize_gripper=binarize_gripper, **gripper_encoding
+                                            )
+                                        else:
+                                            last_sent = measured_tcp_action(
+                                                env, action_dim, binarize_gripper=binarize_gripper, **gripper_encoding
+                                            )
+                                        raw0 = _as_action_np(
+                                            next_act,
+                                            action_dim,
+                                            binarize_gripper=binarize_gripper,
+                                            fold_rotvec=fold_rotvec,
+                                            **gripper_encoding,
                                         )
+                                        err0 = command_tracking_error(last_sent, raw0, joint_serve=joint_serve)
+                                        if first_waypoint_needs_creep(err0, joint_serve=joint_serve):
+                                            startup_goal = raw0
+                                            logger.info(
+                                                "First waypoint {:.3f} {} from live pose; creeping before the chunk",
+                                                err0,
+                                                "rad" if joint_serve else "m",
+                                            )
+                                        else:
+                                            interpolator.reset(last_sent)
+                                            interpolator.add(next_act)
                                     else:
-                                        last_sent = measured_tcp_action(
-                                            env, action_dim, binarize_gripper=binarize_gripper, **gripper_encoding
-                                        )
-                                    raw0 = _as_action_np(
-                                        next_act,
+                                        interpolator.add(next_act)
+
+                            if startup_goal is not None:
+                                if joint_serve:
+                                    action = limit_joint_action_step(
+                                        startup_goal, last_sent, dt=dt, max_joint_speed=STARTUP_JOINT_SPEED
+                                    )
+                                else:
+                                    action = limit_tcp_action_step(
+                                        startup_goal,
+                                        last_sent,
+                                        dt=dt,
+                                        max_pos_speed=STARTUP_POS_SPEED,
+                                        max_rot_speed=STARTUP_ROT_SPEED,
+                                    )
+                                last_sent = action
+                                move_action_checked(
+                                    env, action, t_cmd_target + args.arm_latency, joint_serve=joint_serve, limits=limits
+                                )
+                                has_action = True
+                                err = command_tracking_error(last_sent, startup_goal, joint_serve=joint_serve)
+                                if not first_waypoint_needs_creep(err, joint_serve=joint_serve):
+                                    interpolator.reset(last_sent)
+                                    startup_goal = None
+                                    logger.info("Startup catch-up done ({:.3f} {})", err, "rad" if joint_serve else "m")
+                            else:
+                                interp = interpolator.get()
+                                if interp is not None:
+                                    raw = _as_action_np(
+                                        interp,
                                         action_dim,
                                         binarize_gripper=binarize_gripper,
                                         fold_rotvec=fold_rotvec,
                                         **gripper_encoding,
                                     )
-                                    err0 = command_tracking_error(last_sent, raw0, joint_serve=joint_serve)
-                                    if first_waypoint_needs_creep(err0, joint_serve=joint_serve):
-                                        startup_goal = raw0
-                                        logger.info(
-                                            "First waypoint {:.3f} {} from live pose; creeping before the chunk",
-                                            err0,
-                                            "rad" if joint_serve else "m",
-                                        )
+                                    if joint_serve:
+                                        action = limit_joint_action_step(raw, last_sent, dt=dt, max_joint_speed=max_joint_speed)
                                     else:
-                                        interpolator.reset(last_sent)
-                                        interpolator.add(next_act)
-                                else:
-                                    interpolator.add(next_act)
-
-                        if startup_goal is not None:
-                            if joint_serve:
-                                action = limit_joint_action_step(
-                                    startup_goal, last_sent, dt=dt, max_joint_speed=STARTUP_JOINT_SPEED
-                                )
-                            else:
-                                action = limit_tcp_action_step(
-                                    startup_goal,
-                                    last_sent,
-                                    dt=dt,
-                                    max_pos_speed=STARTUP_POS_SPEED,
-                                    max_rot_speed=STARTUP_ROT_SPEED,
-                                )
-                            last_sent = action
-                            move_action_checked(
-                                env, action, t_cmd_target + args.arm_latency, joint_serve=joint_serve, limits=safety
-                            )
-                            has_action = True
-                            err = command_tracking_error(last_sent, startup_goal, joint_serve=joint_serve)
-                            if not first_waypoint_needs_creep(err, joint_serve=joint_serve):
-                                interpolator.reset(last_sent)
-                                startup_goal = None
-                                logger.info("Startup catch-up done ({:.3f} {})", err, "rad" if joint_serve else "m")
-                        else:
-                            interp = interpolator.get()
-                            if interp is not None:
-                                raw = _as_action_np(
-                                    interp,
-                                    action_dim,
-                                    binarize_gripper=binarize_gripper,
-                                    fold_rotvec=fold_rotvec,
-                                    **gripper_encoding,
-                                )
-                                if joint_serve:
-                                    action = limit_joint_action_step(
-                                        raw, last_sent, dt=dt, max_joint_speed=max_joint_speed
+                                        action = limit_tcp_action_step(
+                                            raw,
+                                            last_sent,
+                                            dt=dt,
+                                            max_pos_speed=max_pos_speed,
+                                            max_rot_speed=max_rot_speed,
+                                        )
+                                    last_sent = action
+                                    move_action_checked(
+                                        env,
+                                        action,
+                                        t_cmd_target + args.arm_latency,
+                                        joint_serve=joint_serve,
+                                        limits=limits,
                                     )
-                                else:
-                                    action = limit_tcp_action_step(
-                                        raw,
-                                        last_sent,
-                                        dt=dt,
-                                        max_pos_speed=max_pos_speed,
-                                        max_rot_speed=max_rot_speed,
+                                    has_action = True
+                                elif has_action:
+                                    move_action_checked(
+                                        env,
+                                        action,
+                                        t_cmd_target + args.arm_latency,
+                                        joint_serve=joint_serve,
+                                        limits=limits,
                                     )
-                                last_sent = action
-                                move_action_checked(
-                                    env, action, t_cmd_target + args.arm_latency, joint_serve=joint_serve, limits=safety
-                                )
-                                has_action = True
-                            elif has_action:
-                                move_action_checked(
-                                    env, action, t_cmd_target + args.arm_latency, joint_serve=joint_serve, limits=safety
-                                )
+                            if (
+                                dagger is not None
+                                and dagger.waiting_for_policy
+                                and (startup_goal is not None or interpolator.has_previous)
+                            ):
+                                dagger.resume_policy()
                         if has_action:
                             arm_now = env.robot.arm.get_state()
                             measured = (
@@ -1018,10 +1125,17 @@ def policy_loop(args, env, policy, visualizer=None):
 
                         if recording:
                             env.recorder.record_step(step)
+                        if dagger is not None:
+                            dagger.record(step)
+                            dagger.status(time.now() - t_start)
 
                         if visualizer:
                             visualizer.log_env_state("env", step)
 
+                    if control is not None and control.should_stop(last_sent, has_action):
+                        logger.info("Rollout ended by the caller ({})", control.reason)
+                        quit_ev.set()
+                        continue
                     time.precise_wait(t_cycle_end)
                     it += 1
             except KeyboardInterrupt:
@@ -1029,6 +1143,9 @@ def policy_loop(args, env, policy, visualizer=None):
                 logger.info("Quit. Unloading policy.")
                 break
             finally:
+                if dagger is not None and dagger.recording:
+                    error = sys.exc_info()[1]
+                    dagger.end_episode(saved=False, reason=repr(error) if error is not None else "stopped")
                 action_queue.clear()
                 interpolator.reset()
                 if not stop_arm_motion(env.robot.arm):
@@ -1043,17 +1160,20 @@ def policy_loop(args, env, policy, visualizer=None):
             env.recorder.save(wait=True)
 
 
-def main(args):
-    from rio.policies.pi05_resident import ensure_resident, shutdown_resident
+def start_resident(args):
+    """Attach to, or load, the π₀.₅ daemon that ``args.policy_cfg`` asks for.
+
+    Returns:
+        The ``ResidentClient`` of the daemon on ``policy_cfg.device`` / ``resident_slot``.
+    """
+    from rio.policies.pi05_resident import ensure_resident
 
     device = str(getattr(args.policy_cfg, "device", "cuda:0"))
-    if args.unload_policy:
-        shutdown_resident(device, policy_path=args.policy_path)
-        return
-
-    resident = ensure_resident(
+    slot = str(getattr(args.policy_cfg, "resident_slot", "") or "")
+    return ensure_resident(
         args.policy_path,
         device,
+        slot=slot,
         use_rtc=bool(getattr(args.policy_cfg, "use_rtc", True)),
         compile=bool(getattr(args.policy_cfg, "compile", False)),
         binarize_gripper=bool(getattr(args.policy_cfg, "binarize_gripper", True)),
@@ -1067,6 +1187,17 @@ def main(args):
         ),
         timeout_s=float(getattr(args.policy_node_cfg, "timeout", 180.0) or 180.0),
     )
+
+
+def main(args):
+    from rio.policies.pi05_resident import shutdown_resident
+
+    device = str(getattr(args.policy_cfg, "device", "cuda:0"))
+    if args.unload_policy:
+        shutdown_resident(device, slot=str(getattr(args.policy_cfg, "resident_slot", "") or ""))
+        return
+
+    resident = start_resident(args)
     logger.info(
         "π₀.₅ stays on {} after this process exits (pid {}). Unload with --unload-policy",
         device,
@@ -1082,7 +1213,13 @@ def main(args):
             clients["visualizer"]() if clients["visualizer"] else nullcontext() as visualizer,
         ):
             try:
-                policy_loop(args, env, policy, visualizer)
+                if getattr(args, "dagger_round", None) is None:
+                    policy_loop(args, env, policy, visualizer)
+                else:
+                    from examples.dagger_kassow import open_dagger
+
+                    with open_dagger(args, env, clients) as dagger:
+                        policy_loop(args, env, policy, visualizer, dagger=dagger)
             except KeyboardInterrupt:
                 pass
     logger.info("Serve process exiting; π₀.₅ resident pid {} remains on {}", resident.pid, device)

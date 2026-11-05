@@ -112,6 +112,7 @@ nav:
       - Pi0.5 DROID Fine-tuning: workflow/pi0_droid_finetuning.md
     - Deploy:
       - Policy Inference: workflow/deploy.md
+    - Kassow π₀.₅ (pick / sort / organize): workflow/pi05_kassow_pipeline.md
 
   # - Hardware: '!import git@github.com:robot-i-o/rio-hw.git?branch=main&docs_dir=docs/' # TODO: fix in rio-hw
 

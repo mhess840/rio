@@ -1,4 +1,4 @@
-__all__ = ["Pi05Cfg", "Pi05LerobotCfg", "Pi05LerobotJointCfg", "SmolVLACfg"]
+__all__ = ["Pi05Cfg", "Pi05DaggerCfg", "Pi05LerobotCfg", "Pi05LerobotJointCfg", "SmolVLACfg"]
 
 
 def __getattr__(name):
@@ -6,6 +6,10 @@ def __getattr__(name):
         from .pi05 import Pi05Cfg
 
         return Pi05Cfg
+    if name == "Pi05DaggerCfg":
+        from .pi05_dagger import Pi05DaggerCfg
+
+        return Pi05DaggerCfg
     if name == "Pi05LerobotCfg":
         from .pi05_lerobot import Pi05LerobotCfg
 

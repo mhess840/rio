@@ -54,12 +54,17 @@ def gpu_index(device: str) -> int | None:
     return None
 
 
-def device_tag(device: str) -> str:
-    """Filesystem-safe device id, e.g. ``cuda-1``."""
+def device_tag(device: str, slot: str = "") -> str:
+    """Filesystem-safe resident id, e.g. ``cuda-1``, or ``cuda-1-open`` for slot ``open``.
+
+    Each slot is its own daemon, so two checkpoints can share one GPU.
+    """
     text = str(device).strip().lower()
     if not re.fullmatch(r"(?:cuda|cpu)(?::\d+)?", text):
         raise ValueError(f"Unsupported resident device {device!r}")
-    return text.replace(":", "-")
+    if slot and not re.fullmatch(r"[a-z0-9_]{1,32}", slot):
+        raise ValueError(f"Resident slot must be 1-32 of [a-z0-9_], got {slot!r}")
+    return text.replace(":", "-") + (f"-{slot}" if slot else "")
 
 
 def _ensure_runtime_directory() -> None:
@@ -72,24 +77,26 @@ def _ensure_runtime_directory() -> None:
         LOCK_DIR.chmod(0o700)
 
 
-def _metadata_paths(device: str) -> list[Path]:
+def _metadata_paths(device: str, slot: str = "") -> list[Path]:
+    if slot:
+        return [lock_path(device, slot)]
     return list(dict.fromkeys([lock_path(device), LEGACY_LOCK_DIR / f"rio_pi05_{device_tag(device)}.json"]))
 
 
-def lock_path(device: str) -> Path:
-    return LOCK_DIR / f"rio_pi05_{device_tag(device)}.json"
+def lock_path(device: str, slot: str = "") -> Path:
+    return LOCK_DIR / f"rio_pi05_{device_tag(device, slot)}.json"
 
 
-def socket_path(device: str) -> Path:
-    return LOCK_DIR / f"rio_pi05_{device_tag(device)}.sock"
+def socket_path(device: str, slot: str = "") -> Path:
+    return LOCK_DIR / f"rio_pi05_{device_tag(device, slot)}.sock"
 
 
-def flock_path(device: str) -> Path:
-    return LOCK_DIR / f"rio_pi05_{device_tag(device)}.lock"
+def flock_path(device: str, slot: str = "") -> Path:
+    return LOCK_DIR / f"rio_pi05_{device_tag(device, slot)}.lock"
 
 
-def log_path(device: str) -> Path:
-    return LOCK_DIR / f"rio_pi05_{device_tag(device)}.log"
+def log_path(device: str, slot: str = "") -> Path:
+    return LOCK_DIR / f"rio_pi05_{device_tag(device, slot)}.log"
 
 
 def resolved_policy_path(policy_path: str | Path) -> str:
@@ -138,9 +145,18 @@ def resident_identity(
     rtc_execution_horizon: int = 18,
     rtc_max_guidance_weight: float = 10.0,
     action_space: str | None = None,
+    slot: str = "",
 ) -> dict:
-    """Fields that must match for a live daemon to be reused."""
-    return {
+    """Fields that must match for a live daemon to be reused.
+
+    ``slot`` is only part of the identity when set, so daemons started without
+    one still match.
+    """
+    identity = {}
+    if slot:
+        device_tag(device, slot)
+        identity["slot"] = slot
+    return identity | {
         "policy_path": resolved_policy_path(policy_path),
         "device": str(device).strip(),
         "use_rtc": bool(use_rtc),
@@ -222,8 +238,8 @@ def gpu_compute_apps(device: str) -> list[dict]:
     return apps
 
 
-def read_lock(device: str) -> dict | None:
-    for path in _metadata_paths(device):
+def read_lock(device: str, slot: str = "") -> dict | None:
+    for path in _metadata_paths(device, slot):
         try:
             if path.is_symlink():
                 raise PermissionError("Resident metadata must not be a symbolic link")
@@ -242,13 +258,15 @@ def read_lock(device: str) -> dict | None:
                 raise RuntimeError("Invalid resident metadata; refusing to create a duplicate GPU process") from error
         if not isinstance(data, dict) or data.get("device") != device or not isinstance(data.get("pid"), int):
             raise RuntimeError("Resident metadata has an invalid device or PID")
+        if data.get("slot", "") != slot:
+            raise RuntimeError("Resident metadata belongs to another slot")
         return data
     return None
 
 
 def write_lock(meta: dict) -> None:
     _ensure_runtime_directory()
-    path = lock_path(meta["device"])
+    path = lock_path(meta["device"], meta.get("slot", ""))
     descriptor, temporary = tempfile.mkstemp(prefix=".rio_pi05_", dir=LOCK_DIR)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -259,11 +277,12 @@ def write_lock(meta: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def clear_lock(device: str, *, expected_pid: int | None = None) -> None:
-    current = read_lock(device)
+def clear_lock(device: str, *, expected_pid: int | None = None, slot: str = "") -> None:
+    current = read_lock(device, slot)
     if current is not None and expected_pid is not None and current.get("pid") != expected_pid:
         return
-    for path in [*_metadata_paths(device), socket_path(device), LEGACY_LOCK_DIR / f"rio_pi05_{device_tag(device)}.sock"]:
+    legacy = [] if slot else [LEGACY_LOCK_DIR / f"rio_pi05_{device_tag(device)}.sock"]
+    for path in [*_metadata_paths(device, slot), socket_path(device, slot), *legacy]:
         if path.is_symlink():
             raise PermissionError("Refusing to remove a symbolic link in resident metadata")
         if path.exists():
@@ -378,13 +397,14 @@ class ResidentClient:
 
 def try_connect(identity: dict) -> ResidentClient | None:
     """Return a live matching daemon, or None."""
-    meta = read_lock(identity["device"])
+    slot = identity.get("slot", "")
+    meta = read_lock(identity["device"], slot)
     if meta is None:
         return None
     pid = int(meta.get("pid") or 0)
     if not pid_alive(pid):
-        logger.info("Stale π₀.₅ lockfile for {} (pid {} dead)", identity["device"], pid)
-        clear_lock(identity["device"], expected_pid=pid)
+        logger.info("Stale π₀.₅ lockfile for {} (pid {} dead)", device_tag(identity["device"], slot), pid)
+        clear_lock(identity["device"], expected_pid=pid, slot=slot)
         return None
     if not identity_matches(meta, identity):
         logger.warning(
@@ -399,7 +419,7 @@ def try_connect(identity: dict) -> ResidentClient | None:
             identity["compile"],
         )
         return None
-    address = meta.get("address") or str(socket_path(identity["device"]))
+    address = meta.get("address") or str(socket_path(identity["device"], slot))
     try:
         client = ResidentClient(address=address, authkey=_authkey_from_meta(meta), meta=meta)
         reply = client.ping()
@@ -425,8 +445,9 @@ def log_gpu_occupancy(device: str) -> None:
 def spawn_resident(identity: dict, extra: dict | None = None) -> subprocess.Popen:
     """Start a detached daemon. Caller holds the device flock."""
     extra = extra or {}
+    slot = identity.get("slot", "")
     _ensure_runtime_directory()
-    sock = socket_path(identity["device"])
+    sock = socket_path(identity["device"], slot)
     if sock.exists():
         sock.unlink()
     cmd = [
@@ -450,8 +471,10 @@ def spawn_resident(identity: dict, extra: dict | None = None) -> subprocess.Pope
     for name in ("gripper_close", "gripper_open", "gripper_threshold", "rtc_max_guidance_weight"):
         if identity[name] is not None:
             cmd.extend(["--" + name.replace("_", "-"), str(identity[name])])
-    log_file = log_path(identity["device"])
-    logger.info("Starting π₀.₅ resident on {} (log {})", identity["device"], log_file)
+    if slot:
+        cmd.extend(["--slot", slot])
+    log_file = log_path(identity["device"], slot)
+    logger.info("Starting π₀.₅ resident {} (log {})", device_tag(identity["device"], slot), log_file)
     with open(log_file, "ab", buffering=0) as handle:
         return subprocess.Popen(
             cmd,
@@ -465,7 +488,7 @@ def spawn_resident(identity: dict, extra: dict | None = None) -> subprocess.Pope
 
 
 @contextmanager
-def _device_lock(device: str):
+def _device_lock(device: str, slot: str = ""):
     if fcntl is None:
         raise RuntimeError("The GPU resident requires POSIX file locking; use in-process inference on this platform")
     acquire = getattr(fcntl, "flock", None)
@@ -473,7 +496,7 @@ def _device_lock(device: str):
     if not callable(acquire) or exclusive is None:
         raise RuntimeError("POSIX file locking is unavailable")
     _ensure_runtime_directory()
-    flock = flock_path(device)
+    flock = flock_path(device, slot)
     with open(flock, "a") as lock_fd:
         acquire(lock_fd.fileno(), exclusive)
         yield
@@ -482,12 +505,13 @@ def _device_lock(device: str):
 def _shutdown_metadata(meta: dict, timeout_s: float = 10.0) -> None:
     """Stop only a resident that authenticates and confirms its PID and checkpoint."""
     device = meta["device"]
+    slot = meta.get("slot", "")
     pid = int(meta.get("pid") or 0)
     if not pid_alive(pid):
-        clear_lock(device, expected_pid=pid)
+        clear_lock(device, expected_pid=pid, slot=slot)
         return
     client = ResidentClient(
-        address=meta.get("address") or str(socket_path(device)), authkey=_authkey_from_meta(meta), meta=meta
+        address=meta.get("address") or str(socket_path(device, slot)), authkey=_authkey_from_meta(meta), meta=meta
     )
     try:
         reply = client.ping()
@@ -503,7 +527,7 @@ def _shutdown_metadata(meta: dict, timeout_s: float = 10.0) -> None:
         if time.monotonic() >= deadline:
             raise TimeoutError(f"Resident pid {pid} did not exit; no replacement was started")
         time.sleep(0.05)
-    clear_lock(device, expected_pid=pid)
+    clear_lock(device, expected_pid=pid, slot=slot)
 
 
 def ensure_resident(
@@ -513,31 +537,37 @@ def ensure_resident(
     use_rtc: bool = True,
     compile: bool = False,
     timeout_s: float = CONNECT_TIMEOUT_S,
+    slot: str = "",
     **extra,
 ) -> ResidentClient:
-    """Attach to a matching daemon, or spawn one and wait until weights are on GPU."""
-    identity = resident_identity(policy_path, device, use_rtc=use_rtc, compile=compile, **extra)
+    """Attach to a matching daemon, or spawn one and wait until weights are on GPU.
+
+    A daemon in the same ``device``/``slot`` that holds another checkpoint is
+    stopped first. Other slots on the same GPU are left alone.
+    """
+    identity = resident_identity(policy_path, device, use_rtc=use_rtc, compile=compile, slot=slot, **extra)
+    tag = device_tag(device, slot)
     log_gpu_occupancy(device)
     existing = try_connect(identity)
     if existing is not None:
         logger.info(
             "Reusing π₀.₅ already on {} (pid {}, {})",
-            device,
+            tag,
             existing.pid,
             identity["policy_path"],
         )
         return existing
 
-    with _device_lock(device):
+    with _device_lock(device, slot):
         existing = try_connect(identity)
         if existing is not None:
-            logger.info("Reusing π₀.₅ already on {} (pid {})", device, existing.pid)
+            logger.info("Reusing π₀.₅ already on {} (pid {})", tag, existing.pid)
             return existing
-        previous = read_lock(device)
+        previous = read_lock(device, slot)
         if previous is not None:
             _shutdown_metadata(previous)
         proc = spawn_resident(identity, extra)
-        logger.info("Spawned π₀.₅ resident pid {} — loading 9 GB onto {}", proc.pid, device)
+        logger.info("Spawned π₀.₅ resident pid {} — loading 9 GB onto {}", proc.pid, tag)
 
         deadline = time.monotonic() + timeout_s
         last_log = 0.0
@@ -548,13 +578,13 @@ def ensure_resident(
                 return client
             if proc.poll() is not None:
                 tail = ""
-                log_file = log_path(device)
+                log_file = log_path(device, slot)
                 if log_file.is_file():
                     tail = log_file.read_text(errors="replace")[-2000:]
                 raise RuntimeError(f"π₀.₅ resident exited {proc.returncode}. Log:\n{tail}")
             now = time.monotonic()
             if now - last_log > 5.0:
-                logger.info("Waiting for π₀.₅ weights on {} ({:.0f}s left)", device, deadline - now)
+                logger.info("Waiting for π₀.₅ weights on {} ({:.0f}s left)", tag, deadline - now)
                 last_log = now
             time.sleep(0.5)
         proc.terminate()
@@ -562,26 +592,27 @@ def ensure_resident(
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired as error:
             raise RuntimeError("The newly spawned resident did not terminate after startup timeout") from error
-        clear_lock(device, expected_pid=proc.pid)
-        raise TimeoutError(f"π₀.₅ resident did not become ready on {device} within {timeout_s:.0f}s")
+        clear_lock(device, expected_pid=proc.pid, slot=slot)
+        raise TimeoutError(f"π₀.₅ resident did not become ready on {tag} within {timeout_s:.0f}s")
 
 
-def shutdown_resident(device: str, *, policy_path: str | Path | None = None) -> bool:
+def shutdown_resident(device: str, *, policy_path: str | Path | None = None, slot: str = "") -> bool:
     """Ask our daemon to unload. Never signals a PID we did not spawn."""
-    with _device_lock(device):
-        meta = read_lock(device)
+    tag = device_tag(device, slot)
+    with _device_lock(device, slot):
+        meta = read_lock(device, slot)
         if meta is None:
-            logger.info("No π₀.₅ resident lockfile for {}", device)
+            logger.info("No π₀.₅ resident lockfile for {}", tag)
             return False
         if policy_path is not None and meta.get("policy_path") != resolved_policy_path(policy_path):
-            logger.warning("Refusing to unload a different checkpoint on {}", device)
+            logger.warning("Refusing to unload a different checkpoint on {}", tag)
             return False
         _shutdown_metadata(meta)
         return True
 
 
 def _serve_forever(cfg) -> None:
-    from rio.policies.pi05 import Pi05
+    from rio.policies.pi05 import Pi05, torch
 
     options = {
         "use_rtc": cfg.use_rtc,
@@ -594,9 +625,10 @@ def _serve_forever(cfg) -> None:
         "rtc_max_guidance_weight": float(getattr(cfg, "rtc_max_guidance_weight", 10.0)),
         "action_space": cfg.action_space,
     }
-    identity = resident_identity(cfg.policy_path, cfg.device, **options)
+    slot = str(getattr(cfg, "slot", "") or "")
+    identity = resident_identity(cfg.policy_path, cfg.device, slot=slot, **options)
     _ensure_runtime_directory()
-    address = str(socket_path(cfg.device))
+    address = str(socket_path(cfg.device, slot))
     authkey = os.urandom(16)
     sock = Path(address)
     if sock.exists():
@@ -623,7 +655,8 @@ def _serve_forever(cfg) -> None:
             "action_dim": policy.action_dim,
         }
     )
-    logger.info("π₀.₅ resident loaded on {} pid {}", cfg.device, os.getpid())
+    logger.info("π₀.₅ resident loaded on {} pid {}", device_tag(cfg.device, slot), os.getpid())
+    _log_cuda_memory(torch, cfg.device)
     stopping = threading.Event()
     infer_lock = threading.Lock()
 
@@ -705,8 +738,18 @@ def _serve_forever(cfg) -> None:
             listener.close()
         except OSError:
             pass
-        clear_lock(cfg.device, expected_pid=os.getpid())
-        logger.info("π₀.₅ resident on {} exiting", cfg.device)
+        clear_lock(cfg.device, expected_pid=os.getpid(), slot=slot)
+        logger.info("π₀.₅ resident on {} exiting", device_tag(cfg.device, slot))
+
+
+def _log_cuda_memory(torch, device: str) -> None:
+    """Log what this process holds on the GPU, to judge whether a second slot fits."""
+    index = gpu_index(device)
+    if torch is None or index is None or not torch.cuda.is_available():
+        return
+    reserved = torch.cuda.memory_reserved(index) / 2**30
+    free, total = (value / 2**30 for value in torch.cuda.mem_get_info(index))
+    logger.info("GPU {}: this resident reserves {:.1f} GiB; {:.1f} of {:.1f} GiB free", device, reserved, free, total)
 
 
 def main(cfg) -> None:
@@ -731,5 +774,6 @@ if __name__ == "__main__":
         rtc_execution_horizon: int = 18
         rtc_max_guidance_weight: float = 10.0
         action_space: str | None = None
+        slot: str = ""
 
     main(tyro.cli(ResidentCfg))
