@@ -25,6 +25,8 @@ the pick ``raw/`` folder::
 
 from __future__ import annotations
 
+import enum
+import json
 import multiprocessing as mp
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -119,7 +121,15 @@ def load_pose(path: Path, gripper_open: float, experiment: str = "", instruction
     )
 
 
-def goto_home(env, home: dict, *, home_joint_speed: float, set_gripper: bool = True) -> bool:
+class MoveStatus(enum.Enum):
+    """How a discrete ``moveJ`` ended."""
+
+    LANDED = "landed"
+    MISSED = "missed"
+    ALARM = "alarm"
+
+
+def goto_home(env, home: dict, *, home_joint_speed: float, set_gripper: bool = True) -> MoveStatus:
     """KORD ``moveJ`` to ``home`` and wait until the arm has settled. No prompt.
 
     Args:
@@ -129,7 +139,8 @@ def goto_home(env, home: dict, *, home_joint_speed: float, set_gripper: bool = T
         set_gripper: Also drive the gripper to the snapshot opening.
 
     Returns:
-        False if KORD raised an alarm or the move did not land on the target joints.
+        ``LANDED`` on the target joints, ``ALARM`` when KORD latches an alarm,
+        or ``MISSED`` when the move was not queued or did not settle on target.
     """
     q_goal = np.asarray(home["joint_q"], dtype=float)
     xyz = np.asarray(home["eef_pose"], dtype=float)[:3]
@@ -140,7 +151,7 @@ def goto_home(env, home: dict, *, home_joint_speed: float, set_gripper: bool = T
     homing, _, move_until, deadline = begin_kord_home(arm, q, home, home_joint_speed, t0)
     if not homing and not joints_at_home(q, q_goal):
         logger.error("moveJ was not queued")
-        return False
+        return MoveStatus.MISSED
 
     settle = 0
     landed_ok = True
@@ -153,7 +164,7 @@ def goto_home(env, home: dict, *, home_joint_speed: float, set_gripper: bool = T
         settle = settle + 1 if landed else 0
         if alarm:
             logger.warning("Aborted, KORD alarm 0x{:08x}", alarm)
-            return False
+            return MoveStatus.ALARM
         if settle >= HOME_SETTLE_TICKS or now > deadline:
             eef = np.asarray(state.get("eef_pose", xyz), dtype=float)[:3]
             landed_ok = joints_at_home(q, q_goal)
@@ -166,7 +177,68 @@ def goto_home(env, home: dict, *, home_joint_speed: float, set_gripper: bool = T
     if set_gripper and hasattr(env.robot, "move_gripper"):
         env.robot.move_gripper(float(home["gripper"]), time.now() + 0.2)
         time.sleep(0.5)
-    return landed_ok
+    return MoveStatus.LANDED if landed_ok else MoveStatus.MISSED
+
+
+def lift_z(env, meters: float, *, home_joint_speed: float) -> MoveStatus:
+    """Raise the TCP by ``meters`` along base z, then wait until the joints settle.
+
+    The move is one discrete ``moveJ`` to the IK of the raised pose. The gripper
+    command is left alone, so a compartment that is being held open stays open.
+    """
+    arm = env.robot.arm
+    kin = getattr(arm, "_kin", None)
+    if kin is None:
+        logger.error("Arm has no kinematics; cannot lift")
+        return MoveStatus.MISSED
+    state = arm.get_state()
+    q = np.asarray(state["joint_q"], dtype=float)
+    pose = np.asarray(state["eef_pose"], dtype=float).copy()
+    pose[2] += float(meters)
+    q_goal = np.asarray(kin.ik(q, pose), dtype=float)
+    reached = np.asarray(kin.fk(q_goal), dtype=float)
+    if abs(float(reached[2] - pose[2])) > 0.02:
+        logger.error("Lift of {:.0f} cm is not reachable from this pose", meters * 100)
+        return MoveStatus.MISSED
+    logger.info("Lifting {:.0f} cm before the next moveJ", meters * 100)
+    return goto_home(env, {"joint_q": q_goal, "eef_pose": pose}, home_joint_speed=home_joint_speed, set_gripper=False)
+
+
+WAIT_SHIFT_Y_M = -0.10
+
+
+def write_wait_pose(path: Path, space1: Path) -> Path:
+    """Space-1 home, shifted 10 cm toward the base (negative y), gripper closed.
+
+    The start pose stays the organize home. This file is the closer rest pose
+    used once the inlay has been accepted.
+    """
+    from rio_hw.robots.kassow_kinematics import KassowKinematics
+
+    payload = json.loads(space1.read_text())
+    pose = np.asarray(payload["eef_pose"], dtype=float).copy()
+    pose[1] += WAIT_SHIFT_Y_M
+    q0 = np.asarray(payload["joint_q"], dtype=float)
+    kin = KassowKinematics()
+    q_goal = np.asarray(kin.ik(q0, pose), dtype=float)
+    reached = np.asarray(kin.fk(q_goal), dtype=float)
+    if abs(float(reached[1] - pose[1])) > 0.02:
+        raise RuntimeError(f"waiting pose is not reachable from {space1.name}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "name": "open",
+                "joint_q": q_goal.tolist(),
+                "eef_pose": pose.tolist(),
+                "gripper": 0.0,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    logger.info("Waiting pose {} tcp={}", path.name, np.round(pose[:3], 3).tolist())
+    return path
 
 
 def goto_loop(args: Args, env) -> None:
@@ -175,7 +247,7 @@ def goto_loop(args: Args, env) -> None:
     xyz = np.asarray(home["eef_pose"], dtype=float)[:3]
     logger.info("Experiment {}  target {}  tcp={}  file={}", args.experiment, args.pose, np.round(xyz, 3).tolist(), path)
     input("Press Enter to moveJ (E-Stop ready)...")
-    if not goto_home(env, home, home_joint_speed=args.home_joint_speed):
+    if goto_home(env, home, home_joint_speed=args.home_joint_speed) is not MoveStatus.LANDED:
         logger.warning("Target not reached")
 
 

@@ -25,7 +25,7 @@ from rio.jev import (
     read_crate,
 )
 from rio.jev.client import IMAGES_HEADER, parse_reply
-from rio.jev.crate import COUNT_KEYS, ORGANIZED_CRITERIA, inlay_example_jpegs
+from rio.jev.crate import COUNT_KEYS, ORGANIZED_CRITERIA, count_questions, inlay_example_jpegs
 
 pytestmark = pytest.mark.unit
 
@@ -89,27 +89,54 @@ def test_typesafe_request_attaches_extra_images_as_assets():
     assert "assets" not in local
 
 
-def test_inlay_example_jpegs_need_both_files(tmp_path):
+def _write_inlay_examples(folder) -> None:
+    for side in ("good", "bad"):
+        for index in range(1, 4):
+            (folder / f"{side}_{index}.jpg").write_bytes(JPEG)
+
+
+def test_inlay_example_jpegs_need_all_six_files(tmp_path):
     assert inlay_example_jpegs(tmp_path) == {}
-    (tmp_path / "good.jpg").write_bytes(JPEG)
+    _write_inlay_examples(tmp_path)
+    (tmp_path / "bad_3.jpg").unlink()
     assert inlay_example_jpegs(tmp_path) == {}
-    (tmp_path / "bad.jpg").write_bytes(JPEG)
+    (tmp_path / "bad_3.jpg").write_bytes(JPEG)
     examples = inlay_example_jpegs(tmp_path)
     assert set(examples) == {"good", "bad"}
+    assert len(examples["good"]) == len(examples["bad"]) == 3
 
 
-def test_ask_crate_puts_inlay_examples_only_on_typesafe(tmp_path):
-    (tmp_path / "good.jpg").write_bytes(JPEG)
-    (tmp_path / "bad.jpg").write_bytes(JPEG)
+def test_count_only_skips_the_inlay_and_opens_on_the_count():
+    answers = _answers(0.1, "one", 0.95, 0.9)
+    del answers["organized"]
+    del answers["view_clear"]
+    reading = read_crate(answers, available_spaces={1, 2, 3}, count_only=True)
+    assert reading.decision == "open"
+    assert reading.space == 2
+    assert set(count_questions()) == {"box_count", "any_box"}
+
+
+def test_local_request_attaches_inlay_example_data_urls():
+    examples = {"good": [JPEG, JPEG, JPEG], "bad": [JPEG]}
+    body, _ = JevClient(JevCfg(backend="local")).build_request(JPEG, crate_questions(), inlay_examples=examples)
+    assert len(body["state"]["inlay_good"]) == 3
+    assert body["state"]["inlay_good"][0].startswith("data:image/jpeg;base64,")
+    assert len(body["state"]["inlay_bad"]) == 1
+    assert "inlay_good" not in JevClient(JevCfg(backend="typesafe")).build_request(JPEG, crate_questions())[0]["state"]
+
+
+def test_ask_crate_puts_inlay_examples_on_both_backends(tmp_path):
+    _write_inlay_examples(tmp_path)
     payload = {"answers": _answers(0.9, "zero", 0.95, 0.1)}
 
     def run(backend: str) -> dict:
         captured: dict = {}
         client = JevClient(JevCfg(backend=backend))
 
-        def fake_ask(image_jpeg, questions, note="", extra_images=None):
+        def fake_ask(image_jpeg, questions, note="", extra_images=None, inlay_examples=None):
             captured["questions"] = questions
             captured["extra"] = extra_images or {}
+            captured["inlay"] = inlay_examples or {}
             return parse_reply(payload)
 
         client.ask = fake_ask
@@ -122,9 +149,11 @@ def test_ask_crate_puts_inlay_examples_only_on_typesafe(tmp_path):
     true_ref = typesafe["questions"]["organized"]["criteria"]["true"]["looks_like"]
     false_ref = typesafe["questions"]["organized"]["criteria"]["false"]["looks_like"]
     assert extra[true_ref] and extra[false_ref]
+    assert typesafe["inlay"] == {}
     local = run("local")
     assert local["questions"]["organized"]["criteria"]["true"] == ORGANIZED_CRITERIA["true"]
     assert local["extra"] == {}
+    assert len(local["inlay"]["good"]) == len(local["inlay"]["bad"]) == 3
 
 
 def test_questions_avoid_bare_integer_option_names_and_name_the_image():

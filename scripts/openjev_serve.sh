@@ -65,6 +65,10 @@ print("GPUs 2 and 3 are free; starting OpenJev there.")
 PY
 
 export CUDA_VISIBLE_DEVICES=2,3
+# The venv ships nvcc and ninja. Without them vLLM dies while warming the sampler.
+export CUDA_HOME="${VENV}/lib/python3.12/site-packages/nvidia/cu13"
+export PATH="${VENV}/bin:${CUDA_HOME}/bin:${PATH}"
+export VLLM_USE_FLASHINFER_SAMPLER=0
 LOG_DIR="${ROOT}/logs"
 mkdir -p "${LOG_DIR}"
 
@@ -75,7 +79,7 @@ mkdir -p "${LOG_DIR}"
   --enable-prefix-caching \
   --max-model-len 8192 \
   --gpu-memory-utilization 0.90 \
-  --limit-mm-per-prompt '{"image":1}' \
+  --limit-mm-per-prompt '{"image":7}' \
   --trust-remote-code \
   --max-num-seqs 4 \
   --max-logprobs 64 \

@@ -18,6 +18,7 @@ from rio_hw import time
 from rio_hw.interpolators import ActionInterpolator
 from rio_hw.middleware import ServerManager
 
+from rio.arm_resume import ArmAlarm
 from rio.envs.env import make_env
 from rio.gripper import GripperEncoding
 from rio.policies.pi05 import principal_rotvec, snap_gripper
@@ -74,7 +75,7 @@ def require_arm_state_safe(state: dict, command: np.ndarray, *, now: float, join
     except (KeyError, TypeError, ValueError, OverflowError) as error:
         raise RuntimeError("Arm feedback has no valid alarm/timestamp information") from error
     if alarm:
-        raise RuntimeError(f"Arm controller alarm 0x{alarm:08x}")
+        raise ArmAlarm(alarm)
     age = float(now) - timestamp
     if not np.isfinite(age) or age < -0.01 or age > limits.max_state_age_s:
         raise RuntimeError(f"Arm feedback is stale or has an invalid timestamp (age={age:.3f}s)")

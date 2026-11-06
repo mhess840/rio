@@ -84,15 +84,16 @@ class JevReply:
         return self.input_tokens < self.text_tokens_estimate + margin
 
 
-def encode_jpeg(image: np.ndarray | bytes, *, quality: int = 90) -> bytes:
+def encode_jpeg(image: np.ndarray | bytes, *, quality: int = 90, max_side: int = MAX_SIDE) -> bytes:
     """Baseline RGB JPEG within the hosted size limits.
 
     Args:
         image: ``H x W x 3`` uint8 RGB frame, or the bytes of a PNG/JPEG file.
         quality: JPEG quality.
+        max_side: Longest side after scaling. The default is the hosted maximum.
 
     Raises:
-        ValueError: If a side is below ``MIN_SIDE`` pixels.
+        ValueError: If a side is below ``MIN_SIDE`` pixels, or ``max_side`` is below it.
     """
     if isinstance(image, (bytes, bytearray)):
         with Image.open(io.BytesIO(image)) as opened:
@@ -102,9 +103,11 @@ def encode_jpeg(image: np.ndarray | bytes, *, quality: int = 90) -> bytes:
         if arr.ndim != 3 or arr.shape[-1] != 3:
             raise ValueError(f"expected an H x W x 3 RGB frame, got shape {arr.shape}")
         img = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
+    if max_side < MIN_SIDE:
+        raise ValueError(f"max_side {max_side} is below the {MIN_SIDE} px minimum side")
     if min(img.size) < MIN_SIDE:
         raise ValueError(f"image {img.size[0]}x{img.size[1]} is below the {MIN_SIDE} px minimum side")
-    img.thumbnail((MAX_SIDE, MAX_SIDE))
+    img.thumbnail((max_side, max_side))
     out = io.BytesIO()
     img.save(out, "JPEG", quality=quality, progressive=False)
     return out.getvalue()
@@ -124,6 +127,7 @@ class JevClient:
         questions: dict,
         note: str = "",
         extra_images: dict[str, bytes] | None = None,
+        inlay_examples: dict[str, list[bytes]] | None = None,
     ) -> tuple[dict, dict[str, str]]:
         """Request body and headers for one call. Authorization is added by ``ask``.
 
@@ -132,8 +136,9 @@ class JevClient:
             questions: Question map; instructions refer to the image as `` `crate` ``.
             note: Optional text context sent alongside the image.
             extra_images: More JPEGs keyed by the reference string that appears in
-                ``questions``. TypeSafe lists them in ``assets``; the local helper
-                ignores them (it has no criteria-image transport).
+                ``questions``. TypeSafe lists them in ``assets``.
+            inlay_examples: Local helper only. ``good`` and ``bad`` are JPEG lists
+                sent as data-URLs in ``state.inlay_good`` and ``state.inlay_bad``.
         """
         if not questions:
             raise ValueError("questions must not be empty")
@@ -160,6 +165,11 @@ class JevClient:
             }
             if note:
                 state["note"] = note
+            for key in ("good", "bad"):
+                jpegs = list((inlay_examples or {}).get(key) or [])
+                if jpegs:
+                    urls = [f"data:image/jpeg;base64,{base64.b64encode(jpeg).decode('ascii')}" for jpeg in jpegs]
+                    state[f"inlay_{key}"] = urls
             body = {"model": self.cfg.model, "state": state, "questions": questions}
         return body, headers
 
@@ -178,13 +188,16 @@ class JevClient:
         questions: dict,
         note: str = "",
         extra_images: dict[str, bytes] | None = None,
+        inlay_examples: dict[str, list[bytes]] | None = None,
     ) -> JevReply:
         """POST one request and return the parsed answers.
 
         Raises:
             JevError: On an HTTP error, an unreachable endpoint, or a body without answers.
         """
-        body, headers = self.build_request(image_jpeg, questions, note, extra_images=extra_images)
+        body, headers = self.build_request(
+            image_jpeg, questions, note, extra_images=extra_images, inlay_examples=inlay_examples
+        )
         headers.update(self._auth_header())
         request = urllib.request.Request(
             f"{self.cfg.resolved_url()}/v1/systemone",

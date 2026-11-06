@@ -7,8 +7,9 @@ One request asks four things about the overview photo:
 
 - ``view_clear`` (noul): is the crate fully visible, not covered by a person or arm?
 - ``organized`` (noul): does the cardboard span both halves of the crate, with open
-  compartments? On TypeSafe, ``good.jpg`` / ``bad.jpg`` from ``examples/cfg/kassow_inlay``
-  sit in the noul criteria as visual yes/no examples.
+  compartments? TypeSafe gets ``good_1.jpg`` and ``bad_1.jpg`` in the noul criteria.
+  The local helper gets ``good_1`` … ``good_3`` and ``bad_1`` … ``bad_3`` as images
+  beside the live photo.
 - ``box_count`` (choice ``zero`` … ``ten``): how many product cartons sit in the compartments?
 - ``any_box`` (noul): is there at least one carton? A cross-check on ``box_count``.
 
@@ -30,6 +31,9 @@ from typing import Literal
 from rio.jev.client import JevClient, JevReply, encode_jpeg
 
 INLAY_DIR = Path(__file__).resolve().parents[2] / "examples" / "cfg" / "kassow_inlay"
+INLAY_EXAMPLE_COUNT = 3
+# Reference photos stay at camera size. Only a side above this is reduced.
+INLAY_EXAMPLE_MAX_SIDE = 768
 
 # Word keys: the hosted API reorders option names that are bare integers.
 COUNT_KEYS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten")
@@ -54,6 +58,7 @@ VIEW_CLEAR_CRITERIA = {
 }
 ORGANIZED_INSTRUCTIONS = (
     "Look only at the tan cardboard inlay in `crate`, ignoring product cartons and anything outside the gray crate. "
+    "Standing-inlay examples and collapsed-inlay examples are attached; judge the live photo against them. "
     "Does the inlay stand so that cardboard occupies both the left and the right half of the crate, "
     "with open compartments reachable from above?"
 )
@@ -83,17 +88,22 @@ def _count_description(n: int) -> str:
     return f"Exactly {COUNT_KEYS[n]} dark product {noun} sit in the compartments of the gray crate."
 
 
-def inlay_example_jpegs(directory: Path | None = None) -> dict[str, bytes]:
-    """Load ``good.jpg`` and ``bad.jpg`` from the inlay reference folder.
+def inlay_example_jpegs(directory: Path | None = None) -> dict[str, list[bytes]]:
+    """Load ``good_1.jpg`` … ``good_3.jpg`` and ``bad_1.jpg`` … ``bad_3.jpg``.
 
-    Returns keys ``good`` and ``bad`` when both files exist, otherwise empty.
-    Missing files are not an error: the organized question stays text-only.
+    Returns keys ``good`` and ``bad``, each a list of three JPEGs, when every
+    file exists. Missing files are not an error: the organized question stays
+    text-only. A side longer than ``INLAY_EXAMPLE_MAX_SIDE`` is reduced.
     """
     folder = INLAY_DIR if directory is None else directory
-    paths = {name: folder / f"{name}.jpg" for name in ("good", "bad")}
-    if not all(path.is_file() for path in paths.values()):
+    names = {side: [folder / f"{side}_{index}.jpg" for index in range(1, INLAY_EXAMPLE_COUNT + 1)] for side in ("good", "bad")}
+    paths = [path for side in names.values() for path in side]
+    if not all(path.is_file() for path in paths):
         return {}
-    return {name: encode_jpeg(path.read_bytes()) for name, path in paths.items()}
+    return {
+        side: [encode_jpeg(path.read_bytes(), max_side=INLAY_EXAMPLE_MAX_SIDE) for path in files]
+        for side, files in names.items()
+    }
 
 
 def crate_questions(*, example_refs: dict[str, str] | None = None) -> dict:
@@ -126,6 +136,12 @@ def crate_questions(*, example_refs: dict[str, str] | None = None) -> dict:
         },
         "any_box": {"type": "noul", "instructions": ANY_BOX_INSTRUCTIONS},
     }
+
+
+def count_questions() -> dict:
+    """Carton questions only, for a crate whose inlay was already accepted."""
+    questions = crate_questions()
+    return {key: questions[key] for key in ("box_count", "any_box")}
 
 
 @dataclass(frozen=True)
@@ -210,12 +226,14 @@ def read_crate(
     *,
     available_spaces: Collection[int],
     thresholds: CrateThresholds | None = None,
+    count_only: bool = False,
 ) -> CrateReading:
     """Turn the answers into a decision.
 
     A blocked view always holds. A sure crumpled noul organizes even when the
     prior is high. Otherwise the organized posterior (noul mixed with
     ``organized_prior``) must reach ``yes`` before the count is used.
+    ``count_only`` skips the view and inlay gates and trusts the inlay.
 
     Args:
         answers: The ``answers`` object of the response.
@@ -226,9 +244,14 @@ def read_crate(
         ValueError: If an answer is missing, has the wrong type, or names an unknown count.
     """
     limits = thresholds or CrateThresholds()
-    organized_q = _noul(answers, "organized")
-    organized_p = bayes_posterior(organized_q, limits.organized_prior)
-    view_clear_p = _noul(answers, "view_clear", default=1.0)
+    if count_only:
+        organized_q = 1.0
+        organized_p = 1.0
+        view_clear_p = 1.0
+    else:
+        organized_q = _noul(answers, "organized")
+        organized_p = bayes_posterior(organized_q, limits.organized_prior)
+        view_clear_p = _noul(answers, "view_clear", default=1.0)
     any_box_p = _noul(answers, "any_box")
     count_answer = answers.get("box_count")
     if not isinstance(count_answer, dict) or count_answer.get("type") != "choice":
@@ -256,7 +279,9 @@ def read_crate(
             view_clear_p=view_clear_p,
         )
 
-    if view_clear_p <= limits.no:
+    if count_only:
+        pass
+    elif view_clear_p <= limits.no:
         return reading("hold", "view blocked")
     if view_clear_p < limits.yes:
         return reading("hold", f"view unsure ({view_clear_p:.2f})")
@@ -285,31 +310,43 @@ def ask_crate(
     available_spaces: Collection[int],
     thresholds: CrateThresholds | None = None,
     inlay_dir: Path | None = None,
+    count_only: bool = False,
 ) -> tuple[JevReply, CrateReading]:
     """Ask the crate questions about one JPEG and decide.
 
-    On the hosted API, the standing and crumpled inlay JPEGs under ``inlay_dir``
-    (default ``examples/cfg/kassow_inlay``) go into the organized noul criteria
-    so the yes/no boundary is a visual match, not only a verbal one. The local
-    helper has no criteria-image transport, so it keeps the text criteria.
+    On the hosted API, the first standing and crumpled JPEGs under ``inlay_dir``
+    (default ``examples/cfg/kassow_inlay``) go into the organized noul criteria.
+    The local helper receives all three of each beside the live photo.
 
     Args:
         client: Configured Jev client.
         image_jpeg: Overview JPEG from ``encode_jpeg``.
         available_spaces: 1-based spaces that have a recorded home pose.
         thresholds: Trust limits.
-        inlay_dir: Folder with ``good.jpg`` and ``bad.jpg``. Unset: the default.
+        inlay_dir: Folder with ``good_1.jpg`` … ``bad_3.jpg``. Unset: the default.
+        count_only: Ask only how many cartons are inside. The inlay was already accepted.
     """
     extra_images: dict[str, bytes] = {}
-    questions = crate_questions()
-    examples = inlay_example_jpegs(inlay_dir)
-    if client.cfg.backend == "typesafe" and examples:
+    inlay_examples: dict[str, list[bytes]] | None = None
+    questions = count_questions() if count_only else crate_questions()
+    examples = {} if count_only else inlay_example_jpegs(inlay_dir)
+    if examples and client.cfg.backend == "typesafe":
         true_ref = f"{uuid.uuid4()}-inlay-good"
         false_ref = f"{uuid.uuid4()}-inlay-bad"
         questions = crate_questions(example_refs={"true": true_ref, "false": false_ref})
-        extra_images = {true_ref: examples["good"], false_ref: examples["bad"]}
-    reply = client.ask(image_jpeg, questions, STATE_NOTE, extra_images=extra_images or None)
-    return reply, read_crate(reply.answers, available_spaces=available_spaces, thresholds=thresholds)
+        extra_images = {true_ref: examples["good"][0], false_ref: examples["bad"][0]}
+    elif examples and client.cfg.backend == "local":
+        inlay_examples = examples
+    reply = client.ask(
+        image_jpeg,
+        questions,
+        STATE_NOTE,
+        extra_images=extra_images or None,
+        inlay_examples=inlay_examples,
+    )
+    return reply, read_crate(
+        reply.answers, available_spaces=available_spaces, thresholds=thresholds, count_only=count_only
+    )
 
 
 @dataclass

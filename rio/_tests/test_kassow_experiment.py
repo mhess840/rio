@@ -33,7 +33,7 @@ from examples.cfg.kassow_experiments import (
 from examples.cfg.kassow_vive_gripper import KassowViveGripperStation
 from examples.data.convert_to_lerobot_pi05 import ConvertExperimentCfg, resolve_experiment_paths
 from examples.experiment import main as experiment_cli
-from examples.goto_kassow_q import goto_home, home_owner, load_pose
+from examples.goto_kassow_q import MoveStatus, goto_home, home_owner, load_pose
 from examples.policy_cfgs.pi05_lerobot import Pi05LerobotCfg
 from examples.teleop_vive_hand import home_q_path, load_home_state, write_home_state
 from rio.data.convert_pi05 import binarize_action_gripper
@@ -422,9 +422,9 @@ def test_goto_home_is_true_when_already_there_and_false_on_alarm(monkeypatch):
             self.q = np.asarray(q, dtype=float)
 
     at_home = SimpleNamespace(robot=SimpleNamespace(arm=_Arm(home["joint_q"])))
-    assert goto_home(at_home, home, home_joint_speed=0.15) is True
+    assert goto_home(at_home, home, home_joint_speed=0.15) is MoveStatus.LANDED
     assert at_home.robot.arm.moves == 0
 
     alarmed = SimpleNamespace(robot=SimpleNamespace(arm=_Arm(home["joint_q"] + 0.2, alarm=1)))
-    assert goto_home(alarmed, home, home_joint_speed=0.15) is False
+    assert goto_home(alarmed, home, home_joint_speed=0.15) is MoveStatus.ALARM
     assert alarmed.robot.arm.moves == 1

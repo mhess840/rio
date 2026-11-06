@@ -7,13 +7,21 @@ On ``j`` the Jev camera photographs the crate and Jev answers three questions
   (or the timeout), then ask Jev again.
 - inlay organized, N cartons: moveJ to the home of space N+1, run the open VLA
   with "put the object in space N+1", and stop it at its first open-gripper
-  command. ``p`` then moves to the organize home and waits for the next ``j``.
+  command. The arm stays in the compartment, holding it open, until ``p``.
+  Then it rises 10 cm and moves to the organize home, and Jev looks again.
+  Every start begins with a moveJ to that same home.
 - anything unsure (inlay state, count, missing space home, VLA error): hold,
   print why, and wait for ``j`` or ``q``.
+- a Kassow alarm during the moveJ or the VLA: remember that phase and wait.
+  Releasing the emergency stop does not move the arm. ``c`` clears the latch
+  in the same session and repeats the phase from the measured pose. If the
+  gripper is already holding the object, the grasp is not repeated.
 
 Keys: ``j`` ask Jev, ``p`` proceed, ``s`` end the running VLA normally, ``x``
-abort it (hold), ``q`` quit. Every cycle is logged to
-``experiments/orchestrator/runs/<time>/``.
+abort it (hold), ``c`` clear the Kassow alarm and continue, ``q`` quit.
+Every cycle is logged to ``experiments/orchestrator/runs/<time>/``.
+With ``--board`` a browser at http://127.0.0.1:8765 shows the state and the
+latest OpenJEV reading while the run is going.
 
 Decision logic with the real Jev camera, nothing moves::
 
@@ -53,6 +61,7 @@ from examples.cfg.kassow_experiments import (
 )
 from examples.jev_ask import fresh_frame, jev_camera_session
 from examples.teleop_vive_hand import HOME_POST_MOVE_S, held_keys, make_stdout_blocking, term
+from rio.arm_resume import Phase, PhaseKind, decide_resume, gripper_is_holding
 from rio.cfg.node import NodeCfg
 from rio.envs.factory import make_node
 from rio.jev import CrateReading, CrateThresholds, JevCfg, JevClient, JevError, ask_crate, encode_jpeg
@@ -127,8 +136,27 @@ class State(enum.Enum):
     GOTO = "goto"
     RUN_VLA = "run_vla"
     WAIT_PROCEED = "wait_proceed"
+    WAIT_RESET = "wait_reset"
     HOLD = "hold"
     DONE = "done"
+
+
+# The moveJ and the VLA are the two phases this cell can repeat. A later
+# pick-and-place arm uses the same resume rules with grasp phases inserted.
+JOB_PHASES = (
+    Phase("movej", PhaseKind.MOVE),
+    Phase("vla", PhaseKind.MOVE),
+)
+
+
+def _recover_unavailable() -> bool:
+    """No arm is connected, so a clear cannot succeed."""
+    return False
+
+
+def _lift_skipped() -> bool:
+    """Dry run: the arm does not rise."""
+    return True
 
 
 @dataclass
@@ -161,7 +189,9 @@ class Orchestrator:
         ask: Photograph the crate and return Jev's reading.
         goto: moveJ to a home file; False if it did not land.
         run_vla: Run one rollout; returns ``stop_when``, ``operator``, ``timeout``,
-            ``aborted``, or ``error: ...``.
+            ``aborted``, ``alarm``, ``alarm_holding``, or ``error: ...``.
+        recover: Clear the controller alarm in this session. False leaves the
+            cell waiting; it must not start a motion.
         keys: Key source.
         organize_home: Home of the organize VLA, also the rest pose after ``p``.
         spaces: Home per 1-based space of the open VLA.
@@ -172,9 +202,10 @@ class Orchestrator:
         self,
         *,
         ask: Callable[[], CrateReading],
-        goto: Callable[[Path], bool],
+        goto: Callable[[Path], bool | str],
         run_vla: Callable[[VlaJob], str],
         keys: Keys,
+        recover: Callable[[], bool] | None = None,
         organize_home: Path,
         spaces: dict[int, Path],
         log: CycleLog,
@@ -182,44 +213,66 @@ class Orchestrator:
         self.ask = ask
         self.goto = goto
         self.run_vla = run_vla
+        self.recover = recover if recover is not None else _recover_unavailable
         self.keys = keys
         self.organize_home = organize_home
+        self.wait_home: Path | None = None
+        self.at_wait_pose = False
+        self.approach_space = False
         self.spaces = spaces
         self.log = log
         self.state = State.IDLE
         self.job: VlaJob | None = None
         self.hold_reason = ""
+        self.phases = JOB_PHASES
+        self.phase_index = 0
+        self.alarm_holding = False
+        self.goto_path: Path | None = None
+        self.after_goto = State.RUN_VLA
+        self.lift_before_goto = False
+        self.lift: Callable[[], bool | str] = lambda: True
+        # False until the first accepted inlay. Later asks only count cartons.
+        self.count_only = False
+        self.session: dict | None = None
+        self.reading: CrateReading | None = None
+        self.board = None
 
     def _hold(self, reason: str) -> State:
         self.hold_reason = reason
         self.log.write("hold", reason=reason)
         return State.HOLD
 
+    def _show(self) -> None:
+        if self.board is not None:
+            self.board.publish(self)
+
     def step(self) -> State:
         """Run one state and return the next."""
+        self._show()
         if self.state is State.IDLE:
             term("\nIdle. j: ask Jev | q: quit")
             self.state = State.ASK if wait_key(self.keys, "jq") == "j" else State.DONE
         elif self.state is State.ASK:
             self.state = self._ask()
         elif self.state is State.GOTO:
-            assert self.job is not None
-            ok = self.goto(self.job.home)
-            self.log.write("goto", home=self.job.home.name, ok=ok)
-            self.state = State.RUN_VLA if ok else self._hold(f"moveJ to {self.job.home.name} failed")
+            self.state = self._goto()
         elif self.state is State.RUN_VLA:
             self.state = self._run()
         elif self.state is State.WAIT_PROCEED:
-            term("\nObject released. p: move to the organize home | q: quit")
+            term("\nHolding the compartment open. Place the object. p: move clear and look again | q: quit")
             if wait_key(self.keys, "pq") == "q":
                 self.state = State.DONE
             else:
-                ok = self.goto(self.organize_home)
-                self.log.write("goto", home=self.organize_home.name, ok=ok)
-                self.state = State.IDLE if ok else self._hold("moveJ to the organize home failed")
+                self.goto_path = self.wait_home or self.organize_home
+                self.after_goto = State.ASK
+                self.lift_before_goto = True
+                self.state = State.GOTO
+        elif self.state is State.WAIT_RESET:
+            self.state = self._reset()
         elif self.state is State.HOLD:
             term(f"\nHOLD: {self.hold_reason}\nj: ask Jev again | q: quit")
             self.state = State.ASK if wait_key(self.keys, "jq") == "j" else State.DONE
+        self._show()
         return self.state
 
     def _ask(self) -> State:
@@ -228,15 +281,94 @@ class Orchestrator:
             reading = self.ask()
         except (JevError, ValueError, RuntimeError) as error:
             return self._hold(f"Jev request failed: {error}")
+        self.reading = reading
         term(f"Jev: {reading.summary()}")
         self.log.write("reading", reading=asdict(reading))
+        self._show()
+        if reading.decision in ("open", "organize"):
+            self.count_only = True
+            if self.session is not None:
+                self.session["count_only"] = True
         if reading.decision == "organize":
             self.job = VlaJob(ORGANIZE, "", self.organize_home)
-            return State.GOTO
+            return self._begin_goto(self.job.home, State.RUN_VLA)
         if reading.decision == "open" and reading.space in self.spaces:
             self.job = VlaJob(OPEN, f"put the object in space {reading.space}", self.spaces[reading.space])
-            return State.GOTO
+            if self.wait_home is not None and not self.at_wait_pose:
+                self.approach_space = True
+                return self._begin_goto(self.wait_home, State.RUN_VLA)
+            return self._begin_goto(self.job.home, State.RUN_VLA)
         return self._hold(reading.reason)
+
+    def _begin_goto(self, path: Path, after: State) -> State:
+        """Queue a moveJ. The motion itself happens in ``GOTO``."""
+        self.goto_path = path
+        self.after_goto = after
+        return State.GOTO
+
+    def _goto(self) -> State:
+        """Run the queued moveJ. An alarm waits for ``c`` instead of holding."""
+        path = self.goto_path
+        assert path is not None
+        if self.lift_before_goto:
+            lifted = self.lift()
+            self.log.write("lift", ok=lifted is True)
+            if lifted in ("alarm", "alarm_holding"):
+                return self._alarm(0, lifted == "alarm_holding")
+            if lifted is not True:
+                self.lift_before_goto = False
+                return self._hold("could not lift clear of the crate")
+            self.lift_before_goto = False
+        outcome = self.goto(path)
+        self.log.write("goto", home=path.name, ok=outcome is True)
+        if outcome in ("alarm", "alarm_holding"):
+            return self._alarm(0, outcome == "alarm_holding")
+        if outcome:
+            if path == self.wait_home:
+                self.at_wait_pose = True
+            if self.approach_space and self.job is not None:
+                self.approach_space = False
+                self.goto_path = self.job.home
+                self.after_goto = State.RUN_VLA
+                return State.GOTO
+            return self.after_goto
+        return self._hold(f"moveJ to {path.name} failed")
+
+    def _alarm(self, index: int, holding: bool) -> State:
+        """Remember the phase and wait. The arm does not move in this state."""
+        self.phase_index = index
+        self.alarm_holding = holding
+        self.log.write("alarm", phase=self.phases[index].name, holding=holding)
+        return State.WAIT_RESET
+
+    def _reset(self) -> State:
+        """Clear the latch after ``c``, then repeat or continue the saved phase."""
+        phase = self.phases[self.phase_index]
+        term(f"\nArm alarm during {phase.name}. Release the E-stop, then c: continue | q: quit")
+        if wait_key(self.keys, "cq") == "q":
+            return State.DONE
+        try:
+            cleared = bool(self.recover())
+        except Exception:
+            logger.exception("Alarm clear failed")
+            cleared = False
+        if not cleared:
+            self.log.write("recover_failed")
+            return State.WAIT_RESET
+        plan = decide_resume(self.phases, self.phase_index, holding=self.alarm_holding)
+        try:
+            phase = plan.phase(self.phases)
+        except IndexError:
+            return self._hold("nothing left after the alarm")
+        if self.alarm_holding and phase.kind is PhaseKind.GRASP:
+            return self._hold("refusing to repeat a grasp while holding")
+        self.phase_index = plan.index
+        self.log.write("resume", action=plan.action.value, phase=phase.name, holding=self.alarm_holding)
+        if phase.name == "vla":
+            return State.RUN_VLA
+        if phase.name == "movej":
+            return State.GOTO
+        return self._hold(f"no motion for phase {phase.name}")
 
     def _run(self) -> State:
         job = self.job
@@ -244,6 +376,8 @@ class Orchestrator:
         term(f"\nRunning {job.experiment} VLA {job.instruction!r}. s: end | x: abort")
         reason = self.run_vla(job)
         self.log.write("vla", experiment=job.experiment, instruction=job.instruction, reason=reason)
+        if reason in ("alarm", "alarm_holding"):
+            return self._alarm(1, reason == "alarm_holding")
         if reason == "aborted" or reason.startswith("error"):
             return self._hold(f"{job.experiment} VLA {reason}")
         if job.experiment == ORGANIZE:
@@ -280,11 +414,14 @@ class Args:
     """The organize VLA ends normally after this long, like ``s``."""
     open_timeout_s: float = 90.0
     """The open VLA is aborted (hold) if it has not opened the gripper by then."""
-    home_joint_speed: float = 0.15
-    """Fastest joint speed of a home moveJ, rad/s."""
+    home_joint_speed: float = 0.51
+    """Fastest joint speed of a home moveJ, rad/s. 1.5 times the previous 0.34."""
     max_frame_age_s: float = 0.5
     runs_dir: Path | None = None
     """Log folder. Unset: experiments/orchestrator/runs."""
+    board: bool = False
+    """Serve the live demo page at http://127.0.0.1:8765."""
+    board_port: int = 8765
     mw: str = "Thread"
     mp_method: str = "spawn"
 
@@ -307,13 +444,25 @@ def vla_cfg(args: Args, job: VlaJob):
     return cfg
 
 
-def make_ask(args: Args, client: JevClient, camera, spaces: set[int], log: CycleLog) -> Callable[[], CrateReading]:
-    """``ask`` action: fresh frame, one Jev request, photo and answer in the log."""
+def make_ask(
+    args: Args, client: JevClient, camera, spaces: set[int], log: CycleLog, session: dict
+) -> Callable[[], CrateReading]:
+    """``ask`` action: fresh frame, one Jev request, photo and answer in the log.
+
+    ``session["count_only"]`` is set by the orchestrator after the inlay has been
+    accepted. Later calls ask only for the carton count.
+    """
 
     def ask() -> CrateReading:
         jpeg = encode_jpeg(fresh_frame(camera, args.max_frame_age_s))
         log.image_path().write_bytes(jpeg)
-        reply, reading = ask_crate(client, jpeg, available_spaces=spaces, thresholds=args.thresholds)
+        reply, reading = ask_crate(
+            client,
+            jpeg,
+            available_spaces=spaces,
+            thresholds=args.thresholds,
+            count_only=bool(session["count_only"]),
+        )
         log.write("jev", model=reply.model, input_tokens=reply.input_tokens, response=reply.raw)
         if reply.image_seems_missing():
             logger.warning("input_tokens {} looks like a text-only request; was the image sent?", reply.input_tokens)
@@ -335,6 +484,7 @@ def dry_run_vla(job: VlaJob) -> str:
 def make_run_vla(args: Args, env, keys: Keys, log: CycleLog) -> Callable[[VlaJob], str]:
     """``run_vla`` action: resident, policy node, one ``policy_loop`` rollout with keys and timeout."""
     from examples.policy_inference import RolloutControl, policy_loop, start_resident
+    from rio.arm_resume import ArmAlarm
     from rio.envs.factory import make_policy_node
 
     def run_vla(job: VlaJob) -> str:
@@ -373,6 +523,9 @@ def make_run_vla(args: Args, env, keys: Keys, log: CycleLog) -> Callable[[VlaJob
             with ServerManager(cfg.mw, [server]), client() as policy:
                 watcher.start()
                 policy_loop(cfg, env, policy, control=control)
+        except ArmAlarm:
+            holding = gripper_is_holding(env, close=float(cfg.policy_cfg.gripper_close))
+            return "alarm_holding" if holding else "alarm"
         except Exception as error:
             logger.exception("{} VLA failed", job.experiment)
             return f"error: {error}"
@@ -383,25 +536,48 @@ def make_run_vla(args: Args, env, keys: Keys, log: CycleLog) -> Callable[[VlaJob
     return run_vla
 
 
-def make_goto(args: Args, env) -> Callable[[Path], bool]:
+def make_goto(args: Args, env) -> Callable[[Path], bool | str]:
     """``goto`` action: moveJ to a home file of ``organize`` or ``open``."""
-    from examples.goto_kassow_q import goto_home, load_pose
+    from examples.goto_kassow_q import MoveStatus, goto_home, load_pose
 
-    def goto(path: Path) -> bool:
+    def goto(path: Path) -> bool | str:
         experiment = resolve_experiment(ORGANIZE if path == resolve_experiment(ORGANIZE).home_path else OPEN)
         time.sleep(HOME_POST_MOVE_S)
         home = load_pose(path, experiment.gripper_open, experiment.name)
-        return goto_home(env, home, home_joint_speed=args.home_joint_speed)
+        status = goto_home(env, home, home_joint_speed=args.home_joint_speed)
+        if status is MoveStatus.ALARM:
+            holding = gripper_is_holding(env, close=float(experiment.gripper_close))
+            return "alarm_holding" if holding else "alarm"
+        return status is MoveStatus.LANDED
 
     return goto
+
+
+def make_lift(args: Args, env) -> Callable[[], bool | str]:
+    """Raise the TCP 10 cm so the leave moveJ clears the crate walls."""
+    from examples.goto_kassow_q import MoveStatus, lift_z
+
+    def lift() -> bool | str:
+        status = lift_z(env, 0.10, home_joint_speed=args.home_joint_speed)
+        if status is MoveStatus.ALARM:
+            holding = gripper_is_holding(env, close=float(resolve_experiment(OPEN).gripper_close))
+            return "alarm_holding" if holding else "alarm"
+        return status is MoveStatus.LANDED
+
+    return lift
 
 
 def station_cfg(args: Args):
     """Arm, gripper, the two policy cameras, and the terminal keyboard; no policy node."""
     from examples.policy_cfgs.pi05_lerobot import Pi05LerobotCfg
 
-    _, path = resolve_model(resolve_experiment(ORGANIZE), args.organize_model)
-    station = Pi05LerobotCfg(experiment=ORGANIZE, policy_path=str(path), allow_unlisted_instruction=True)
+    _, path = resolve_model(resolve_experiment(OPEN), args.open_model)
+    station = Pi05LerobotCfg(
+        experiment=OPEN,
+        policy_path=str(path),
+        instruction="put the object in space 1",
+        allow_unlisted_instruction=True,
+    )
     station.policy = ""
     station.teleop_keyboard = "SshKeyboard"
     station.teleop_keyboard_cfg = NodeCfg(addr=KEYBOARD_ADDR, freq=100)
@@ -431,6 +607,24 @@ def open_jobs() -> list[VlaJob]:
     return [VlaJob(OPEN, home.instruction, home.path) for _, home in sorted(open_spaces().items())]
 
 
+def make_recover(env) -> Callable[[], bool]:
+    """Clear Kassow alarms without leaving the session. False means stay stopped."""
+
+    def recover() -> bool:
+        arm = env.robot.arm
+        clear = getattr(arm, "recover_alarms", None)
+        if not callable(clear):
+            logger.error("The arm cannot clear alarms in this session")
+            return False
+        try:
+            return bool(clear())
+        except Exception:
+            logger.exception("In-session alarm clear failed")
+            return False
+
+    return recover
+
+
 def main(args: Args) -> None:
     make_stdout_blocking()
     client = JevClient(args.jev)
@@ -442,12 +636,15 @@ def main(args: Args) -> None:
 
     with ExitStack() as stack:
         camera = stack.enter_context(jev_camera_session(args.jev_serial, args.mw))
-        ask = make_ask(args, client, camera, set(spaces), log)
+        session = {"count_only": False}
+        ask = make_ask(args, client, camera, set(spaces), log, session)
         if args.dry_run:
             server, keyboard_client = make_node(args.mw, "interfaces", "SshKeyboard", {"addr": KEYBOARD_ADDR, "freq": 100})
             stack.enter_context(ServerManager(args.mw, [server]))
             keys = NodeKeys(stack.enter_context(keyboard_client()))
             goto, run_vla = dry_goto, dry_run_vla
+            lift = _lift_skipped
+            recover = _recover_unavailable
         else:
             from rio.envs.env import make_env
 
@@ -461,7 +658,40 @@ def main(args: Args) -> None:
             stack.enter_context(env)
             keys = NodeKeys(stack.enter_context(clients["teleop_keyboard"]()))
             goto, run_vla = make_goto(args, env), make_run_vla(args, env, keys, log)
-        Orchestrator(ask=ask, goto=goto, run_vla=run_vla, keys=keys, organize_home=organize_home, spaces=spaces, log=log).run()
+            lift = make_lift(args, env)
+            recover = make_recover(env)
+        orchestrator = Orchestrator(
+            ask=ask,
+            goto=goto,
+            run_vla=run_vla,
+            keys=keys,
+            recover=recover,
+            organize_home=organize_home,
+            spaces=spaces,
+            log=log,
+        )
+        orchestrator.lift = lift
+        orchestrator.session = session
+        if args.board:
+            from examples.orchestrator_board import DemoBoard
+
+            board = DemoBoard(log.root.parent.parent / "live", args.board_port)
+            board.publish(orchestrator)
+            board.serve()
+            orchestrator.board = board
+        from examples.goto_kassow_q import write_wait_pose
+
+        space1 = spaces.get(1)
+        if space1 is not None:
+            orchestrator.wait_home = write_wait_pose(organize_home.with_name("home_open_wait.json"), space1)
+        term("\nMoving to the organize home before the first ask.")
+        orchestrator.state = State.GOTO
+        orchestrator._show()
+        if goto(organize_home) is not True:
+            raise SystemExit("Could not reach the organize home before the first ask")
+        orchestrator.state = State.IDLE
+        orchestrator._show()
+        orchestrator.run()
     log.write("quit")
 
 
