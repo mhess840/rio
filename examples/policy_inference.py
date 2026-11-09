@@ -134,9 +134,34 @@ def stop_arm_motion(arm) -> bool:
     return True
 
 
+def clamp_tcp_lead(command: np.ndarray, measured: np.ndarray, limits: RolloutSafetyCfg) -> np.ndarray:
+    """Pull a TCP command back toward the measured pose, inside the tracking limit.
+
+    A new chunk may start several centimetres from the arm. Sending that point
+    trips the 5 cm check and stops the rollout. Keeping the lead at 80 % of the
+    limit lets the arm catch up instead.
+    """
+    limited = np.array(command, dtype=np.float64, copy=True)
+    pose = np.asarray(measured, dtype=np.float64).reshape(-1)
+    delta = limited[:3] - pose[:3]
+    distance = float(np.linalg.norm(delta))
+    position_cap = 0.8 * float(limits.max_position_error_m)
+    if distance > position_cap > 0.0:
+        limited[:3] = pose[:3] + delta * (position_cap / distance)
+    rotation = cast(st.Rotation, st.Rotation.from_rotvec(limited[3:6]) * st.Rotation.from_rotvec(pose[3:6]).inv())
+    angle = float(rotation.magnitude())
+    rotation_cap = 0.8 * float(limits.max_rotation_error_rad)
+    if angle > rotation_cap > 0.0:
+        scaled = st.Rotation.from_rotvec(rotation.as_rotvec() * (rotation_cap / angle))
+        limited[3:6] = (scaled * st.Rotation.from_rotvec(pose[3:6])).as_rotvec()
+    return limited.astype(np.float32, copy=False)
+
+
 def move_action_checked(env, command, target_time: float, *, joint_serve: bool, limits: RolloutSafetyCfg):
     """Check fresh feedback immediately before dispatching one arm/gripper command."""
     state = env.robot.arm.get_state()
+    if not joint_serve:
+        command = clamp_tcp_lead(command, state.get("eef_pose", np.zeros(6)), limits)
     require_arm_state_safe(state, command, now=time.now(), joint_serve=joint_serve, limits=limits)
     if not np.isfinite(target_time):
         raise RuntimeError("Invalid command deadline")
@@ -165,11 +190,26 @@ class RolloutControl:
     The rollout starts at once and ends, with the arm stopped, when ``stop`` is
     set or ``stop_when`` returns True for the command just sent. ``reason``
     then says which.
+
+    ``plan_done`` is softer. When a predicted chunk says the motion is finished,
+    ``finish_plan`` stops new images and new chunks. The commands already queued
+    are still sent. The caller ends the rollout only after that queue is empty
+    and the arm has stopped.
     """
 
     stop_when: Callable[[np.ndarray], bool] | None = None
+    plan_done: Callable[[np.ndarray], bool] | None = None
     stop: threading.Event = field(default_factory=threading.Event)
     reason: str = ""
+    finish_plan: bool = False
+
+    def note_plan(self, waypoints: np.ndarray) -> bool:
+        """Remember that this chunk should be the last one. True once that happens."""
+        if self.finish_plan or self.plan_done is None:
+            return self.finish_plan
+        if self.plan_done(waypoints):
+            self.finish_plan = True
+        return self.finish_plan
 
     def should_stop(self, last_sent: np.ndarray, has_action: bool) -> bool:
         """Check both stop sources once per control tick."""
@@ -850,6 +890,7 @@ def policy_loop(args, env, policy, visualizer=None, dagger=None, control: Rollou
                         want_obs = (
                             not operator_driving
                             and not need_policy_reset
+                            and not (control is not None and control.finish_plan)
                             and should_send_observation(
                                 processing_obs=processing_obs,
                                 remaining=remaining,
@@ -980,6 +1021,13 @@ def policy_loop(args, env, policy, visualizer=None, dagger=None, control: Rollou
                                         step,
                                         unit,
                                     )
+                                    if control is not None and not joint_serve:
+                                        already = control.finish_plan
+                                        if control.note_plan(vec) and not already:
+                                            logger.info(
+                                                "Plan ends near the goal; playing this chunk out "
+                                                "and not requesting another"
+                                            )
                                     eef = np.asarray(arm_state.get("eef_pose", ref), dtype=float)
                                     write_chunk_dump(
                                         diag_dir,
@@ -1133,6 +1181,21 @@ def policy_loop(args, env, policy, visualizer=None, dagger=None, control: Rollou
                         if visualizer:
                             visualizer.log_env_state("env", step)
 
+                    if (
+                        control is not None
+                        and control.finish_plan
+                        and not processing_obs
+                        and startup_goal is None
+                        and action_queue.qsize() == 0
+                        and interpolator.needs_new_action()
+                    ):
+                        from examples.teleop_vive_hand import joints_stopped
+
+                        if joints_stopped(env.robot.arm.get_state()):
+                            control.reason = control.reason or "stop_when"
+                            logger.info("Last command finished and the arm is stopped")
+                            quit_ev.set()
+                            continue
                     if control is not None and control.should_stop(last_sent, has_action):
                         logger.info("Rollout ended by the caller ({})", control.reason)
                         quit_ev.set()

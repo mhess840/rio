@@ -18,6 +18,7 @@ from examples.policy_inference import (
     apply_serve_control,
     chunk_hold_pending,
     chunk_size_from_ckpt,
+    clamp_tcp_lead,
     command_tracking_error,
     create_obs,
     first_waypoint_needs_creep,
@@ -249,6 +250,17 @@ def test_rollout_rejects_stale_or_invalid_arm_feedback(timestamp):
 def test_rollout_rejects_missing_or_nonfinite_arm_feedback(state):
     with pytest.raises(RuntimeError):
         require_arm_state_safe(state, np.zeros(7), now=10.0, joint_serve=False, limits=RolloutSafetyCfg())
+
+
+def test_tcp_lead_is_pulled_inside_the_tracking_limit():
+    limits = RolloutSafetyCfg()
+    measured = np.zeros(6)
+    command = np.zeros(7)
+    command[0] = 0.08
+    limited = clamp_tcp_lead(command, measured, limits)
+    assert np.linalg.norm(limited[:3]) == pytest.approx(0.04)
+    state = {"timestamp": 10.0, "alarm_code": 0, "eef_pose": measured}
+    require_arm_state_safe(state, limited, now=10.0, joint_serve=False, limits=limits)
 
 
 def test_rollout_rejects_tracking_error_seen_during_safety_stop():

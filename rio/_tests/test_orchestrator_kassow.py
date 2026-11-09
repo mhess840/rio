@@ -10,12 +10,13 @@ import numpy as np
 import pytest
 
 from examples.cfg.kassow_experiments import load_state, resolve_experiment, save_state
-from examples.orchestrator_board import DemoBoard
+from examples.orchestrator_board import DemoBoard, PAGE
 from examples.orchestrator_kassow import (
     Args,
     CycleLog,
     GripperOpened,
     Orchestrator,
+    ReturnedNearHome,
     State,
     VlaJob,
     station_cfg,
@@ -323,6 +324,32 @@ def test_failed_clear_stays_in_wait_reset(tmp_path):
     assert [event["event"] for event in _events(tmp_path)].count("recover_failed") == 1
     orchestrator.step()
     assert orchestrator.state is State.DONE
+
+
+def test_organize_vla_stops_only_after_leaving_and_returning_home():
+    home = np.array([0.0, 0.0, 0.4])
+    near = ReturnedNearHome(home, radius_m=0.20)
+    assert not near.consider(np.stack([home, home + np.array([0.05, 0.0, 0.0])]))
+    assert not near.consider(np.stack([home, home + np.array([0.30, 0.0, 0.0])]))
+    assert near.consider(np.stack([home + np.array([0.30, 0.0, 0.0]), home + np.array([0.05, 0.0, 0.0])]))
+    with pytest.raises(ValueError):
+        ReturnedNearHome(home, radius_m=0.0)
+
+
+def test_run_diagram_names_the_reorganize_loop():
+    assert ">Waiting<" in PAGE
+    assert ">Ask JEV<" in PAGE
+    assert ">Error<" in PAGE
+    assert ">Move to reorganize<" in PAGE
+    assert ">Organize<" in PAGE
+    assert ">Move to space<" in PAGE
+    assert ">Open space<" in PAGE
+    assert ">Hold<" in PAGE
+    assert ">Leave<" in PAGE
+    assert "To fold" not in PAGE
+    assert "Unsure" not in PAGE
+    assert "move To" not in PAGE
+    assert "Move To" not in PAGE
 
 
 def test_gripper_opened_needs_a_closed_command_first():

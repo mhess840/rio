@@ -279,6 +279,24 @@ SPACE1 = "put the object in space 1"
 SPACE2 = "put the object in space 2"
 
 
+def test_policy_rollout_is_slower_than_teleop_especially_in_rad_s():
+    teleop = KassowViveGripperStation(experiment="sort")
+    policy = Pi05LerobotCfg(experiment="open", instruction=SPACE1, policy_path="ckpts/pi05")
+    assert teleop.arm_cfg.max_pos_speed == pytest.approx(0.45)
+    assert teleop.arm_cfg.max_rot_speed == pytest.approx(1.0)
+    assert teleop.arm_cfg.max_motor_speed == pytest.approx(1.0)
+    assert policy.arm_cfg.max_pos_speed == pytest.approx(0.30)
+    assert policy.arm_cfg.max_rot_speed == pytest.approx(0.40)
+    assert policy.arm_cfg.max_motor_speed == pytest.approx(0.40)
+    kept = Pi05LerobotCfg(
+        experiment="open",
+        instruction=SPACE1,
+        policy_path="ckpts/pi05",
+        arm_cfg=KassowViveGripperStation.ArmCfg(max_rot_speed=0.7),
+    )
+    assert kept.arm_cfg.max_rot_speed == pytest.approx(0.7)
+
+
 def test_organize_discretizes_open_at_0_7():
     cfg = KassowViveGripperStation(experiment="organize")
     assert cfg.gripper_open == pytest.approx(0.7)

@@ -156,6 +156,27 @@ def test_ask_crate_puts_inlay_examples_on_both_backends(tmp_path):
     assert len(local["inlay"]["good"]) == len(local["inlay"]["bad"]) == 3
 
 
+def test_an_extra_bad_photo_is_what_the_api_compares_against(tmp_path):
+    _write_inlay_examples(tmp_path)
+    (tmp_path / "bad_4.jpg").write_bytes(encode_jpeg(np.full((480, 640, 3), 20, dtype=np.uint8)))
+    loaded = inlay_example_jpegs(tmp_path)
+    assert len(loaded["good"]) == 3
+    assert len(loaded["bad"]) == 4
+
+    captured = {}
+
+    def fake_ask(image_jpeg, questions, note="", extra_images=None, inlay_examples=None):
+        captured["extra"] = extra_images or {}
+        captured["questions"] = questions
+        return parse_reply({"answers": _answers(0.1, "zero", 0.9, 0.1), "model": "t"})
+
+    client = JevClient(JevCfg(backend="typesafe"))
+    client.ask = fake_ask
+    ask_crate(client, JPEG, available_spaces={1, 2, 3}, inlay_dir=tmp_path)
+    false_ref = captured["questions"]["organized"]["criteria"]["false"]["looks_like"]
+    assert captured["extra"][false_ref] == loaded["bad"][-1]
+
+
 def test_questions_avoid_bare_integer_option_names_and_name_the_image():
     questions = crate_questions()
     keys = list(questions["box_count"]["criteria"])

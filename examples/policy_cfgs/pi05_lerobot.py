@@ -28,6 +28,13 @@ from examples.cfg.kassow_vive_gripper import KassowViveGripperStation
 from rio.cfg.common import VisualizerCfg
 from rio.cfg.node import NodeCfg
 
+# Slower than Kassow teleop (0.45 m/s, 1.0 rad/s). The rad/s caps are what
+# trip JTORQUE when a new chunk reverses. A CLI value other than the teleop
+# default is left alone.
+POLICY_MAX_POS_SPEED = 0.30
+POLICY_MAX_ROT_SPEED = 0.40
+POLICY_MAX_MOTOR_SPEED = 0.40
+
 
 @dataclass
 class Pi05LerobotCfg(KassowViveGripperStation):
@@ -163,6 +170,12 @@ class Pi05LerobotCfg(KassowViveGripperStation):
         # Inference worker poll. The control loop uses station freq (100 Hz).
         self.policy_node_cfg.freq = self.policy_node_cfg.action_hz
         self.arm_cfg.robot_controller = "task_pos_ik"
+        if self.arm_cfg.max_pos_speed == 0.45:
+            self.arm_cfg.max_pos_speed = POLICY_MAX_POS_SPEED
+        if self.arm_cfg.max_rot_speed == 1.0:
+            self.arm_cfg.max_rot_speed = POLICY_MAX_ROT_SPEED
+        if self.arm_cfg.max_motor_speed == 1.0:
+            self.arm_cfg.max_motor_speed = POLICY_MAX_MOTOR_SPEED
         self.policy_node_cfg.camera_keys = list(self.cameras.keys())
         self.policy_node_cfg.resolutions = [cam.cfg["resolution"] for cam in self.cameras.values()]
         if len(self.policy_node_cfg.camera_keys) != len(self.policy_node_cfg.resolutions):

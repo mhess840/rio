@@ -482,7 +482,7 @@ Saved photos, scored against hand labels `name.json` = `{"organized": true, "cou
 uv run python -m examples.jev_ask --image experiments/orchestrator/probes
 ```
 
-Collect about twenty probes that cover crumpled vs standing inlay, counts 0–3 (and higher if the crate can hold them), and different lighting. The script prints how often `organized` lands on the labelled side of the 0.3 / 0.7 band, a count confusion matrix, and how often an *accepted* count (p ≥ 0.8) is wrong. Those accepted errors are the ones that would send the arm to the wrong space. If counts above five stay confused, split the question into one occupancy check per compartment instead of raising the option list.
+Collect about twenty probes that cover crumpled vs standing inlay, counts 0–3 (and higher if the crate can hold them), and different lighting. The script prints how often `organized` lands on the labelled side of the 0.3 / 0.7 band, a count confusion matrix, and how often an *accepted* count (p ≥ 0.7) is wrong. Those accepted errors are the ones that would send the arm to the wrong space. If counts above five stay confused, split the question into one occupancy check per compartment instead of raising the option list.
 
 A warning that `input_tokens` looks like a text-only request means the image did not reach the model. The hosted API needs `assets` plus the header `TypeSafe-Danger-Zone-Images: true`; a `data:` URL in `state.screenshot` is only for the local helper.
 

@@ -47,56 +47,58 @@ PAGE = """<!DOCTYPE html>
 <body>
 <header>
   <p class="label">Run</p>
-  <svg viewBox="0 0 1040 200" role="img" aria-label="Crate run">
+  <svg viewBox="0 0 1320 360" role="img" aria-label="Crate run">
     <defs>
       <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
         <path d="M0,0 L7,3 L0,6 Z" fill="#6a6a6a"></path>
       </marker>
     </defs>
-    <path class="edge" marker-end="url(#arrow)" d="M138,38 H168"></path>
-    <path class="edge" marker-end="url(#arrow)" d="M298,38 H328"></path>
-    <path class="edge" marker-end="url(#arrow)" d="M468,38 H498"></path>
-    <path class="edge" marker-end="url(#arrow)" d="M638,38 H668"></path>
-    <path class="edge" marker-end="url(#arrow)" d="M808,38 H838"></path>
-    <path class="edge" marker-end="url(#arrow)" d="M233,58 V108"></path>
-    <path class="edge" marker-end="url(#arrow)" d="M233,128 H328"></path>
-    <path class="edge" marker-end="url(#arrow)" d="M468,128 H498"></path>
-    <path class="edge" marker-end="url(#arrow)" d="M80,16 C80,4 980,4 980,16"></path>
-    <g class="node" data-node="ask">
-      <rect x="8" y="18" width="130" height="40"></rect>
-      <text x="73" y="43" text-anchor="middle">Ask</text>
+    <path class="edge" marker-end="url(#arrow)" d="M190,94 H250"></path>
+    <path class="edge" marker-end="url(#arrow)" d="M400,94 H460"></path>
+    <path class="edge" marker-end="url(#arrow)" d="M640,94 H700"></path>
+    <path class="edge" marker-end="url(#arrow)" d="M860,94 H920"></path>
+    <path class="edge" marker-end="url(#arrow)" d="M1050,94 H1110"></path>
+    <path class="edge" marker-end="url(#arrow)" d="M1180,70 V28 H115 V70"></path>
+    <path class="edge" marker-end="url(#arrow)" d="M325,118 V200"></path>
+    <path class="edge" marker-end="url(#arrow)" d="M250,224 H210 V110 H250"></path>
+    <path class="edge" marker-end="url(#arrow)" d="M400,118 V160 H550 V200"></path>
+    <path class="edge" marker-end="url(#arrow)" d="M640,224 H700"></path>
+    <path class="edge" marker-end="url(#arrow)" d="M780,248 V310 H200 V110 H250"></path>
+    <g class="node" data-node="initial">
+      <rect x="40" y="70" width="150" height="48"></rect>
+      <text x="115" y="99" text-anchor="middle">Waiting</text>
     </g>
     <g class="node" data-node="jev">
-      <rect x="168" y="18" width="130" height="40"></rect>
-      <text x="233" y="43" text-anchor="middle">Jev</text>
+      <rect x="250" y="70" width="150" height="48"></rect>
+      <text x="325" y="99" text-anchor="middle">Ask JEV</text>
     </g>
     <g class="node" data-node="space_move">
-      <rect x="328" y="18" width="140" height="40"></rect>
-      <text x="398" y="43" text-anchor="middle">To space</text>
+      <rect x="460" y="70" width="180" height="48"></rect>
+      <text x="550" y="99" text-anchor="middle">Move to space</text>
     </g>
     <g class="node" data-node="open_vla">
-      <rect x="498" y="18" width="140" height="40"></rect>
-      <text x="568" y="43" text-anchor="middle">Open</text>
+      <rect x="700" y="70" width="160" height="48"></rect>
+      <text x="780" y="99" text-anchor="middle">Open space</text>
     </g>
     <g class="node" data-node="hold_open">
-      <rect x="668" y="18" width="140" height="40"></rect>
-      <text x="738" y="43" text-anchor="middle">Hold open</text>
+      <rect x="920" y="70" width="130" height="48"></rect>
+      <text x="985" y="99" text-anchor="middle">Hold</text>
     </g>
     <g class="node" data-node="clear">
-      <rect x="838" y="18" width="140" height="40"></rect>
-      <text x="908" y="43" text-anchor="middle">Leave</text>
+      <rect x="1110" y="70" width="140" height="48"></rect>
+      <text x="1180" y="99" text-anchor="middle">Leave</text>
     </g>
     <g class="node" data-node="hold">
-      <rect x="168" y="110" width="130" height="40"></rect>
-      <text x="233" y="135" text-anchor="middle">Unsure</text>
+      <rect x="250" y="200" width="150" height="48"></rect>
+      <text x="325" y="229" text-anchor="middle">Error</text>
     </g>
     <g class="node" data-node="organize_move">
-      <rect x="328" y="110" width="140" height="40"></rect>
-      <text x="398" y="135" text-anchor="middle">To fold</text>
+      <rect x="460" y="200" width="180" height="48"></rect>
+      <text x="550" y="229" text-anchor="middle">Move to reorganize</text>
     </g>
     <g class="node" data-node="organize_vla">
-      <rect x="498" y="110" width="140" height="40"></rect>
-      <text x="568" y="135" text-anchor="middle">Fold</text>
+      <rect x="700" y="200" width="160" height="48"></rect>
+      <text x="780" y="229" text-anchor="middle">Organize</text>
     </g>
   </svg>
   <p id="alarm-note"></p>
@@ -145,8 +147,8 @@ setInterval(tick, 500);
 """
 
 TITLES = {
-    "idle": ("Waiting", "j asks OpenJEV, q quits"),
-    "ask": ("Asking OpenJEV", "one photo, four questions"),
+    "idle": ("Waiting", "j asks JEV, q quits"),
+    "ask": ("Ask JEV", "one photo, four questions"),
     "goto": ("Moving to the start pose", "moveJ along the recorded home"),
     "run_vla": ("Running the policy", "s ends the rollout, x aborts"),
     "wait_proceed": ("Holding the compartment open", "place the object, then p moves clear and looks again"),
@@ -167,7 +169,7 @@ def diagram_node(orchestrator) -> str:
     job = _job_name(orchestrator)
     after = orchestrator.after_goto.value if orchestrator.after_goto is not None else ""
     if state == "idle":
-        return "ask"
+        return "initial"
     if state == "ask":
         return "jev"
     if state == "hold":
@@ -175,7 +177,7 @@ def diagram_node(orchestrator) -> str:
     if state == "wait_proceed":
         return "hold_open"
     if state == "done":
-        return "ask"
+        return "initial"
     if state == "wait_reset":
         phase = orchestrator.phases[orchestrator.phase_index].name
         if phase == "vla":
@@ -189,7 +191,7 @@ def diagram_node(orchestrator) -> str:
         return "organize_move" if job == "organize" else "space_move"
     if state == "run_vla":
         return "organize_vla" if job == "organize" else "open_vla"
-    return "ask"
+    return "initial"
 
 
 def _reading_line(reading) -> str:

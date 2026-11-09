@@ -3,8 +3,10 @@
 On ``j`` the Jev camera photographs the crate and Jev answers three questions
 (``rio.jev.crate``). Then:
 
-- inlay crumpled: moveJ to the organize home, run the organize VLA until ``s``
-  (or the timeout), then ask Jev again.
+- inlay crumpled: moveJ to the organize home, run the organize VLA until a
+  predicted plan ends within 20 cm of that pose. That chunk is played out
+  and no further plan is requested. When the arm has stopped, ask Jev again.
+  ``s`` and the timeout still cut the rollout short.
 - inlay organized, N cartons: moveJ to the home of space N+1, run the open VLA
   with "put the object in space N+1", and stop it at its first open-gripper
   command. The arm stays in the compartment, holding it open, until ``p``.
@@ -98,6 +100,34 @@ def wait_key(keys: Keys, allowed: str, poll_s: float = 0.02) -> str:
         if hit:
             return hit[0]
         time.sleep(poll_s)
+
+
+class ReturnedNearHome:
+    """True when a predicted chunk ends back near the organize home.
+
+    The rollout starts at the home pose, so a plan that never leaves the ball
+    does not count. After any waypoint has been farther than ``radius_m``,
+    a chunk whose last point is inside the ball is the last plan to play.
+    """
+
+    def __init__(self, home_xyz: np.ndarray, radius_m: float = 0.20):
+        self.home = np.asarray(home_xyz, dtype=float).reshape(-1)[:3]
+        self.radius_m = float(radius_m)
+        if self.home.shape != (3,) or not np.isfinite(self.home).all():
+            raise ValueError("home_xyz must be three finite coordinates")
+        if not self.radius_m > 0.0:
+            raise ValueError("radius_m must be positive")
+        self.left = False
+
+    def consider(self, waypoints: np.ndarray) -> bool:
+        """Look at one planned TCP path. True when its end has come back."""
+        points = np.asarray(waypoints, dtype=float).reshape(-1, 3)[:, :3]
+        if not len(points) or not np.isfinite(points).all():
+            return False
+        distance = np.linalg.norm(points - self.home, axis=1)
+        if np.any(distance > self.radius_m):
+            self.left = True
+        return self.left and float(distance[-1]) <= self.radius_m
 
 
 class GripperOpened:
@@ -373,7 +403,13 @@ class Orchestrator:
     def _run(self) -> State:
         job = self.job
         assert job is not None
-        term(f"\nRunning {job.experiment} VLA {job.instruction!r}. s: end | x: abort")
+        if job.experiment == ORGANIZE:
+            term(
+                "\nRunning organize VLA. A plan that ends within 20 cm of home is played out, "
+                "then the arm stops. s: end | x: abort"
+            )
+        else:
+            term(f"\nRunning {job.experiment} VLA {job.instruction!r}. s: end | x: abort")
         reason = self.run_vla(job)
         self.log.write("vla", experiment=job.experiment, instruction=job.instruction, reason=reason)
         if reason in ("alarm", "alarm_holding"):
@@ -412,6 +448,8 @@ class Args:
     """Registered model of ``open``. Unset: the selected one."""
     organize_timeout_s: float = 120.0
     """The organize VLA ends normally after this long, like ``s``."""
+    organize_home_radius_m: float = 0.20
+    """End the organize VLA once the TCP returns inside this distance of its home."""
     open_timeout_s: float = 90.0
     """The open VLA is aborted (hold) if it has not opened the gripper by then."""
     home_joint_speed: float = 0.51
@@ -491,12 +529,17 @@ def make_run_vla(args: Args, env, keys: Keys, log: CycleLog) -> Callable[[VlaJob
         cfg = vla_cfg(args, job)
         cfg.diag_dir = str(log.vla_dir)
         if job.experiment == OPEN:
+            returned = None
             stop_when = GripperOpened(cfg.policy_cfg.gripper_close, cfg.policy_cfg.gripper_open)
             timeout_s, timeout_reason = args.open_timeout_s, "aborted"
         else:
+            from examples.goto_kassow_q import load_pose
+
+            home = load_pose(job.home, cfg.policy_cfg.gripper_open, job.experiment)
+            returned = ReturnedNearHome(home["eef_pose"][:3], args.organize_home_radius_m)
             stop_when = None
             timeout_s, timeout_reason = args.organize_timeout_s, "timeout"
-        control = RolloutControl(stop_when=stop_when)
+        control = RolloutControl(stop_when=stop_when, plan_done=None if returned is None else returned.consider)
         done = threading.Event()
 
         def stop(reason: str) -> None:
@@ -512,7 +555,7 @@ def make_run_vla(args: Args, env, keys: Keys, log: CycleLog) -> Callable[[VlaJob
                     stop("aborted")
                 elif "s" in pressed:
                     stop("operator")
-                elif time.now() > deadline:
+                if time.now() > deadline:
                     stop(timeout_reason)
                 time.sleep(0.02)
 

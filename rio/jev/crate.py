@@ -7,9 +7,9 @@ One request asks four things about the overview photo:
 
 - ``view_clear`` (noul): is the crate fully visible, not covered by a person or arm?
 - ``organized`` (noul): does the cardboard span both halves of the crate, with open
-  compartments? TypeSafe gets ``good_1.jpg`` and ``bad_1.jpg`` in the noul criteria.
-  The local helper gets ``good_1`` … ``good_3`` and ``bad_1`` … ``bad_3`` as images
-  beside the live photo.
+  compartments? TypeSafe gets ``good_1.jpg`` and the last ``bad_*.jpg`` in the noul
+  criteria. The local helper gets every ``good_*.jpg`` and ``bad_*.jpg`` beside
+  the live photo.
 - ``box_count`` (choice ``zero`` … ``ten``): how many product cartons sit in the compartments?
 - ``any_box`` (noul): is there at least one carton? A cross-check on ``box_count``.
 
@@ -88,17 +88,27 @@ def _count_description(n: int) -> str:
     return f"Exactly {COUNT_KEYS[n]} dark product {noun} sit in the compartments of the gray crate."
 
 
-def inlay_example_jpegs(directory: Path | None = None) -> dict[str, list[bytes]]:
-    """Load ``good_1.jpg`` … ``good_3.jpg`` and ``bad_1.jpg`` … ``bad_3.jpg``.
+def _example_paths(folder: Path, side: str) -> list[Path]:
+    """``side_1.jpg`` … ``side_3.jpg``, plus any further numbered files that exist."""
+    paths = [folder / f"{side}_{index}.jpg" for index in range(1, INLAY_EXAMPLE_COUNT + 1)]
+    extra = INLAY_EXAMPLE_COUNT + 1
+    while (folder / f"{side}_{extra}.jpg").is_file():
+        paths.append(folder / f"{side}_{extra}.jpg")
+        extra += 1
+    return paths
 
-    Returns keys ``good`` and ``bad``, each a list of three JPEGs, when every
-    file exists. Missing files are not an error: the organized question stays
-    text-only. A side longer than ``INLAY_EXAMPLE_MAX_SIDE`` is reduced.
+
+def inlay_example_jpegs(directory: Path | None = None) -> dict[str, list[bytes]]:
+    """Load the standing and collapsed inlay photos.
+
+    ``good_1`` … ``good_3`` and ``bad_1`` … ``bad_3`` are required. Further files
+    such as ``bad_4.jpg`` are included when they exist. Missing required files
+    are not an error: the organized question stays text-only. A side longer than
+    ``INLAY_EXAMPLE_MAX_SIDE`` is reduced.
     """
     folder = INLAY_DIR if directory is None else directory
-    names = {side: [folder / f"{side}_{index}.jpg" for index in range(1, INLAY_EXAMPLE_COUNT + 1)] for side in ("good", "bad")}
-    paths = [path for side in names.values() for path in side]
-    if not all(path.is_file() for path in paths):
+    names = {side: _example_paths(folder, side) for side in ("good", "bad")}
+    if not all(path.is_file() for path in (file for files in names.values() for file in files)):
         return {}
     return {
         side: [encode_jpeg(path.read_bytes(), max_side=INLAY_EXAMPLE_MAX_SIDE) for path in files]
@@ -152,7 +162,7 @@ class CrateThresholds:
     """A noul at or above this reads as yes."""
     no: float = 0.3
     """A noul at or below this reads as no; between ``no`` and ``yes`` is unsure."""
-    count_min_p: float = 0.8
+    count_min_p: float = 0.7
     """Minimum probability of the chosen count before the arm may act on it."""
     organized_prior: float = 0.9
     """P(inlay is standing) before the photo. ``0.5`` leaves the noul unchanged."""
@@ -323,7 +333,7 @@ def ask_crate(
         image_jpeg: Overview JPEG from ``encode_jpeg``.
         available_spaces: 1-based spaces that have a recorded home pose.
         thresholds: Trust limits.
-        inlay_dir: Folder with ``good_1.jpg`` … ``bad_3.jpg``. Unset: the default.
+        inlay_dir: Folder with ``good_1.jpg`` … ``bad_3.jpg`` and any later ``bad_N.jpg``. Unset: the default.
         count_only: Ask only how many cartons are inside. The inlay was already accepted.
     """
     extra_images: dict[str, bytes] = {}
@@ -334,7 +344,7 @@ def ask_crate(
         true_ref = f"{uuid.uuid4()}-inlay-good"
         false_ref = f"{uuid.uuid4()}-inlay-bad"
         questions = crate_questions(example_refs={"true": true_ref, "false": false_ref})
-        extra_images = {true_ref: examples["good"][0], false_ref: examples["bad"][0]}
+        extra_images = {true_ref: examples["good"][0], false_ref: examples["bad"][-1]}
     elif examples and client.cfg.backend == "local":
         inlay_examples = examples
     reply = client.ask(
