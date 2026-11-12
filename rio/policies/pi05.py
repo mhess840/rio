@@ -312,7 +312,7 @@ class Pi05(Policy):
             self.policy.model.sample_actions = torch.compile(self.policy.model.sample_actions)
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             policy_cfg=self.policy_cfg,
-            pretrained_path=self.policy_path,
+            pretrained_path=str(self.policy_path),
             preprocessor_overrides={"device_processor": {"device": self.device}},
         )
 

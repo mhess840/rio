@@ -57,7 +57,7 @@ def test_principal_rotvec_folds_2pi_equivalent():
     r = np.array([[np.pi + 0.2, 0.0, 0.0]], dtype=np.float32)
     out = principal_rotvec(r)
     assert np.linalg.norm(out) <= np.pi + 1e-5
-    # Same rotation as going the short way around −π.
+    # Same rotation as going the short way around -π.
     assert out[0, 0] < 0
 
 
@@ -259,6 +259,21 @@ def test_rollout_rejects_tracking_error_seen_during_safety_stop():
         require_arm_state_safe(state, command, now=10.0, joint_serve=False, limits=RolloutSafetyCfg())
 
 
+def test_tcp_lead_is_pulled_inside_the_tracking_limit():
+    """An 8 cm jump is pulled to 4 cm so the same command then passes the safety check."""
+    from rio.policies.rollout import clamp_tcp_lead
+
+    limits = RolloutSafetyCfg()
+    measured = np.zeros(6, dtype=np.float32)
+    command = np.zeros(7, dtype=np.float32)
+    command[0] = 0.08
+    limited = clamp_tcp_lead(command, measured, limits)
+    assert limited[0] == pytest.approx(0.04)
+    assert limited[6] == pytest.approx(0.0)
+    state = {"timestamp": 10.0, "eef_pose": measured}
+    require_arm_state_safe(state, limited, now=10.0, joint_serve=False, limits=limits)
+
+
 def test_rollout_accepts_equivalent_rotation_vectors_across_pi():
     state = {"timestamp": 10.0, "eef_pose": np.array([0.0, 0.0, 0.0, np.pi - 0.01, 0.0, 0.0])}
     command = np.array([0.0, 0.0, 0.0, -np.pi + 0.01, 0.0, 0.0, 0.7])
@@ -295,7 +310,9 @@ def test_invalid_policy_chunks_are_rejected_before_dispatch(chunk):
 
 
 def test_alarm_aborts_the_serve_loop_without_sending_motion(monkeypatch, tmp_path):
-    from examples import policy_inference as serve
+    from rio_hw import time as rio_time
+
+    from rio.policies.rollout import RolloutRuntime, policy_loop
 
     stopped = []
     cleared = []
@@ -323,38 +340,33 @@ def test_alarm_aborts_the_serve_loop_without_sending_motion(monkeypatch, tmp_pat
         instruction="pick up the cylinder",
         diag_dir=str(tmp_path),
     )
-    monkeypatch.setattr(serve, "ActionQueue", lambda *args: SimpleNamespace(clear=lambda: cleared.append(True)))
-    monkeypatch.setattr(serve, "RTCConfig", SimpleNamespace)
-    monkeypatch.setattr(serve, "LatencyTracker", None)
-    monkeypatch.setattr(serve, "torch", SimpleNamespace(as_tensor=np.asarray))
-    monkeypatch.setattr(
-        serve,
-        "threading",
-        SimpleNamespace(
-            Event=threading.Event,
-            Thread=lambda **kwargs: SimpleNamespace(start=kwargs["args"][0].clear),
-        ),
+    runtime = RolloutRuntime(
+        action_queue=lambda *args: SimpleNamespace(clear=lambda: cleared.append(True)),
+        rtc_config=SimpleNamespace,
+        latency_tracker=None,
+        as_tensor=np.asarray,
+        operator_input=lambda pause, quit_ev: pause.clear(),
     )
-    monkeypatch.setattr(serve.time, "sleep", lambda *args: None)
-    monkeypatch.setattr(serve.time, "now", lambda: 0.0)
+    monkeypatch.setattr(rio_time, "sleep", lambda *args: None)
+    monkeypatch.setattr(rio_time, "now", lambda: 0.0)
     with pytest.raises(RuntimeError, match="alarm"):
-        serve.policy_loop(args, env, policy)
+        policy_loop(args, env, policy, runtime=runtime)
     assert not moved
     assert cleared
     assert stopped
 
 
 def test_cpu_rollout_executes_startup_and_interpolation_with_custom_gripper(monkeypatch, tmp_path):
-    from examples import policy_inference as serve
+    from rio_hw import time as rio_time
+
+    from rio.policies.rollout import RolloutRuntime, policy_loop
 
     clock = [0.0]
     pose = np.zeros(6, dtype=np.float32)
     grip = [0.9]
     commands = []
     stopped = []
-    pause = threading.Event()
-    quit_event = threading.Event()
-    events = iter([pause, quit_event])
+    quit_box: list = []
 
     class Tensor:
         def __init__(self, value):
@@ -443,7 +455,7 @@ def test_cpu_rollout_executes_startup_and_interpolation_with_custom_gripper(monk
         pose[:] = action[:6]
         grip[0] = float(action[-1])
         if len(commands) >= 12:
-            quit_event.set()
+            quit_box[0].set()
 
     env = SimpleNamespace(
         robot=SimpleNamespace(arm=arm, _gripper=gripper),
@@ -462,20 +474,23 @@ def test_cpu_rollout_executes_startup_and_interpolation_with_custom_gripper(monk
         arm_latency=0.0,
         diag_dir=str(tmp_path),
     )
-    monkeypatch.setattr(serve, "ActionQueue", Queue)
-    monkeypatch.setattr(serve, "RTCConfig", SimpleNamespace)
-    monkeypatch.setattr(serve, "LatencyTracker", None)
-    monkeypatch.setattr(serve, "torch", SimpleNamespace(as_tensor=Tensor))
-    monkeypatch.setattr(serve, "_dump_live_cameras", lambda *args: None)
-    monkeypatch.setattr(
-        serve,
-        "threading",
-        SimpleNamespace(Event=lambda: next(events), Thread=lambda **kwargs: SimpleNamespace(start=pause.clear)),
+
+    def begin(pause, quit_ev):
+        pause.clear()
+        quit_box.append(quit_ev)
+
+    runtime = RolloutRuntime(
+        action_queue=Queue,
+        rtc_config=SimpleNamespace,
+        latency_tracker=None,
+        as_tensor=Tensor,
+        operator_input=begin,
+        dump_cameras=lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(serve.time, "sleep", lambda duration: None)
-    monkeypatch.setattr(serve.time, "now", lambda: clock[0])
-    monkeypatch.setattr(serve.time, "precise_wait", lambda deadline: clock.__setitem__(0, deadline))
-    serve.policy_loop(args, env, policy)
+    monkeypatch.setattr(rio_time, "sleep", lambda duration: None)
+    monkeypatch.setattr(rio_time, "now", lambda: clock[0])
+    monkeypatch.setattr(rio_time, "precise_wait", lambda deadline: clock.__setitem__(0, deadline))
+    policy_loop(args, env, policy, runtime=runtime)
     assert len(commands) == 12
     np.testing.assert_allclose([command[-1] for command in commands], 0.1)
     assert commands[-1][0] > 0.01
@@ -666,8 +681,8 @@ def test_pi05_lerobot_cfg_is_cartesian_without_vive():
     assert cfg.policy_node_cfg.chunk_pause_s == pytest.approx(0.0)
     assert cfg.policy_cfg.use_rtc is True
     assert cfg.arm_cfg.cmd_freq == 100
-    assert cfg.arm_cfg.max_pos_speed == pytest.approx(0.45)
-    assert cfg.arm_cfg.max_rot_speed == pytest.approx(1.0)
+    assert cfg.arm_cfg.max_pos_speed == pytest.approx(0.30)
+    assert cfg.arm_cfg.max_rot_speed == pytest.approx(0.40)
     assert list(cfg.cameras) == ["camera_1", "camera_2"]
 
 

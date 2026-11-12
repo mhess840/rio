@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 
 import av
 import imageio_ffmpeg
@@ -95,7 +96,7 @@ def patch_lerobot_pyav() -> None:
 
     get_video_info.__dict__["_rio_av13_patch"] = True
     original_info = video_module.get_video_info
-    video_module.get_video_info = get_video_info
+    video_module.get_video_info = cast(Any, get_video_info)
     _rebind("get_video_info", original_info, get_video_info)
 
     original_concat = video_module.concatenate_video_files
@@ -147,7 +148,7 @@ def patch_lerobot_pyav() -> None:
                 staged_output.replace(output_video_path)
 
     concatenate_video_files.__dict__["_rio_av13_patch"] = True
-    video_module.concatenate_video_files = concatenate_video_files
+    video_module.concatenate_video_files = cast(Any, concatenate_video_files)
     _rebind("concatenate_video_files", original_concat, concatenate_video_files)
 
 

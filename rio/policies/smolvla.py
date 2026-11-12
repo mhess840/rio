@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
+from typing import Any, cast
 
 try:
     import torch
@@ -45,12 +46,12 @@ class SmolVLA(Policy):
     def construct_policy(self):
         self.policy = SmolVLAPolicy.from_pretrained(self.policy_path, config=self.policy_cfg)
         if self.compile:
-            self.policy.model.sample_actions = torch.compile(self.policy.model.sample_actions)
+            self.policy.model.sample_actions = cast(Any, torch.compile(self.policy.model.sample_actions))
 
         # data is zeroed when processors are serialized
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             policy_cfg=self.policy_cfg,
-            pretrained_path=self.policy_path,
+            pretrained_path=str(self.policy_path),
             preprocessor_overrides={"device_processor": {"device": self.device}},
         )
 
@@ -86,9 +87,9 @@ class SmolVLA(Policy):
             batch["observation.images.image2"] = batch["observation.images.camera2"].unsqueeze(0).type(torch.float32) / 255
             del batch["observation.images.camera1"]
             del batch["observation.images.camera2"]
-            batch = self.libero_preprocessor(batch)
+            batch = cast(dict[str, Any], self.libero_preprocessor(cast(Any, batch)))
 
-        processed_batch = self.preprocessor(batch)
+        processed_batch = self.preprocessor(cast(Any, batch))
 
         return processed_batch
 

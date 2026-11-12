@@ -3,7 +3,7 @@
 Everything that changed in this repository since work started with the assistant (2026-11-09). Newest first.
 Part 1 comes from this chat. Part 2 is reconstructed from the assistant's working notes of the earlier sessions, so treat the details there as a summary.
 
-**Verification status:** none of the changes of 2026-11-12 has been run. `uv` was not available on the machine they were made on. Run `make format`, `make check`, `make test` and `make test-pi` on the Linux station before relying on them.
+**Verification status:** On 2026-11-12 the Linux station ran `make check` (ruff, format and `ty check` clean) and the pytest selection of `make test` and `make test-pi`: 479 passed, 17 skipped, 12 deselected. `CUDA_VISIBLE_DEVICES=0`. GPUs 1–3 stayed with the other user's training job. Not run: hardware, GPU-marked inference, RLDS.
 
 ---
 
@@ -57,6 +57,7 @@ Part 1 comes from this chat. Part 2 is reconstructed from the assistant's workin
 ### Fixed
 
 - Orchestrator: a failed approach to the waiting pose left `approach_space` set, so a later unrelated `moveJ` could be redirected to a compartment. The queue is cleared on failure.
+- `at_wait_pose` is set only while the arm is at the waiting pose. A successful `moveJ` to any other target clears it, and so does an alarm. The next open then queues the approach again.
 
 ### Security
 
@@ -74,7 +75,6 @@ Checked for hard-coded secrets: none found. Credentials come from `TYPESAFE_API_
 
 ### Open
 
-- `at_wait_pose` is set when the arm reaches the waiting pose and never cleared, so the approach is skipped on later open cycles. Decide whether that is intended.
 - No workflow step calls `pick` or `place` yet; insertion is manual (`WAIT_PROCEED`). Needs defined pick and place poses.
 - Case study says "Schunk" gripper; code and docs drive an AG95 (`AgGripper`).
 - The case study says "2 x Kassow"; the repository has one Kassow station.
@@ -99,7 +99,7 @@ Checked for hard-coded secrets: none found. Credentials come from `TYPESAFE_API_
 - Jev answers are validated as finite probabilities; view and inlay fields fail closed.
 - Recorder latches write errors and publishes a save completion ID; DAgger refuses to publish a failed recording. Diagnostics are written through a bounded background queue, one `session_*` folder per start.
 - π₀.₅ input: uint8 images converted to float32 once; SO(3) interpolation of TCP orientation; one shared gripper hysteresis between converter and live loop; gripper keeps a held object at startup.
-- Software safety limits in the rollout (position, orientation and joint error, feedback age, inference timeout); alarms stop playback and never acknowledge controller safety. Speed ceilings 0.5 m/s, 1.0 rad/s.
+- Software safety limits in the rollout (position, orientation and joint error, feedback age, inference timeout); alarms stop playback and never acknowledge controller safety. Reviewed speed ceilings are 0.5 m/s, 1.0 rad/s and 1.0 rad/s per joint in `rio/policies/rollout/safety.py`. The Kassow policy config runs at 0.30 m/s, 0.40 rad/s and 0.40 rad/s per joint; see `docs/workflow/pi05_kassow_pipeline.md`.
 - KORD bridge: stream watchdog, command timeout, alarm handling; `clear_alarms_on_start` defaults to `False`; an old bridge is rejected before connecting. Native changes need a rebuild and supervised validation on the robot host.
 - Recording schema version 2 (bimanual proprio is joints plus gripper).
 - LeRobot formatter flushes parquet footers explicitly (found on 2026-11-11; full π₀.₅ selection then had a few failing tests that import old `examples.policy_cfgs` paths).
@@ -113,3 +113,4 @@ Checked for hard-coded secrets: none found. Credentials come from `TYPESAFE_API_
 ### Verification recorded at the time
 
 - Windows: 424 passed, 29 skipped; Linux (WSL): 428 passed, 25 skipped; ruff, format and ty green (2026-11-10). Not verified: Linux CI run, GPU, native KORD build, hardware.
+- Linux station, 2026-11-12: ruff, format and `ty check` clean. Pytest `not hardware and not gpu and not benchmark`: 479 passed, 17 skipped, 12 deselected, with the pi group installed. `CUDA_VISIBLE_DEVICES=0`; cards 1–3 were occupied by another user's job. Not run: hardware, GPU-marked inference, RLDS.

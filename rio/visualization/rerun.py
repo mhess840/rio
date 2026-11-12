@@ -4,7 +4,7 @@
 import queue
 from dataclasses import fields
 from enum import Enum, auto
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from loguru import logger
@@ -354,9 +354,10 @@ class RerunVisualizer(Node):
         if self.robot_model is None or self.mjcf_logger is None:
             return
 
-        data = mujoco.MjData(self.robot_model)
+        mj = cast(Any, mujoco)
+        data = mj.MjData(self.robot_model)
         data.qpos[: len(joint_q)] = joint_q
-        mujoco.mj_forward(self.robot_model, data)
+        mj.mj_forward(self.robot_model, data)
         self.mjcf_logger.log_data(data)
 
     def _load_robot_model(self, description: str, variant: str | None = None):

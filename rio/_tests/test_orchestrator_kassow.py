@@ -155,6 +155,48 @@ def test_open_stops_at_the_waiting_pose_before_the_space(tmp_path):
     ]
 
 
+def test_leaving_the_wait_pose_queues_it_on_the_next_open(tmp_path):
+    """The question is whether a second open still approaches after the arm has left the wait pose.
+
+    The first open moves to the wait pose and then to space 2, which clears the flag.
+    The following open is asked directly from there. It has to queue the wait pose again,
+    ahead of space 1. The test does not press ``p``, so it does not cover the return trip.
+    """
+    wait = Path("home_open_wait.json")
+    orchestrator, calls = _orchestrator(
+        tmp_path,
+        [_reading("open", space=2), _reading("open", space=1)],
+        ScriptedKeys("j"),
+        vla_reasons=["stop_when"],
+    )
+    orchestrator.wait_home = wait
+    orchestrator.step()
+    orchestrator.step()
+    orchestrator.step()
+    assert orchestrator.at_wait_pose is True
+    orchestrator.step()
+    assert orchestrator.at_wait_pose is False
+    assert orchestrator.state is State.RUN_VLA
+    assert calls == [("goto", "home_open_wait.json"), ("goto", "home_open_space2.json")]
+    orchestrator.state = State.ASK
+    orchestrator.step()
+    assert [move.path.name for move in orchestrator.moves] == ["home_open_wait.json", "home_open_space1.json"]
+
+
+def test_an_alarm_forgets_the_wait_pose(tmp_path):
+    """An alarm means the measured pose is no longer the waiting pose, so the next approach is kept."""
+    orchestrator, calls = _orchestrator(tmp_path, [], ScriptedKeys(), goto_script=["alarm"])
+    orchestrator.wait_home = Path("home_open_wait.json")
+    orchestrator.at_wait_pose = True
+    orchestrator.moves = [Move(SPACES[1])]
+    orchestrator.after_goto = State.RUN_VLA
+    orchestrator.state = State.GOTO
+    orchestrator.step()
+    assert orchestrator.state is State.WAIT_RESET
+    assert orchestrator.at_wait_pose is False
+    assert calls == [("goto", "home_open_space1.json")]
+
+
 def test_failed_approach_does_not_redirect_a_later_move(tmp_path):
     orchestrator, calls = _orchestrator(
         tmp_path,

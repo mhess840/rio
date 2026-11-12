@@ -115,9 +115,37 @@ def stop_arm_motion(arm) -> bool:
     return True
 
 
+def clamp_tcp_lead(command: np.ndarray, measured: np.ndarray, limits: RolloutSafetyCfg) -> np.ndarray:
+    """Pull a TCP command back toward the measured pose, inside the tracking limit.
+
+    A new chunk may start several centimetres from the arm. Sending that point
+    trips the position check and stops the rollout. Keeping the lead at 80 % of
+    each limit lets the arm catch up instead.
+    """
+    limited = np.array(command, dtype=np.float64, copy=True)
+    pose = np.asarray(measured, dtype=np.float64).reshape(-1)
+    delta = limited[:3] - pose[:3]
+    distance = float(np.linalg.norm(delta))
+    position_cap = 0.8 * float(limits.max_position_error_m)
+    if distance > position_cap > 0.0:
+        limited[:3] = pose[:3] + delta * (position_cap / distance)
+    rotation = cast(st.Rotation, st.Rotation.from_rotvec(limited[3:6]) * st.Rotation.from_rotvec(pose[3:6]).inv())
+    angle = float(rotation.magnitude())
+    rotation_cap = 0.8 * float(limits.max_rotation_error_rad)
+    if angle > rotation_cap > 0.0:
+        scaled = st.Rotation.from_rotvec(rotation.as_rotvec() * (rotation_cap / angle))
+        composed = cast(st.Rotation, scaled * st.Rotation.from_rotvec(pose[3:6]))
+        limited[3:6] = composed.as_rotvec()
+    return limited.astype(np.float32, copy=False)
+
+
 def move_action_checked(env, command, target_time: float, *, joint_serve: bool, limits: RolloutSafetyCfg):
     """Check fresh feedback immediately before dispatching one arm/gripper command."""
     state = env.robot.arm.get_state()
+    if not joint_serve:
+        measured = np.asarray(state.get("eef_pose", []), dtype=np.float64).reshape(-1)
+        if measured.shape == (6,) and np.isfinite(measured).all():
+            command = clamp_tcp_lead(command, measured, limits)
     require_arm_state_safe(state, command, now=time.now(), joint_serve=joint_serve, limits=limits)
     if not np.isfinite(target_time):
         raise RuntimeError("Invalid command deadline")

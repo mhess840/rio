@@ -330,12 +330,14 @@ class Orchestrator:
             self.moves.clear()
             return self._hold(f"moveJ to {move.path.name} failed")
         self.moves.pop(0)
-        if move.path == self.wait_home:
-            self.at_wait_pose = True
+        # The flag means the arm is still at the waiting pose. A later moveJ, including the
+        # compartment after the approach, leaves that pose.
+        self.at_wait_pose = self.wait_home is not None and move.path == self.wait_home
         return State.GOTO if self.moves else self.after_goto
 
     def _alarm(self, index: int, holding: bool) -> State:
         """Remember the phase and wait. The arm does not move in this state."""
+        self.at_wait_pose = False
         self.phase_index = index
         self.alarm_holding = holding
         self.log.write("alarm", phase=self.phases[index].name, holding=holding)
