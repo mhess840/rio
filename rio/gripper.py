@@ -12,6 +12,17 @@ class GripperEncoding(TypedDict):
     gripper_threshold: float | None
 
 
+def snap_gripper(
+    values: np.ndarray,
+    *,
+    gripper_close: float = 0.0,
+    gripper_open: float = 0.7,
+    gripper_threshold: float | None = None,
+) -> np.ndarray:
+    """Map gripper readings to two targets. ``None`` threshold uses the midpoint."""
+    return GripperBinarizer(gripper_close, gripper_open, gripper_threshold).action(values)
+
+
 @dataclass
 class GripperBinarizer:
     """Keep measured-state hysteresis separate from the command decision threshold."""

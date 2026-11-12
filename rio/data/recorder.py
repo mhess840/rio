@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: 2026 RIO Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import json
+import math
 import os
 import threading
 from queue import Queue
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from loguru import logger
@@ -13,7 +15,8 @@ from rio_hw import time
 from rio_hw.middleware import ClientFactory, ServerFactory
 from rio_hw.node import Node
 
-from ..schema import Step
+from ..manifest import run_manifest
+from ..schema import RECORDING_SCHEMA_VERSION, Step
 
 try:
     import robodm
@@ -32,7 +35,9 @@ try:
 
     pynvml.nvmlInit()
     _gpu_available = True
-except (ImportError, Exception):
+except Exception:
+    if TYPE_CHECKING:
+        raise
     pynvml = None
     _gpu_available = False
 
@@ -120,6 +125,9 @@ class Recorder(Node):
         self._close_thread: threading.Thread | None = None
         self._pending_closes = 0
         self._close_lock = threading.Lock()
+        self.error_code = 0
+        self._completed_save_id = 0
+        self._manifest: dict | None = None
 
         super().__init__(freq=freq, max_buffer_size=max_buffer_size, max_queue_size=max_queue_size, **kwargs)
         logger.info(f"Recorder initialized with path: {self.base_path} and freq: {self.freq} Hz")
@@ -141,6 +149,9 @@ class Recorder(Node):
         self.example_data = {
             "is_closed": False,
             "is_saving": False,
+            "failed": False,
+            "error_code": 0,
+            "save_id": 0,
             "timestamp": 0.0,
         }
 
@@ -152,25 +163,22 @@ class Recorder(Node):
 
     def _create_datamanager(self):
         """Create the robodm Trajectory datamanager."""
-        try:
-            self.datamanager = robodm.Trajectory(
-                path=self.path,
-                mode="w",
-                video_codec=self.video_codec,
-                codec_options=self.codec_options,
-                raw_codec=self.raw_codec,
-            )
-        except TypeError:
-            # Fall back for older robodm versions without raw_codec support
-            self.datamanager = robodm.Trajectory(
-                path=self.path,
-                mode="w",
-                video_codec=self.video_codec,
-                codec_options=self.codec_options,
-            )
+        if robodm is None:
+            raise ImportError("robodm is required for recording")
+        if self.path is None:
+            raise RuntimeError("Recorder trajectory path is not initialized")
+        options: dict[str, Any] = {
+            "path": self.path,
+            "mode": "w",
+            "video_codec": self.video_codec,
+            "codec_options": self.codec_options,
+        }
+        if "raw_codec" in inspect.signature(robodm.Trajectory).parameters:
+            options["raw_codec"] = self.raw_codec
+        self.datamanager = robodm.Trajectory(**options)
 
     def _init_stats(self):
-        self.stats = {
+        self.stats: dict[str, Any] = {
             "file_name": self.path,
             "start_time": time.now(),
             "steps_recorded": 0,
@@ -246,7 +254,7 @@ class Recorder(Node):
             except Exception as e:
                 logger.debug(f"Error capturing GPU stats: {e}")
 
-    def _init_dataset(self) -> str:
+    def _init_dataset(self) -> None:
         """
         parse and validate the trajectory path and define the trajectory index.
         """
@@ -318,7 +326,7 @@ class Recorder(Node):
                     if req_type == "record":
                         self._record(req.get("state", {}), req.get("timestamp"))
                     elif req_type == "save":
-                        self._save()
+                        self._save(save_id=int(req.get("save_id", 0)))
                         if req.get("start_next") and self.is_closed:
                             self._new_trajectory(req.get("path"))
                     elif req_type == "set_reward":
@@ -362,13 +370,28 @@ class Recorder(Node):
                 self._close_thread.join()
 
     def _put_status(self):
-        # Publish minimal status
-        status = {
-            "is_closed": self.is_closed,
-            "is_saving": self.is_saving,
-            "timestamp": time.now(),
-        }
+        with self._close_lock:
+            status = {
+                "is_closed": self.is_closed,
+                "is_saving": self.is_saving,
+                "failed": self.error_code != 0,
+                "error_code": self.error_code,
+                "save_id": self._completed_save_id,
+                "timestamp": time.now(),
+            }
         self.ring_buffer.put(status, wait=False)
+
+    def _fail(self, code: int) -> None:
+        with self._close_lock:
+            self.error_code = self.error_code or code
+        self._put_status()
+
+    @staticmethod
+    def _require_healthy(status) -> None:
+        if not isinstance(status, dict):
+            raise RuntimeError("Recorder status is unavailable")
+        if status.get("failed", False):
+            raise RuntimeError(f"Recorder failed (error code {status.get('error_code', 0)}); inspect the recorder log")
 
     def get_state(self):
         """Get recorder status."""
@@ -380,9 +403,17 @@ class Recorder(Node):
             return
 
         try:
-            self.datamanager.add_by_dict(state, timestamp=timestamp, time_unit=self.time_unit)
+            if timestamp is None:
+                self.datamanager.add_by_dict(state, timestamp=None, time_unit=self.time_unit)
+            else:
+                scales = {"s": 1_000_000_000, "ms": 1_000_000, "us": 1_000, "ns": 1}
+                if self.time_unit not in scales or not math.isfinite(timestamp):
+                    raise ValueError("Recorder timestamp or time unit is invalid")
+                timestamp_ns = round(timestamp * scales[self.time_unit])
+                self.datamanager.add_by_dict(state, timestamp=timestamp_ns, time_unit="ns")
         except Exception as e:
             logger.error(f"Error recording dict: {e}")
+            self._fail(1)
 
     def _close_worker(self):
         """Encode previously recorded trajectories without blocking teleop."""
@@ -390,27 +421,47 @@ class Recorder(Node):
             item = self._close_queue.get()
             if item is None:
                 return
-            datamanager, path = item
+            datamanager, path, save_id = item
             try:
-                logger.warning("Recorder saving {} in the background...", path)
-                datamanager.close()
-                logger.info("Recorder saved trajectory to {}", path)
+                if datamanager is not None:
+                    logger.warning("Recorder saving {} in the background...", path)
+                    datamanager.close()
+                    self._write_meta(path)
+                    logger.info("Recorder saved trajectory to {}", path)
             except Exception as e:
                 logger.error("Error saving recorder {}: {}", path, e)
+                self._fail(2)
             finally:
                 with self._close_lock:
                     self._pending_closes = max(0, self._pending_closes - 1)
                     self.is_saving = self._pending_closes > 0
+                    self._completed_save_id = max(self._completed_save_id, save_id)
                 self._put_status()
 
-    def _save(self):
+    def _write_meta(self, path: str) -> None:
+        """``<traj>_meta.json``: recording schema version and the code/library versions that wrote it."""
+        if self._manifest is None:
+            self._manifest = run_manifest()
+        meta = {"schema_version": RECORDING_SCHEMA_VERSION, "trajectory": os.path.basename(path), "manifest": self._manifest}
+        with open(path[:-4] + "_meta.json", "w", encoding="utf-8") as handle:
+            json.dump(meta, handle, indent=2, default=str)
+
+    def _save(self, save_id: int = 0):
         """Hand the current trajectory to the encode worker and mark it closed."""
         if self.is_closed:
-            logger.warning("Recorder trajectory already saved")
+            with self._close_lock:
+                self._pending_closes += 1
+                self.is_saving = True
+            self._close_queue.put((None, None, save_id))
+            self._put_status()
             return
 
         if self.log_stats:
-            self._end_stats()
+            try:
+                self._end_stats()
+            except Exception:
+                logger.exception("Could not save recorder statistics")
+                self._fail(3)
 
         datamanager = self.datamanager
         path = getattr(self, "path", None)
@@ -424,12 +475,15 @@ class Recorder(Node):
             self._pending_closes += 1
             self.is_saving = True
         self._put_status()
-        self._close_queue.put((datamanager, path))
+        self._close_queue.put((datamanager, path, save_id))
 
     def _new_trajectory(self, path: str | None = None):
         """
         Internal method to start a new trajectory in the same recorder instance.
         """
+        if self.error_code:
+            self._put_status()
+            return
         if not self.is_closed:
             logger.warning("Cannot start new trajectory before saving the current one.")
             return
@@ -476,6 +530,7 @@ class Recorder(Node):
             state: Dictionary containing feature names and their values
             timestamp: Optional timestamp in milliseconds. If None, uses current time.
         """
+        self._require_healthy(self.ring_buffer.get())
         self.request_queue.put({"type": "record", "state": state, "timestamp": timestamp})
 
     def record_dict(self, state: dict[str, Any], timestamp: float | None = None):
@@ -487,18 +542,22 @@ class Recorder(Node):
                    Can be nested (e.g., {"camera": {"rgb": image, "depth": depth_map}})
             timestamp: Optional timestamp in milliseconds.
         """
+        self._require_healthy(self.ring_buffer.get())
         self.request_queue.put({"type": "record", "state": state, "timestamp": timestamp})
 
-    def save(self, wait: bool = True, timeout: float | None = None, start_next: bool = False):
+    def save(self, wait: bool = True, timeout: float | None = 120.0, start_next: bool = False):
         """
         Save the trajectory file and close the recorder.
 
         Encoding runs in a background thread. If ``start_next`` is True, a new
         trajectory is opened immediately so teleop can continue.
         """
+        if timeout is not None and (not math.isfinite(timeout) or timeout < 0.0):
+            raise ValueError("Recorder save timeout must be finite and non-negative")
         req = {
             "type": "save",
             "start_next": start_next,
+            "save_id": time.now_ns(),
         }
         self.request_queue.put(req)
 
@@ -507,17 +566,16 @@ class Recorder(Node):
             rate = time.Rate(self.freq)
 
             while True:
+                if timeout is not None and time.now() - start_time > timeout:
+                    raise TimeoutError("Recorder did not confirm the requested save before the timeout")
                 status = self.ring_buffer.get()
                 if not isinstance(status, dict):
                     rate.sleep()
                     continue
-                if timeout is not None and time.now() - start_time > timeout:
-                    logger.warning("Timeout waiting for recorder to finish saving")
-                    return
-                if start_next:
-                    if not status.get("is_closed", True):
-                        break
-                elif status.get("is_closed", False) and not status.get("is_saving", False):
+                self._require_healthy(status)
+                completed = int(status.get("save_id", 0)) >= req["save_id"]
+                correct_state = not status.get("is_closed", True) if start_next else status.get("is_closed", False)
+                if completed and correct_state and not status.get("is_saving", False):
                     break
                 rate.sleep()
 
@@ -527,7 +585,9 @@ class Recorder(Node):
         """
         Start a new trajectory in the same recorder instance.
         """
-        if not self.ring_buffer.get().get("is_closed", False):
+        status = self.ring_buffer.get()
+        self._require_healthy(status)
+        if not status.get("is_closed", False):
             raise RuntimeError("Cannot start a new trajectory before saving the current one.")
 
         req = {
@@ -541,15 +601,15 @@ class Recorder(Node):
             start_time = time.now()
             rate = time.Rate(self.freq)
             while self.ring_buffer.get().get("is_closed", False):
+                self._require_healthy(self.ring_buffer.get())
                 if timeout is not None:
                     if time.now() - start_time > timeout:
-                        logger.warning("Timeout while waiting for recorder to start new trajectory")
-                        break
+                        raise TimeoutError("Recorder did not start a new trajectory before the timeout")
                 rate.sleep()
 
     def ready(self):
         status = self.ring_buffer.get()
-        return not status.get("is_saving", False) and not status.get("is_closed", True)
+        return isinstance(status, dict) and not status.get("failed", False) and not status.get("is_closed", True)
 
     def set_reward(self, reward: float):
         """

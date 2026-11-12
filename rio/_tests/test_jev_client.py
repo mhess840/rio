@@ -6,30 +6,32 @@
 import base64
 import io
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from examples.jev_ask import load_label, reply_path, save_reply
-from rio.jev import (
+from rio.apps.kassow.crate import (
+    COUNT_KEYS,
+    ORGANIZED_CRITERIA,
     CrateThresholds,
-    JevCfg,
-    JevClient,
-    JevError,
     ProbeScore,
     ask_crate,
     bayes_posterior,
     crate_questions,
-    encode_jpeg,
+    inlay_example_jpegs,
     read_crate,
 )
+from rio.apps.kassow.jev_ask import load_label, reply_path, save_reply
+from rio.jev import JevCfg, JevClient, JevError, encode_jpeg
 from rio.jev.client import IMAGES_HEADER, parse_reply
-from rio.jev.crate import COUNT_KEYS, ORGANIZED_CRITERIA, count_questions, inlay_example_jpegs
 
 pytestmark = pytest.mark.unit
 
 JPEG = encode_jpeg(np.full((480, 640, 3), 90, dtype=np.uint8))
+# Raw ``response`` objects saved by ``rio.apps.kassow.jev_ask`` (``*.jev-<backend>.json``) from the real model.
+REAL_REPLIES = sorted((Path(__file__).parent / "data" / "jev_replies").glob("*.json"))
 
 
 def _answers(organized: float, count: str, count_p: float, any_box: float, view_clear: float = 0.95) -> dict:
@@ -106,14 +108,30 @@ def test_inlay_example_jpegs_need_all_six_files(tmp_path):
     assert len(examples["good"]) == len(examples["bad"]) == 3
 
 
-def test_count_only_skips_the_inlay_and_opens_on_the_count():
-    answers = _answers(0.1, "one", 0.95, 0.9)
-    del answers["organized"]
-    del answers["view_clear"]
-    reading = read_crate(answers, available_spaces={1, 2, 3}, count_only=True)
-    assert reading.decision == "open"
-    assert reading.space == 2
-    assert set(count_questions()) == {"box_count", "any_box"}
+def test_package_ships_the_inlay_reference_photos():
+    examples = inlay_example_jpegs()
+    assert len(examples["good"]) >= 3 and len(examples["bad"]) >= 3
+
+
+@pytest.mark.parametrize("confidence", [None, "missing"])
+def test_count_confidence_is_optional_because_it_never_decides(confidence):
+    answers = _answers(0.9, "one", 0.95, 0.9)
+    if confidence is None:
+        answers["box_count"]["confidence"] = None
+    else:
+        del answers["box_count"]["confidence"]
+    reading = read_crate(answers, available_spaces={1, 2, 3}, thresholds=RAW)
+    assert reading.decision == "open" and reading.space == 2
+    assert reading.confidence is None
+    assert "conf=n/a" in reading.summary()
+
+
+@pytest.mark.skipif(not REAL_REPLIES, reason="no saved real Jev replies in rio/_tests/data/jev_replies")
+@pytest.mark.parametrize("path", REAL_REPLIES, ids=lambda path: path.name)
+def test_saved_real_jev_replies_pass_validation(path):
+    response = json.loads(path.read_text())["response"]
+    reading = read_crate(parse_reply(response).answers, available_spaces={1, 2, 3})
+    assert reading.decision in ("organize", "open", "hold")
 
 
 def test_local_request_attaches_inlay_example_data_urls():
@@ -191,6 +209,22 @@ def test_typesafe_without_key_fails_before_any_request(monkeypatch):
         JevClient(JevCfg(backend="typesafe")).ask(JPEG, crate_questions())
 
 
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://example.com", "http://", "example.com"])
+def test_only_http_urls_are_opened(monkeypatch, url):
+    monkeypatch.delenv("SHIM_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="http"):
+        JevClient(JevCfg(backend="local", url=url)).ask(JPEG, crate_questions())
+
+
+def test_a_credential_is_never_sent_over_plain_http_to_another_host(monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
+    with pytest.raises(ValueError, match="plain HTTP"):
+        JevClient(JevCfg(backend="typesafe", url="http://jev.example.com")).ask(JPEG, crate_questions())
+    monkeypatch.setenv("SHIM_TOKEN", "test-token")
+    with pytest.raises(ValueError, match="plain HTTP"):
+        JevClient(JevCfg(backend="local", url="http://10.0.0.5:3000")).ask(JPEG, crate_questions())
+
+
 def test_encode_jpeg_keeps_limits():
     big = encode_jpeg(np.zeros((2000, 3000, 3), dtype=np.uint8))
     assert max(Image.open(io.BytesIO(big)).size) == 1568
@@ -254,6 +288,40 @@ def test_unknown_count_word_is_rejected():
     answers = _answers(0.9, "zero", 0.95, 0.1)
     answers["box_count"]["choice"] = "0"
     with pytest.raises(ValueError, match="box_count"):
+        read_crate(answers, available_spaces={1})
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -0.1, 1.1, None, True, "0.9"])
+@pytest.mark.parametrize("field", ["view_clear", "organized", "any_box", "count", "confidence"])
+def test_invalid_model_probabilities_never_authorize_an_action(value, field):
+    if field == "confidence" and value is None:
+        pytest.skip("a null confidence is allowed; see test_count_confidence_is_optional_because_it_never_decides")
+    answers = _answers(0.9, "zero", 0.95, 0.1)
+    if field == "count":
+        answers["box_count"]["probabilities"]["zero"] = value
+    elif field == "confidence":
+        answers["box_count"]["confidence"] = value
+    else:
+        answers[field]["noul"] = value
+    with pytest.raises(ValueError):
+        read_crate(answers, available_spaces={1, 2, 3})
+
+
+@pytest.mark.parametrize("field", ["view_clear", "organized", "any_box", "box_count"])
+def test_missing_visual_observations_are_rejected(field):
+    answers = _answers(0.9, "zero", 0.95, 0.1)
+    del answers[field]
+    with pytest.raises(ValueError):
+        read_crate(answers, available_spaces={1})
+
+
+def test_count_distribution_must_be_normalized_and_include_the_selected_choice():
+    answers = _answers(0.9, "zero", 0.95, 0.1)
+    answers["box_count"]["probabilities"] = {"zero": 0.8, "one": 0.8}
+    with pytest.raises(ValueError, match="sum"):
+        read_crate(answers, available_spaces={1})
+    answers["box_count"]["probabilities"] = {"one": 1.0}
+    with pytest.raises(ValueError, match="selected"):
         read_crate(answers, available_spaces={1})
 
 

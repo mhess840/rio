@@ -11,7 +11,7 @@ TASK = "stacking_plates"
 
 
 @dataclass
-class Ur5eTeleopStation:
+class Ur5eGelloStation:
     arm: str = "UrArm"
     arm_cfg: NodeCfg | None = field(
         default_factory=lambda: NodeCfg(
@@ -38,7 +38,7 @@ class Ur5eTeleopStation:
 
     gripper: str | None = "RobotiqGripper"
     gripper_cfg: GripperCfg = field(
-        default_factory=lambda: Ur5eTeleopStation.GripperCfg(
+        default_factory=lambda: Ur5eGelloStation.GripperCfg(
             addr="127.0.0.1:5110",
             robot_port="192.168.1.15",
             connection_type="TCPIP",
@@ -62,7 +62,7 @@ class Ur5eTeleopStation:
             "camera_1": Camera(
                 addr="127.0.0.1:5131",
                 cam_type="Zed",
-                # Must match a device from: uv run python -c "from rio_hw.cameras.zed import get_connected_cameras; print(get_connected_cameras())"
+                # Use get_connected_cameras() from rio_hw.cameras.zed to choose a device.
                 serial="35616712",
                 model="",
                 freq=60,
@@ -74,7 +74,7 @@ class Ur5eTeleopStation:
 
     teleop: str = "Gello"
     teleop_cfg: GelloCfg = field(default_factory=GelloCfg)
-    teleop_cfg_yaml: str | None = "/home/pschalde/Documents/rio-hw/examples/station_cfgs/data/gello_ur5_2.yaml"
+    teleop_cfg_yaml: str | None = None
 
     teleop_keyboard: str | None = "Keyboard"
     teleop_keyboard_cfg: NodeCfg | None = field(

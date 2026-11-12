@@ -11,17 +11,10 @@ from rio_hw import time
 from rio_hw.middleware import ClientFactory, ServerFactory
 from rio_hw.node import Node
 from rio_hw.request import Request
+from scipy.interpolate import interp1d
+from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Slerp
 from threadpoolctl import threadpool_limits
-
-try:
-    from scipy.interpolate import interp1d
-    from scipy.spatial.transform import Rotation as R
-    from scipy.spatial.transform import Slerp
-
-    SCIPY_IMPORT_ERROR = None
-except ImportError as e:
-    interp1d = R = Slerp = None
-    SCIPY_IMPORT_ERROR = e
 
 try:
     import onnxruntime as ort
@@ -57,8 +50,6 @@ class SonicPlanner:
     def load(self, model_path: str, providers: list[str] | None = None):
         if ORT_IMPORT_ERROR is not None:
             raise ImportError("onnxruntime is required to run the kinematic planner.") from ORT_IMPORT_ERROR
-        if SCIPY_IMPORT_ERROR is not None:
-            raise ImportError("scipy is required to run the kinematic planner.") from SCIPY_IMPORT_ERROR
 
         sess_options = ort.SessionOptions()
         self.session = ort.InferenceSession(model_path, sess_options, providers=providers)
@@ -133,7 +124,14 @@ class SonicPlanner:
 
     def update_context(self):
         """Samples the active motion to prepare the 4-frame context for the next replan."""
-
+        if (
+            self.active_motion is None
+            or self._times_30hz is None
+            or self._interp_pos is None
+            or self._interp_joints is None
+            or self._slerp is None
+        ):
+            raise ValueError("Motion interpolators are unavailable; run replan first")
         gen_frame = min(self.current_frame + 2, len(self.active_motion) - 1)
         t_start = gen_frame / 50.0
 
@@ -171,8 +169,6 @@ class GearSonicPlanner(Node):
     ):
         if ORT_IMPORT_ERROR is not None:
             raise ImportError("onnxruntime is required for GearSonicPlanner.") from ORT_IMPORT_ERROR
-        if SCIPY_IMPORT_ERROR is not None:
-            raise ImportError("scipy is required for GearSonicPlanner.") from SCIPY_IMPORT_ERROR
 
         self.model_dir = model_dir
         self.freq = freq

@@ -51,7 +51,6 @@ extra_javascript:
 
 plugins:
   - search
-  - multirepo
   - autorefs
   - mkdocstrings:
       handlers:
@@ -97,16 +96,17 @@ nav:
   - RIO: index.md
 
   - Quick Start: quickstart.md
+  - Architecture (Kassow pilot): architecture.md
 
   - Workflow:
     - workflow/index.md
     - Setup:
       - Station Configuration: workflow/station_cfg.md
     - Collect Data:
-      - Collect Demonstrations: workflow/data-collection.md
+      - Collect Demonstrations: workflow/data_collection.md
       - Visualize Data: workflow/rerun.md
     - Convert Data:
-      - Convert to DROID: workflow/data-export.md
+      - Convert to DROID: workflow/data_export.md
     - Policy Training:
       - Setup: workflow/pi0_setup.md
       - Pi0.5 DROID Fine-tuning: workflow/pi0_droid_finetuning.md

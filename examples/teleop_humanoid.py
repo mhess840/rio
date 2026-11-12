@@ -20,6 +20,8 @@ class MujocoSimClient:
         robot_iface: str = "",
         freq: int = 200,
     ):
+        from rio.policies.gear_sonic import KDS, KPS
+
         self.num_joints = 29
         self.xml_path = xml_path
         self.motor_kp = np.array(motor_kp) if motor_kp is not None else np.array(KPS)
@@ -36,9 +38,10 @@ class MujocoSimClient:
         self.mj_data = mujoco.MjData(self.mj_model)
 
         self.mj_model.opt.timestep = 1.0 / 200  # 200 Hz
-        quat = self.mj_data.qpos[3:7] + 0.0 * np.random.randn(4)
+        generator = np.random.default_rng()
+        quat = self.mj_data.qpos[3:7] + 0.0 * generator.standard_normal(4)
         self.mj_data.qpos[3:7] = quat / np.sqrt(np.mean(quat**2))
-        self.mj_data.qpos[7:] = DEFAULT_ANGLES + 0.2 * np.random.randn(29)
+        self.mj_data.qpos[7:] = DEFAULT_ANGLES + 0.2 * generator.standard_normal(29)
         mujoco.mj_forward(self.mj_model, self.mj_data)
 
         self.viewer = mujoco.viewer.launch_passive(self.mj_model, self.mj_data)

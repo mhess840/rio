@@ -7,7 +7,9 @@ A station config is a dataclass that defines all hardware and software component
 | Folder | Purpose | Edit? |
 |--------|---------|-------|
 | `examples/cfg/` | One config per robot × teleop combo — arm IP, gripper port, camera serials, teleop settings, recorder path | **Yes** — edit before running |
-| `examples/teleop_*.py` | Control loops (spacemouse EEF, gello joint, leader-follower) | No |
+| `examples/teleop_*.py` | Control loops (spacemouse EEF, gello joint, leader-follower, Vive) | No |
+| `rio/apps/kassow/` | Kassow application: stations, experiments, teleop, DAgger, orchestrator (old `examples.*` commands forward here) | Stations only |
+| `rio/apps/vive/` | Station-independent Vive teleop loop, yaw calibration, keys | No |
 
 ### What to edit before running
 
@@ -43,11 +45,20 @@ You don't need to touch anything else to get started.
 
 | Config file | Class | Teleop script |
 |-------------|-------|---------------|
-| `examples/cfg/xarm_eef.py` | `Xarm7EEFStation` | `examples.teleop_eef` |
+| `examples/cfg/xarm_eef.py` | `Xarm7EefStation` | `examples.teleop_eef` |
 | `examples/cfg/xarm_gello.py` | `Xarm7GelloStation` | `examples.teleop_leader_follower` |
-| `examples/cfg/so100.py` | `SO100Station` | `examples.teleop_leader_follower` |
-| `examples/cfg/bimanual_so100.py` | `BimanualSO100Station` | `examples.teleop_leader_follower` |
+| `examples/cfg/so100.py` | `So100Station` | `examples.teleop_leader_follower` |
+| `examples/cfg/bimanual_so100.py` | `BimanualSo100Station` | `examples.teleop_leader_follower` |
 | `examples/cfg/humanoid.py` | `G1Station` | `examples.teleop_humanoid` |
+| `examples/cfg/ur_gello.py` | `Ur5eGelloStation` | `examples.teleop_leader_follower` |
+| `examples/cfg/ur_vive_inspire.py` | `Ur5eViveInspireStation` | `examples.teleop_vive_hand` |
+| `rio/apps/kassow/stations/kassow_vive_inspire.py` | `KassowViveInspireStation` | `examples.teleop_vive_hand` |
+| `examples/cfg/manus_inspire.py` | `ManusInspireStation` | `examples.teleop_leader_follower` |
+| `examples/cfg/yam.py` | `YamStation` | `examples.teleop_leader_follower` |
+| `examples/cfg/bimanual_yam.py` | `BimanualYamStation` | `examples.teleop_leader_follower` |
+| `rio/apps/kassow/stations/kassow.py` | `KassowStation` | `examples.teleop_eef` |
+| `rio/apps/kassow/stations/kassow_vive.py` | `KassowViveStation` | `examples.teleop_vive_hand` |
+| `rio/apps/kassow/stations/kassow_vive_gripper.py` | `KassowViveGripperStation` | `rio.apps.kassow.teleop` |
 
 !!! note "Humanoid extra setup required"
     `G1Station` requires additional hardware, policy models, and dependencies before running.

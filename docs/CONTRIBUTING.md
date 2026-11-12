@@ -13,7 +13,7 @@
 - **Word allowlist:** Use `[tool.typos.default.extend-words]` to allow words or acronyms that would otherwise be flagged.
 - **Identifier allowlist:** Use `[tool.typos.default.extend-identifiers]` to allow variables or constants that would otherwise be flagged.
 
-4. Run tests with `uv run --extra dev pytest -n 4`.
+4. Run `make check` (lint, format check, type check) and `make test` (CPU tests; `make test-pi` adds the π₀.₅ and conversion tests). Always use `uv run`, not `python`.
 
 5. Open a pull request on the main repository.
 

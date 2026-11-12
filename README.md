@@ -7,7 +7,13 @@
   <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json" /></a>
 </p>
 
-# RIO
+# RIO: Kassow crate-loading pilot
+
+This repository extends RIO with a Kassow + Vive + AG95 application: demonstration recording, π₀.₅ fine-tuning and serving, human-guided corrections (HG-DAgger), and a Jev-driven orchestrator with alarm-aware restart for a crate-loading pilot at the Juárez plant. Work in progress.
+
+**New here?** Read [docs/architecture.md](docs/architecture.md) first: it maps every concept of the pilot case study to a module. The hands-on guide is [docs/workflow/pi05_kassow_pipeline.md](docs/workflow/pi05_kassow_pipeline.md); the application code is in [rio/apps/kassow/](rio/apps/kassow/).
+
+## About RIO
 
 RIO: flexible real-time Robot I/O for cross-embodiment robot learning.
 
@@ -15,31 +21,43 @@ This project provides a Python-based interface to use different robot arms (Fran
 
 ## Setup
 
-Tested on Ubuntu 22.04 LTS with an optional real-time kernel patch. See [`docs/ubuntu.md`](docs/ubuntu.md) for setup instructions.
+Tested on Ubuntu 22.04 LTS with an optional real-time kernel patch. See [the Ubuntu setup guide](docs/setup-tutorials/ubuntu.md).
 
 ```bash
-git clone git@github.com:robot-i-o/rio.git
-
-# install open-pi
+git clone https://github.com/robot-i-o/rio.git
 cd rio
-mkdir third_party && cd third_party
-git clone git@github.com:Physical-Intelligence/openpi.git
-
-# install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# create venv and install dependencies
-uv venv --python 3.10
-source .venv/bin/activate
-uv sync --all-extras
+uv sync --frozen --python 3.12 --group dev
+make check
+make test
 ```
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) from its official distribution first.
+Clone [rio-hw](https://github.com/pschaldenbrand/rio-hw) next to this repository (`../rio-hw`); uv installs that
+checkout editable, and CI uses the commit pinned in `pyproject.toml`. No CUDA is needed. `make test` excludes
+physical-hardware, GPU tests, and optional all-backend benchmarks; `make test-pi` runs the same selection with
+LeRobot/Torch installed. Symlink tests report explicit skips on Windows
+without Developer Mode. `make check` checks lint, formatting, and types without modifying files; `make format`
+applies formatting fixes. Type checking covers the RIO package, including the Kassow application in `rio/apps/kassow`.
+
+Kassow/Vive/RealSense hardware and policy dependencies are opt-in:
+
+```bash
+uv sync --frozen --python 3.12 --extra kassow --group pi
+```
+
+`uv sync` and `uv run` keep using `../rio-hw`, so the Python driver always matches the `_kord_bridge` built from the
+same checkout. Recordings and rollouts store the rio/rio-hw commits and the bridge hash, and a warning names a rio-hw
+checkout that is not the pinned commit. Rebuild the native Kassow bridge after rio-hw changes
+(`bash scripts/setup/kord_bridge.sh`) and run the read-only station preflight
+(`pytest -m hardware rio/_tests/test_station_preflight.py`) before supervised robot use. Windows supports the
+hardware-free tests, but the resident daemon requires POSIX locking and the complete station targets Linux.
 
 ## Documentation
 
 Build and browse the docs locally at http://localhost:8000:
 
 ```bash
-uv sync --group docs
+uv sync --frozen --group docs
 uv run mkdocs serve
 ```
 

@@ -7,15 +7,15 @@ def __getattr__(name):
 
         return Pi05Cfg
     if name == "Pi05DaggerCfg":
-        from .pi05_dagger import Pi05DaggerCfg
+        from rio.apps.kassow.policy_cfgs.pi05_dagger import Pi05DaggerCfg
 
         return Pi05DaggerCfg
     if name == "Pi05LerobotCfg":
-        from .pi05_lerobot import Pi05LerobotCfg
+        from rio.apps.kassow.policy_cfgs.pi05_lerobot import Pi05LerobotCfg
 
         return Pi05LerobotCfg
     if name == "Pi05LerobotJointCfg":
-        from .pi05_lerobot_joint import Pi05LerobotJointCfg
+        from rio.apps.kassow.policy_cfgs.pi05_lerobot_joint import Pi05LerobotJointCfg
 
         return Pi05LerobotJointCfg
     if name == "SmolVLACfg":

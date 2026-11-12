@@ -23,7 +23,15 @@ requires-python = ">=3.10"
 
 dependencies = [
     "loguru>=0.7.3",
-    "rio_hw[all] @ git+https://github.com/pschaldenbrand/rio-hw.git@main",
+    "rio_hw @ git+https://github.com/pschaldenbrand/rio-hw.git@db4d623bb244d593c0812f11fd67184aa73c4e33",
+    "attrs>=24",
+    "cloudpickle>=3",
+    "atomics>=1.0.3",
+    "pyzmq>=26",
+    "pillow>=12",
+    "pyyaml>=6",
+    "imageio-ffmpeg>=0.6",
+    "pyserial>=3.5",
     "robodm>=0.1.0",
     "av<=13.1.0",    # required by robodm for proper encoding/decoding
 ]
@@ -36,8 +44,20 @@ rio-list-interfaces = "rio._scripts.list_available:list_interfaces"
 
 [project.optional-dependencies]
 visualizers = ["rerun-sdk", "mujoco", "robot_descriptions", "rerun-loader-mjcf"]
+kassow = [
+    "pyserial>=3.5",
+    "pyrealsense2>=2.59.1; sys_platform != 'darwin'",
+    "openvr",
+    "sshkeyboard",
+    "bleak",
+    "evdev; sys_platform == 'linux'",  # clicker (spare mouse as gripper/scale buttons)
+    "pin; sys_platform == 'linux'",
+    "cmeel-urdfdom>=4,<5; sys_platform == 'linux'",
+    "cmeel-tinyxml2==10.0.0; sys_platform == 'linux'",
+]
 
 [dependency-groups]
+dev = ["pytest==9.2.0", "ruff==0.14.0", "ty==0.0.93"]
 rlds = ["tensorflow>=2.11.0", "tensorflow-datasets>=4.9.0"]
 # LeRobot 0.6+ needs Python >=3.12,<3.14. Hardware and π₀.₅ share this env.
 pi = [
@@ -50,19 +70,11 @@ docs = [
     "mkdocstrings",
     "mkdocstrings[python]",
     "mkdocs-autorefs",
-    "mkdocs-multirepo-plugin @ git+https://github.com/etaoxing/mkdocs-multirepo-plugin.git@fb846d34672fd7f86ad5ba680566817a9ea7fb25",
 ]
 
 
 # This removes version constraints from transitive dependencies
 [tool.uv]
-# Docs (mkdocs-multirepo-plugin) and LeRobot pin incompatible typing-inspect.
-conflicts = [
-    [
-        { group = "docs" },
-        { group = "pi" },
-    ],
-]
 # ruckig<0.19 is sdist-only and its pinned scikit-build-core no longer builds.
 # cmeel-urdfdom/tinyxml2: keep ABI matching libpinocchio 3.8 (Kassow IK).
 override-dependencies = [
@@ -76,12 +88,15 @@ override-dependencies = [
     "pyrealsense2>=2.59.1; python_version >= '3.12' and sys_platform != 'darwin'",
 ]
 
-# Local checkout, so the Kassow arm node and the _kord_bridge build tree stay in sync.
 [tool.uv.sources]
+# The station runs the sibling checkout with its locally built _kord_bridge; CI checks out the pinned commit there.
 rio_hw = { path = "../rio-hw", editable = true }
 
 [tool.setuptools.packages.find]
-include = ["rio*", "examples*"]
+include = ["rio*"]
+
+[tool.setuptools.package-data]
+"rio.apps.kassow" = ["homes/*.json", "inlay/*.jpg"]
 
 [tool.setuptools.dynamic]
 version = { file = ["VERSION"] }
@@ -112,13 +127,17 @@ select = [
 ignore = [
     "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
     "E731",   # Do not assign a lambda expression, use a def
-    "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
-    "E731",   # Do not assign a lambda expression, use a def
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "examples/*" = ["PLC0415"]
+"rio/apps/**/*.py" = ["PLC0415"]
+"rio/_tests/*" = ["PLC0415"]
+"rio/policies/pi05.py" = ["PLC0415"]
+"rio/policies/pi05_resident/*.py" = ["PLC0415"]
+"rio/policies/rollout/*.py" = ["PLC0415"]
+"rio/data/convert_pi05/*.py" = ["PLC0415"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -138,7 +157,36 @@ markers = [
     "integration: requires subprocess/IPC, no physical hardware",
     "hardware: requires physical camera/robot/teleop device",
     "gpu: requires CUDA",
+    "benchmark: optional middleware performance harness requiring additional backends",
 ]
+
+[tool.ty.src]
+include = ["rio"]
+exclude = ["rio/_tests"]
+
+[tool.ty.environment]
+python-version = "3.12"
+# rio_hw is an editable install of the sibling checkout; ty cannot follow setuptools' editable import hook.
+extra-paths = ["../rio-hw"]
+
+[[tool.ty.overrides]]
+include = [
+    "rio/policies/pi0.py",
+    "rio/policies/pi05.py",
+    "rio/policies/smolvla.py",
+    "rio/policies/gear_sonic.py",
+    "rio/policies/gear_sonic_planner.py",
+    "rio/policies/rollout/loop.py",
+    "rio/visualization/rerun.py",
+    "rio/visualization/utils.py",
+    "rio/data/rlds_formatter.py",
+    "rio/data/convert_pi05/**",
+    "rio/data/lerobot_formatter.py",
+    "rio/data/recorder.py",
+]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
 
 [tool.typos]
 files.extend-exclude = ["*.urdf", "*.usd", "*.usda", "*.mjcf"]

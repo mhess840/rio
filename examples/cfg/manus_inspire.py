@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 from rio.cfg import NodeCfg, VisualizerCfg
 from rio.cfg.common import RecorderCfg
 
-
 TASK = "manus_inspire_teleop_peace_sign_camera2"
 
 
@@ -44,12 +43,12 @@ class ManusInspireStation:
     teleop_cfg: NodeCfg | None = field(
         default_factory=lambda: NodeCfg(
             addr="127.0.0.1:5570",
-            glove_id=None,            # auto-select lowest available glove ID
+            glove_id=None,  # auto-select lowest available glove ID
             hand_motion="NoMotion",
             thumb_chord_weight=0.25,
             # calibration_file="my_cal.json",  # uncomment to use an existing file
-            auto_calibrate=True,      # run interactive calibration if file not found
-            no_thumb_endpoints=False, # set True for quick 2-pose calibration only
+            auto_calibrate=True,  # run interactive calibration if file not found
+            no_thumb_endpoints=False,  # set True for quick 2-pose calibration only
             curl=1.2,
             thumb_curl=1.45,
             freq=100,
@@ -60,10 +59,7 @@ class ManusInspireStation:
     )
 
     teleop_keyboard: str | None = "Keyboard"
-    teleop_keyboard_cfg: NodeCfg | None = field(
-        default_factory=lambda: NodeCfg(addr="127.0.0.1:5571", freq=100)
-    )
-
+    teleop_keyboard_cfg: NodeCfg | None = field(default_factory=lambda: NodeCfg(addr="127.0.0.1:5571", freq=100))
 
     class Camera:
         def __init__(self, cam_type: str, module: str = "cameras", **kwargs):
@@ -76,7 +72,7 @@ class ManusInspireStation:
     #         "camera_0": ManusInspireStation.Camera(
     #             addr="127.0.0.1:5130",
     #             cam_type="Zed",
-    #             # Must match a device from: uv run python -c "from rio_hw.cameras.zed import get_connected_cameras; print(get_connected_cameras())"
+    #             # Use get_connected_cameras() from rio_hw.cameras.zed to choose a device.
     #             serial="36724908",
     #             resolution=(720, 1280),
     #             freq=60,

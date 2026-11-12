@@ -3,7 +3,9 @@
 
 """LeRobot dataset formatter for converting robodm trajectories."""
 
+import inspect
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -11,12 +13,18 @@ import numpy as np
 import robodm
 
 try:
-    from lerobot.common.constants import HF_LEROBOT_HOME
-    from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.utils.constants import HF_LEROBOT_HOME
 
     LEROBOT_AVAILABLE = True
 except ImportError:
-    LEROBOT_AVAILABLE = False
+    try:  # LeRobot before 0.4 kept these under ``lerobot.common``.
+        from lerobot.common.constants import HF_LEROBOT_HOME
+        from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+
+        LEROBOT_AVAILABLE = True
+    except ImportError:
+        LEROBOT_AVAILABLE = False
 from loguru import logger
 
 from ._formatter import Formatter
@@ -49,11 +57,12 @@ class LeRobotFormatter(Formatter):
         features: dict[str, dict[str, Any]] | None = None,
         video_keys: list[str] | None = None,
         feature_mapping: dict[str, str] | None = None,
-        feature_transforms: dict[str, callable] | None = None,
+        feature_transforms: dict[str, Callable] | None = None,
         verbose: bool = False,
         only_mapped_keys: bool = True,
         override_existing: bool = False,
         task: str | None = None,
+        vcodec: str = "h264",
     ):
         """
         Initialize the LeRobot formatter.
@@ -89,6 +98,8 @@ class LeRobotFormatter(Formatter):
             verbose: If True, print progress information
             only_mapped_keys: If True, only include features that are in the feature_mapping
             override_existing: If True, overwrite existing dataset if it exists
+            vcodec: Video codec of the image features. ``h264`` encodes with the pinned PyAV (``av<=13``);
+                LeRobot 0.6's own default, AV1, does not.
         """
         super().__init__(robodm_path, output_path, verbose)
         if not LEROBOT_AVAILABLE:
@@ -104,6 +115,7 @@ class LeRobotFormatter(Formatter):
         self.only_mapped_keys = only_mapped_keys
         self.override_existing = override_existing
         self.task = task
+        self.vcodec = vcodec
 
         # Configure logger level based on verbose flag
         if not verbose:
@@ -172,7 +184,8 @@ class LeRobotFormatter(Formatter):
         robodm_feature_names = list(trajectory_data.keys())
         logger.debug(f"Found robodm features: {robodm_feature_names}")
 
-        if self.only_mapped_keys and self.feature_mapping is not None:
+        # Without a mapping every feature is used as-is (``only_mapped_keys`` only filters a given mapping).
+        if self.only_mapped_keys and self.feature_mapping:
             mapped_feature_names = set(self.feature_mapping.keys())
             missing_feature_names = mapped_feature_names - set(robodm_feature_names)
             if missing_feature_names:
@@ -225,15 +238,24 @@ class LeRobotFormatter(Formatter):
                 logger.info("Aborting conversion.")
                 return {}
 
-        # Create LeRobot dataset
+        # Create LeRobot dataset; 0.4 takes ``vcodec=``, 0.6 an ``rgb_encoder`` config.
+        params = inspect.signature(LeRobotDataset.create).parameters
+        codec_kwargs: dict[str, Any] = {}
+        if "vcodec" in params:
+            codec_kwargs["vcodec"] = self.vcodec
+        if "rgb_encoder" in params:
+            from lerobot.configs.video import RGBEncoderConfig  # noqa: PLC0415  (only exists in LeRobot >= 0.6)
+
+            codec_kwargs["rgb_encoder"] = RGBEncoderConfig(vcodec=self.vcodec, video_backend="pyav")
         self.dataset = LeRobotDataset.create(
             repo_id=self.repo_id,
             fps=self.fps,
             robot_type=self.robot_type,
             features=self.features,
             root=self.output_path,
-            image_writer_threads=30,
-            image_writer_processes=15,
+            image_writer_threads=4,
+            image_writer_processes=0,
+            **codec_kwargs,
         )
 
         logger.info(f"Created LeRobot dataset: {self.repo_id}")
@@ -273,6 +295,10 @@ class LeRobotFormatter(Formatter):
             # Save the episode
             self.dataset.save_episode()
             logger.debug(f"Saved episode {episode_idx + 1} to LeRobot dataset")
+
+        finalize = getattr(self.dataset, "finalize", None)
+        if callable(finalize):
+            finalize()
 
         return {
             "total_frames": total_frames,
@@ -403,7 +429,7 @@ class LeRobotFormatter(Formatter):
             # Convert to appropriate format for LeRobot
             if isinstance(value, np.ndarray):
                 # Check if we need to transpose images
-                if lerobot_name in self.video_keys and len(value.shape) == 3:
+                if lerobot_name in (self.video_keys or []) and len(value.shape) == 3:
                     if value.shape[0] in [1, 3, 4]:  # (C, H, W) -> (H, W, C)
                         value = np.transpose(value, (1, 2, 0))
                 if len(value.shape) == 1:

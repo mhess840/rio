@@ -36,7 +36,7 @@ class Ur5eViveInspireStation:
             tcp_offset_pose=None,
             payload_mass=None,
             timeout=30.0,
-            # Scale the movement 
+            # Scale the movement
             # pos_scale=0.5,
             # rot_scale=0.75,
         )
@@ -107,9 +107,7 @@ class Ur5eViveInspireStation:
     # Leader 3: keyboard, used for the arm clutch
     # -----------------------------------------------------------------------
     teleop_keyboard: str | None = "Keyboard"
-    teleop_keyboard_cfg: NodeCfg | None = field(
-        default_factory=lambda: NodeCfg(addr="127.0.0.1:5582", freq=100)
-    )
+    teleop_keyboard_cfg: NodeCfg | None = field(default_factory=lambda: NodeCfg(addr="127.0.0.1:5582", freq=100))
 
     # -----------------------------------------------------------------------
     # Vive retargeting and safety

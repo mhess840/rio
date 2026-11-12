@@ -2,11 +2,68 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rio
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: rio
+      # uv resolves rio_hw from ../rio-hw; check out exactly the commit pinned in pyproject.toml.
+      - id: pin
+        run: echo "sha=$(grep -oP 'rio-hw\.git@\K[0-9a-f]{40}' pyproject.toml)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: pschaldenbrand/rio-hw
+          ref: ${{ steps.pin.outputs.sha }}
+          path: rio-hw
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync
-      - run: uv run pytest -m "(unit or integration) and not gpu"
+        with:
+          version: "0.13.6"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: rio/uv.lock
+      - run: uv sync --frozen --group dev
+      - run: make check
+      - run: make test
+
+  # The default job skips everything that needs LeRobot/Torch (π₀.₅ mapping, conversion, DAgger merge,
+  # LeRobot formatter). This job installs the locked `pi` group so those tests run on every PR.
+  test-pi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      UV_FROZEN: "1"
+    defaults:
+      run:
+        working-directory: rio
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rio
+      - id: pin
+        run: echo "sha=$(grep -oP 'rio-hw\.git@\K[0-9a-f]{40}' pyproject.toml)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: pschaldenbrand/rio-hw
+          ref: ${{ steps.pin.outputs.sha }}
+          path: rio-hw
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.13.6"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: rio/uv.lock
+      - run: uv sync --group dev --group pi
+      - run: make test-pi

@@ -20,12 +20,15 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
+from numbers import Real
 from typing import Literal
 
 import numpy as np
@@ -44,6 +47,46 @@ MAX_SIDE = 1568
 
 class JevError(RuntimeError):
     """The Jev endpoint refused the request or answered with something unusable."""
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def validate_url(url: str, *, with_credentials: bool = False) -> str:
+    """Accept only http(s) endpoints, and credentials only over TLS or loopback.
+
+    ``urllib`` would also open ``file://`` and ``ftp://`` URLs, so the scheme is checked first.
+
+    Raises:
+        ValueError: If the scheme is not http(s), the host is missing, or a credential
+            would travel over plain HTTP to another machine.
+    """
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"Jev URL must be http(s) with a host, got {url!r}")
+    if with_credentials and parts.scheme != "https" and parts.hostname not in _LOOPBACK_HOSTS:
+        raise ValueError(f"Refusing to send a credential over plain HTTP to {parts.hostname}; use https")
+    return url
+
+
+def validate_probability(value: object, name: str) -> float:
+    """Require a finite numeric value in the closed interval [0, 1]."""
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a numeric probability")
+    probability = float(value)
+    if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
+        raise ValueError(f"{name} must be a finite probability in [0, 1]")
+    return probability
+
+
+def validate_probabilities(value: object, name: str) -> dict[str, float]:
+    """Validate a non-empty distribution, allowing one percent rounding error."""
+    if not isinstance(value, dict) or not value:
+        raise ValueError(f"{name} must be a non-empty probability distribution")
+    probabilities = {str(key): validate_probability(probability, f"{name}.{key}") for key, probability in value.items()}
+    if not math.isclose(sum(probabilities.values()), 1.0, rel_tol=0.0, abs_tol=0.01):
+        raise ValueError(f"{name} probabilities must sum to 1")
+    return probabilities
 
 
 @dataclass
@@ -199,6 +242,7 @@ class JevClient:
             image_jpeg, questions, note, extra_images=extra_images, inlay_examples=inlay_examples
         )
         headers.update(self._auth_header())
+        validate_url(self.cfg.resolved_url(), with_credentials="Authorization" in headers)
         request = urllib.request.Request(
             f"{self.cfg.resolved_url()}/v1/systemone",
             data=json.dumps(body).encode("utf-8"),

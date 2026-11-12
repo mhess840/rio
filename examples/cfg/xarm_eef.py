@@ -7,7 +7,7 @@ TASK = "pick_and_place"
 
 
 @dataclass
-class Xarm7EEFStation:
+class Xarm7EefStation:
     arm: str = "XarmArm"
     arm_cfg: NodeCfg | None = field(
         default_factory=lambda: NodeCfg(
@@ -69,7 +69,7 @@ class Xarm7EEFStation:
         addr: str = "127.0.0.1:5000"
 
     teleop: str = "Spacemouse"  # Gamepad | Keyboard | Spacemouse
-    teleop_cfg: TeleopCfg = field(default_factory=lambda: Xarm7EEFStation.TeleopCfg())
+    teleop_cfg: TeleopCfg = field(default_factory=lambda: Xarm7EefStation.TeleopCfg())
 
     arm_latency: float = 0.0
     gripper_latency: float = 0.1

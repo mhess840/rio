@@ -1,17 +1,20 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from rio.cfg import NodeCfg, VisualizerCfg
 from rio.cfg.common import RecorderCfg
 
+CALIBRATION_DIR = Path.home() / ".cache/huggingface/lerobot/calibration/robots/so100_follower"
+
 
 @dataclass
-class BimanualSO100Station:
+class BimanualSo100Station:
     arm1: str = "SoArm"
     arm1_cfg: NodeCfg | None = field(
         default_factory=lambda: NodeCfg(
             addr="127.0.0.1:5555",
             port="/dev/ttyACM0",
-            calibration_file="/home/portegak/.cache/huggingface/lerobot/calibration/robots/so100_follower/follower_L.json",
+            calibration_file=str(CALIBRATION_DIR / "follower_L.json"),
             robot_controller="joint_pos",
         )
     )
@@ -21,7 +24,7 @@ class BimanualSO100Station:
         default_factory=lambda: NodeCfg(
             addr="127.0.0.1:5556",
             port="/dev/ttyACM2",
-            calibration_file="/home/portegak/.cache/huggingface/lerobot/calibration/robots/so100_follower/follower_R.json",
+            calibration_file=str(CALIBRATION_DIR / "follower_R.json"),
             robot_controller="joint_pos",
         )
     )
@@ -35,7 +38,7 @@ class BimanualSO100Station:
             motors_enabled=False,
             robot_model="so100",
             robot_controller="joint_pos",
-            calibration_file="/home/portegak/.cache/huggingface/lerobot/calibration/robots/so100_follower/leader_L.json",
+            calibration_file=str(CALIBRATION_DIR / "leader_L.json"),
         )
     )
 
@@ -46,7 +49,7 @@ class BimanualSO100Station:
             motors_enabled=False,
             robot_model="so100",
             robot_controller="joint_pos",
-            calibration_file="/home/portegak/.cache/huggingface/lerobot/calibration/robots/so100_follower/leader_R.json",
+            calibration_file=str(CALIBRATION_DIR / "leader_R.json"),
         )
     )
 
@@ -72,7 +75,7 @@ class BimanualSO100Station:
     recorder: str | None = None
     recorder_cfg: RecorderCfg = field(
         default_factory=lambda: RecorderCfg(
-            path="/home/abucker/data/xlerobot/",
+            path="data/xlerobot/",
             video_codec="libx264",
             codec_options={"crf": "23", "preset": "fast"},
             verbose=True,

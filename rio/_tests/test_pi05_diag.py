@@ -5,6 +5,7 @@
 
 import csv
 import json
+import threading
 
 import numpy as np
 import pytest
@@ -24,10 +25,68 @@ from examples.diagnose_pi05_offline import (
     xyz_ade_m,
     xyz_span_m,
 )
-from examples.policy_cfgs.pi05_lerobot import Pi05LerobotCfg
-from examples.policy_inference import append_cmd_eef, create_diagnostic_session, write_chunk_dump
+from rio.apps.kassow.policy_cfgs.pi05_lerobot import Pi05LerobotCfg
+from rio.data.diagnostics import AsyncDiagnostics
+from rio.policies.rollout import append_cmd_eef, create_diagnostic_session, write_chunk_dump
 
 pytestmark = pytest.mark.unit
+
+
+def test_async_diagnostics_use_snapshots_and_preserve_order():
+    entered = threading.Event()
+    release = threading.Event()
+    observed = []
+    writer = AsyncDiagnostics(max_pending=2)
+
+    def blocked():
+        entered.set()
+        if not release.wait(timeout=2):
+            raise TimeoutError("test release was not signalled")
+
+    try:
+        writer.submit(blocked)
+        assert entered.wait(timeout=1)
+        payload = {"action": np.array([1.0])}
+        writer.submit(observed.append, payload)
+        payload["action"][0] = 9.0
+        writer.submit(observed.append, {"action": np.array([2.0])})
+    finally:
+        release.set()
+        writer.close()
+    assert [item["action"][0] for item in observed] == [1.0, 2.0]
+
+
+def test_async_diagnostics_reject_a_full_queue_without_waiting():
+    entered = threading.Event()
+    release = threading.Event()
+    writer = AsyncDiagnostics(max_pending=1)
+
+    def blocked():
+        entered.set()
+        if not release.wait(timeout=2):
+            raise TimeoutError("test release was not signalled")
+
+    try:
+        writer.submit(blocked)
+        assert entered.wait(timeout=1)
+        writer.submit(lambda: None)
+        with pytest.raises(RuntimeError, match="backlog"):
+            writer.submit(lambda: None)
+    finally:
+        release.set()
+        writer.close()
+
+
+def test_async_diagnostic_errors_are_not_silently_discarded():
+    writer = AsyncDiagnostics()
+
+    def broken():
+        raise OSError("disk failure")
+
+    writer.submit(broken)
+    with pytest.raises(RuntimeError, match="diagnostic write failed") as failure:
+        writer.close()
+    assert isinstance(failure.value.__cause__, OSError)
 
 
 def test_episode_mid_index_fits_horizon():
@@ -174,7 +233,7 @@ def test_diagnostic_sessions_never_overwrite_an_earlier_run(tmp_path):
 
 
 def test_diagnostics_record_rotation_alarm_and_feedback_age(tmp_path, monkeypatch):
-    from examples import policy_inference
+    from rio.policies import rollout as policy_inference
 
     monkeypatch.setattr(policy_inference.time, "now", lambda: 10.0)
     cmd = np.array([0.11, 0.2, 0.3, 0.1, 0.0, 0.0, 0.7])

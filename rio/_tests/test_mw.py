@@ -142,6 +142,8 @@ def create_client_fn(middleware, addr, verbose, timeout, freq):
 
 
 class TestMiddleware(unittest.TestCase):
+    pytestmark = pytest.mark.benchmark
+
     def setUp(self):
         self.middlewares = ["Zenoh", "Shm", "Thread", "Portal", "ZeroRpc"]
         self.freq = 50
@@ -152,7 +154,7 @@ class TestMiddleware(unittest.TestCase):
         self.verbose = False
         self.timeout = 1.0
 
-        self.mp_method = "fork"
+        self.mp_method = "fork" if "fork" in mp.get_all_start_methods() else "spawn"
         mp.set_start_method(self.mp_method, force=True)
         random.seed(self.seed)
         self.ran_gen = np.random.Generator(np.random.PCG64(seed=self.seed))

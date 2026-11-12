@@ -79,7 +79,7 @@ class Xarm7GelloStation:
 
     teleop: str = "Gello"
     teleop_cfg: GelloCfg = field(default_factory=GelloCfg)
-    teleop_cfg_yaml: str | None = "/home/portegak/repos/rio/scripts/setup/gello/configs/yam_auto_generated_sim.yaml"
+    teleop_cfg_yaml: str | None = None
 
     teleop2: str | None = None
     teleop2_cfg: GelloCfg = field(default_factory=GelloCfg)

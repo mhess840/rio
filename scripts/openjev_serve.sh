@@ -5,7 +5,7 @@
 # The arm is not contacted.
 set -euo pipefail
 
-ROOT="${OPENJEV_ROOT:-/home/hme2lo/models/openjev}"
+ROOT="${OPENJEV_ROOT:?set OPENJEV_ROOT to the folder with openjev-FP8, venv and openjev-src}"
 MODEL="${ROOT}/openjev-FP8"
 VENV="${ROOT}/venv"
 HELPER="${ROOT}/openjev-src/helper/shim.py"

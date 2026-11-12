@@ -22,7 +22,7 @@ except ImportError as e:
     if TYPE_CHECKING:
         raise e
     else:
-        rr = None  # type: ignore
+        rr = None
 
 try:
     import mujoco
@@ -31,14 +31,14 @@ except ImportError as e:
     if TYPE_CHECKING:
         raise e
     else:
-        mujoco = None  # type: ignore
+        mujoco = None
 
 try:
     from robot_descriptions.loaders.mujoco import load_robot_description
 
     ROBOT_DESCRIPTIONS_AVAILABLE = True
 except ImportError:
-    load_robot_description = None  # type: ignore
+    load_robot_description = None
     ROBOT_DESCRIPTIONS_AVAILABLE = False
 
 
@@ -199,7 +199,10 @@ class RerunVisualizer(Node):
 
                 # Handle each request
                 for req_raw in reqs:
-                    req = Request(RequestType(req_raw.pop("type")), req_raw["data"])
+                    payload = req_raw["data"]
+                    if not isinstance(payload, dict):
+                        raise ValueError("Visualizer request data must be an object")
+                    req = Request(RequestType(req_raw.pop("type")), payload)
                     self._handle_request(req)
 
                 # Update time
@@ -320,7 +323,8 @@ class RerunVisualizer(Node):
         display_arrows_traj(entity_path, trajectory, color, radii=radii)
 
     def _handle_log_frame(self, entity_path: str, pose: np.ndarray | None = None, axis_length: float = 0.1, **kwargs):
-        display_frame(entity_path, pose, axis_length=axis_length)
+        if pose is not None:
+            display_frame(entity_path, pose, axis_length=axis_length)
 
     def _handle_log_env_state(self, entity_path: str, step: Step, **kwargs):
         """Handle LOG_ENV_STATE request."""
@@ -357,7 +361,7 @@ class RerunVisualizer(Node):
 
     def _load_robot_model(self, description: str, variant: str | None = None):
         """Load a robot model from robot_descriptions."""
-        if not ROBOT_DESCRIPTIONS_AVAILABLE:
+        if not ROBOT_DESCRIPTIONS_AVAILABLE or load_robot_description is None:
             logger.warning("robot_descriptions not installed. Cannot load robot model.")
             return None
         try:

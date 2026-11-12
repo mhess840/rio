@@ -37,7 +37,7 @@ class FakeStick:
 
 
 def test_keyboard_translation_keys():
-    motion, gripper, _, mode = Interface.poll_keyboard(FakeKeyboard("w"), 0.0, 0.0, TeleopMode.TRANSLATION)
+    motion, gripper, _, _mode = Interface.poll_keyboard(FakeKeyboard("w"), 0.0, 0.0, TeleopMode.TRANSLATION)
     assert motion[0] == 1.0 and not motion[1:].any()
     assert gripper is None
 
@@ -99,7 +99,7 @@ def test_eef_cmd_rotation_zeroes_translation():
 
 
 def test_held_keys_maps_mouse_side_buttons_to_scale():
-    from examples.teleop_vive_hand import held_keys
+    from rio.apps.vive.controls import held_keys
 
     down = held_keys({"alphanumeric_state": [0], "special_state": [0x224, 0]})
     assert "scale_down" in down
@@ -108,7 +108,7 @@ def test_held_keys_maps_mouse_side_buttons_to_scale():
 
 
 def test_step_motion_scale_uses_relative_factor_and_clamps():
-    from examples.teleop_vive_hand import step_motion_scale
+    from rio.apps.vive.controls import step_motion_scale
 
     assert step_motion_scale(1.0, up=True, step=1.2, min_scale=0.5, max_scale=1.5) == pytest.approx(1.2)
     assert step_motion_scale(1.0, up=False, step=1.2, min_scale=0.5, max_scale=1.5) == pytest.approx(1.0 / 1.2)
@@ -119,7 +119,7 @@ def test_step_motion_scale_uses_relative_factor_and_clamps():
 def test_apply_live_scale_steps_pos_and_rot_together_without_jump():
     from rio_hw.interfaces.vive_retarget import AXIS_MAP_STEAMVR_TO_ROBOT, ClutchRetargeter
 
-    from examples.teleop_vive_hand import apply_live_scale
+    from rio.apps.vive.controls import apply_live_scale
 
     retargeter = ClutchRetargeter(pos_scale=1.0, rot_scale=1.0, max_pos_speed=10.0, max_rot_speed=10.0)
     tcp = np.array([0.4, 0.0, 0.3])
@@ -156,7 +156,7 @@ def test_apply_live_scale_steps_pos_and_rot_together_without_jump():
 def test_apply_live_scale_scales_speed_ceilings_with_motion_scale():
     from rio_hw.interfaces.vive_retarget import ClutchRetargeter
 
-    from examples.teleop_vive_hand import apply_live_scale
+    from rio.apps.vive.controls import apply_live_scale
 
     class FakeArm:
         max_pos_speed = 0.45
@@ -203,7 +203,7 @@ def test_apply_live_scale_scales_speed_ceilings_with_motion_scale():
 
 
 def test_step_pose_toward_caps_translation_and_rotation():
-    from examples.teleop_vive_hand import pose_at_home, step_pose_toward
+    from rio.apps.kassow.homing import pose_at_home, step_pose_toward
 
     current = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     goal = np.array([0.10, 0.0, 0.0, 0.0, 0.0, 1.0])
@@ -215,7 +215,7 @@ def test_step_pose_toward_caps_translation_and_rotation():
 
 
 def test_pose_home_error_reports_metres_and_radians():
-    from examples.teleop_vive_hand import pose_home_error
+    from rio.apps.kassow.homing import pose_home_error
 
     current = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     goal = np.array([0.01, 0.0, 0.0, 0.0, 0.0, 0.1])
@@ -225,7 +225,7 @@ def test_pose_home_error_reports_metres_and_radians():
 
 
 def test_joints_stopped_uses_max_abs_qd():
-    from examples.teleop_vive_hand import joints_stopped
+    from rio.apps.kassow.homing import joints_stopped
 
     assert joints_stopped({"joint_qd": np.zeros(7)})
     assert not joints_stopped({"joint_qd": np.array([0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0])})
@@ -233,7 +233,7 @@ def test_joints_stopped_uses_max_abs_qd():
 
 
 def test_begin_kord_home_skips_when_already_there():
-    from examples.teleop_vive_hand import begin_kord_home
+    from rio.apps.kassow.homing import begin_kord_home
 
     class FakeArm:
         def __init__(self):
@@ -254,7 +254,7 @@ def test_begin_kord_home_skips_when_already_there():
 
 
 def test_begin_kord_home_queues_movej_when_offset():
-    from examples.teleop_vive_hand import HOME_MIN_DURATION_S, begin_kord_home
+    from rio.apps.kassow.homing import HOME_MIN_DURATION_S, begin_kord_home
 
     class FakeArm:
         def __init__(self):
@@ -276,7 +276,7 @@ def test_begin_kord_home_queues_movej_when_offset():
 
 
 def test_home_move_duration_clips_to_min_and_max():
-    from examples.teleop_vive_hand import HOME_MIN_DURATION_S, HOME_TIMEOUT_S, home_move_duration
+    from rio.apps.kassow.homing import HOME_MIN_DURATION_S, HOME_TIMEOUT_S, home_move_duration
 
     current = np.zeros(7)
     near = np.array([0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -288,7 +288,7 @@ def test_home_move_duration_clips_to_min_and_max():
 
 
 def test_step_q_toward_caps_largest_joint():
-    from examples.teleop_vive_hand import joints_at_home, step_q_toward
+    from rio.apps.kassow.homing import joints_at_home, step_q_toward
 
     current = np.zeros(7)
     goal = np.array([0.4, -0.1, 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -300,7 +300,7 @@ def test_step_q_toward_caps_largest_joint():
 
 
 def test_joint_path_pose_cancels_fk_offset():
-    from examples.teleop_vive_hand import joint_path_pose
+    from rio.apps.kassow.homing import joint_path_pose
 
     eef_start = np.array([0.10, 0.0, 0.0, 0.0, 0.0, 0.0])
     fk_start = np.array([0.00, 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -310,7 +310,7 @@ def test_joint_path_pose_cancels_fk_offset():
 
 
 def test_write_home_state_roundtrip(tmp_path):
-    from examples.teleop_vive_hand import capture_home_state, load_home_state, write_home_state
+    from rio.apps.kassow.homing import capture_home_state, load_home_state, write_home_state
 
     class FakeArm:
         def get_state(self):
@@ -331,7 +331,7 @@ def test_write_home_state_roundtrip(tmp_path):
 
 
 def test_n_starts_and_s_ends_recording():
-    from examples.teleop_vive_hand import handle_recorder_save, handle_recorder_start
+    from rio.apps.vive.controls import handle_recorder_save, handle_recorder_start
 
     class FakeRecorder:
         def __init__(self, closed=True, saving=False):
@@ -369,7 +369,7 @@ def test_n_starts_and_s_ends_recording():
 
 
 def test_n_starts_while_previous_encode_runs():
-    from examples.teleop_vive_hand import handle_recorder_start
+    from rio.apps.vive.controls import handle_recorder_start
 
     class FakeRecorder:
         def __init__(self):
@@ -391,7 +391,7 @@ def test_n_starts_while_previous_encode_runs():
 
 
 def test_s_warns_when_not_recording():
-    from examples.teleop_vive_hand import handle_recorder_save
+    from rio.apps.vive.controls import handle_recorder_save
 
     class FakeRecorder:
         def __init__(self):
@@ -416,3 +416,95 @@ def test_gello_cmd_clips_and_deadbands():
 
     out = SingleArm.make_gello_joint_cmd(100, np.array([0.001, 0.001, 0.001]), np.zeros(3), max_joint_delta=0.02, deadband=0.01)
     np.testing.assert_allclose(out, 0.0)
+
+
+def test_kassow_session_homes_by_movej_before_streaming_resumes(tmp_path, monkeypatch):
+    """Characterizes the start-of-session homing: one KORD moveJ, no streaming until settled + holdoff."""
+    from types import SimpleNamespace
+
+    from rio_hw import time as rio_time
+
+    from rio.apps.kassow import teleop
+    from rio.apps.kassow.homing import HOME_POST_MOVE_S, HOME_SETTLE_TICKS, write_home_state
+
+    clock = [100.0]
+    tick = [0]
+    events = []
+    home_q = np.full(7, 0.3)
+    home_file = tmp_path / "home.json"
+    write_home_state(home_file, {"joint_q": home_q, "eef_pose": np.array([0.4, 0.0, 0.3, 0, 0, 0]), "gripper": 0.3})
+    joints = [np.zeros(7)]
+
+    class Arm:
+        max_motor_speed = 0.4
+
+        def get_state(self):
+            return {"eef_pose": np.array([0.4, 0.0, 0.3, 0.0, 0.0, 0.0]), "joint_q": joints[0].copy(), "joint_qd": np.zeros(7)}
+
+        def moveJ_discrete(self, q, duration_s):
+            events.append(("moveJ", tick[0], np.asarray(q, dtype=float).copy()))
+            joints[0] = np.asarray(q, dtype=float).copy()
+
+    def build_action(pose, gripper_cmd=None, hand_cmd=None):
+        return np.r_[pose, gripper_cmd]
+
+    def get_state(action=None):
+        tick[0] += 1
+        if tick[0] > 400:
+            raise KeyboardInterrupt
+        return SimpleNamespace()
+
+    robot = SimpleNamespace(
+        arm=Arm(),
+        gripper=None,
+        hand=None,
+        urdf_path="",
+        build_action=build_action,
+        move_gripper=lambda value, target: events.append(("gripper", tick[0], value)),
+    )
+    env = SimpleNamespace(
+        robot=robot,
+        recorder=None,
+        set_start_time=lambda value: None,
+        set_instruction=lambda value: None,
+        move=lambda action, target: events.append(("move", tick[0], float(action[-1]))),
+        get_state=get_state,
+    )
+    args = SimpleNamespace(
+        home_file=str(home_file),
+        experiment=None,
+        instruction="test",
+        go_home_on_save=True,
+        home_joint_speed=0.5,
+        max_pos_speed=0.45,
+        max_rot_speed=1.0,
+        pos_scale=1.0,
+        rot_scale=1.0,
+        min_radius=0.25,
+        max_radius=1.4,
+        min_z=0.05,
+        orientation_enabled=True,
+        clutch_key="c",
+        orientation_key="o",
+        tracking_grace=0.25,
+        max_lag=0.25,
+        freq=100,
+        arm_latency=0.0,
+        gripper_open=0.7,
+        gripper_close=0.0,
+    )
+    tracker = SimpleNamespace(get_state=lambda: {"pose_valid": 0.0, "tracker_pose": np.zeros(6)})
+    monkeypatch.setattr(rio_time, "now", lambda: clock[0])
+    monkeypatch.setattr(rio_time, "sleep", lambda duration: None)
+    monkeypatch.setattr(rio_time, "precise_wait", lambda deadline: clock.__setitem__(0, max(clock[0], deadline)))
+    teleop.teleop_vive_hand(args, env, tracker, yaw_deg=0.0, wait_for_start=False)
+
+    movej = [event for event in events if event[0] == "moveJ"]
+    assert len(movej) == 1
+    np.testing.assert_allclose(movej[0][2], home_q)
+    streamed = [event for event in events if event[0] == "move"]
+    first_stream = streamed[0][1]
+    # moveJ window (>= 2 s at 100 Hz), settle ticks, and the post-move holdoff all pass before streaming.
+    assert first_stream >= 200 + HOME_SETTLE_TICKS + int(HOME_POST_MOVE_S * 100) - 5
+    assert all(event[1] < first_stream for event in events if event[0] == "gripper")
+    assert streamed[-1][2] == pytest.approx(0.3)

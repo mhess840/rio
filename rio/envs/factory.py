@@ -12,6 +12,7 @@ from attrs import has as attrs_has
 
 from ..cfg.node import NodeCfg
 from ..embodiments.base import EmbodimentType
+from .drivers import require_node_drivers
 
 # Modules that live in the `rio` package; every other module is sourced from `rio_hw`.
 _RIO_PACKAGE_MODULES = {"policies", "visualization", "data"}
@@ -69,6 +70,7 @@ def make_node(mw, module, node, node_kwargs, package="rio_hw"):
         NodeClient = getattr(module, f"{node}Client", None)
         if NodeServer is None or NodeClient is None:
             raise ImportError(node)
+        require_node_drivers(node, NodeServer, package)
         node_server = lambda: NodeServer(mw, **node_kwargs)
         node_client = lambda: NodeClient(mw, **node_kwargs)
     return node_server, node_client
@@ -89,14 +91,11 @@ def init_clients(clients):
 def make_cameras(mw, cameras, **kwargs):
     servers = {}
     clients = {}
-    try:
-        # Camera
-        for cam_name, cam_spec in cameras.items():
-            cam_module = kwargs.get(cam_spec.module, "cameras")
-            cfg = cam_spec.cfg
-            servers[cam_name], clients[cam_name] = make_node(mw, cam_module, cam_spec.cam_type, cfg)
-    except AttributeError:
-        pass
+    for cam_name, cam_spec in cameras.items():
+        cam_module = kwargs.get("camera_module", cam_spec.module)
+        servers[cam_name], clients[cam_name] = make_node(
+            mw, cam_module, cam_spec.cam_type, cam_spec.cfg, package=_resolve_package(cam_module)
+        )
     return servers, clients
 
 
@@ -109,8 +108,14 @@ def make_policy_node(args, **kwargs):
     if not getattr(args, "policy", None):
         raise AttributeError("policy disabled")
     policy_module = kwargs.get("policy_module", "policies")
-    policy_node_cfg = kwargs.get("policy_node_cfg", asdict(args.policy_node_cfg))
-    policy_config = kwargs.get("policy_config", dataclass_to_dict(args.policy_cfg))
+    policy_node_cfg = kwargs.get("policy_node_cfg")
+    if policy_node_cfg is None:
+        policy_node_cfg = asdict(args.policy_node_cfg)
+    else:
+        policy_node_cfg = dict(policy_node_cfg)
+    policy_config = kwargs.get("policy_config")
+    if policy_config is None:
+        policy_config = dataclass_to_dict(args.policy_cfg)
     policy = make_policy(args.policy, policy_config)
     policy_node_cfg["policy"] = policy
     return make_node(args.mw, policy_module, "PolicyInterface", policy_node_cfg, package="rio")
@@ -121,9 +126,9 @@ def instantiate_station_cfg(args, **kwargs) -> tuple[dict, dict, dict]:
     clients = {}
 
     # Policies
-    try:
+    if getattr(args, "policy", None):
         servers["policy"], clients["policy"] = make_policy_node(args, **kwargs)
-    except AttributeError:
+    else:
         servers["policy"], clients["policy"] = None, None
 
     # Get fields from either attrs or dataclass

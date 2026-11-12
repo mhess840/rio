@@ -23,13 +23,13 @@ The Kassow + AG95 station has its own end-to-end guide with experiment switching
 
 All examples are driven by a **station config**: a Python dataclass that declares every hardware and software node in your setup (robot arm, gripper, cameras, recorder, policy server).
 
-Each config lives in `examples/cfg/` as a self-contained file (e.g. `xarm_eef.py`, `xarm_gello.py`, `so100.py`). Edit the one that matches your hardware.
+Each config lives in `examples/cfg/` (Kassow: `rio/apps/kassow/stations/`) as a self-contained file (e.g. `xarm_eef.py`, `xarm_gello.py`, `so100.py`). Edit the one that matches your hardware.
 
 ---
 
 ### 2. Collect Data
 
-[Teleoperate the Robot](data-collection.md) and [Visualize Data](visualization/rerun.md)
+[Teleoperate the Robot](data_collection.md) and [Visualize Data](visualization/rerun.md)
 
 Use a teleoperation script to control the robot and record demonstrations. RIO supports several input devices:
 
@@ -39,6 +39,8 @@ Use a teleoperation script to control the robot and record demonstrations. RIO s
 | Gello leader arm | `examples/cfg/xarm_gello.py` | `examples.teleop_leader_follower` | [Gello](../hardware/teleop/gello.md) |
 | SO100 leader-follower | `examples/cfg/so100.py` | `examples.teleop_leader_follower` | — |
 | SO100 bimanual | `examples/cfg/bimanual_so100.py` | `examples.teleop_leader_follower` | — |
+| Vive tracker (+ Manus hand) | `examples/cfg/ur_vive_inspire.py`, `rio/apps/kassow/stations/kassow_vive_inspire.py` | `examples.teleop_vive_hand` | [Quick Start](../quickstart.md) |
+| Vive tracker, Kassow + AG95 | `rio/apps/kassow/stations/kassow_vive_gripper.py` | `rio.apps.kassow.teleop` | [Kassow pipeline](pi05_kassow_pipeline.md) |
 
 Run `uv run -m examples.cfg` to list all registered stations. Set `STATION=<ClassName>` before running any script.
 
@@ -46,7 +48,7 @@ Run `uv run -m examples.cfg` to list all registered stations. Set `STATION=<Clas
 
 ### 3. Convert Data
 
-[Exporting Data](data-export.md)
+[Exporting Data](data_export.md)
 
 Convert the recorded `.vla` trajectories to [LeRobot](https://github.com/huggingface/lerobot) / DROID format for use with the openpi training pipeline.
 

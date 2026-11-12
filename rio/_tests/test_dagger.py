@@ -5,7 +5,6 @@
 
 import hashlib
 import json
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,17 +13,17 @@ import numpy as np
 import pytest
 import robodm
 
-from examples import dagger_kassow
-from examples import policy_inference as serve
-from examples.cfg.kassow_experiments import EXPERIMENTS, dagger_rounds, dataset_tasks, load_state
-from examples.dagger_kassow import DaggerSession, next_traj_index, unique_path
-from examples.data.convert_to_lerobot_pi05 import ConvertExperimentCfg, main
-from examples.experiment import dagger_round_summary
-from examples.policy_cfgs.pi05_dagger import Pi05DaggerCfg
-from examples.policy_inference import RolloutSafetyCfg
-from examples.teleop_vive_hand import write_home_state
+from rio.apps.kassow import dagger as dagger_kassow
+from rio.apps.kassow.convert import ConvertExperimentCfg, main
+from rio.apps.kassow.dagger import DaggerSession, next_traj_index, unique_path
+from rio.apps.kassow.experiment_cli import dagger_round_summary
+from rio.apps.kassow.experiments import EXPERIMENTS, dagger_rounds, dataset_tasks, load_state
+from rio.apps.kassow.homing import write_home_state
+from rio.apps.kassow.policy_cfgs.pi05_dagger import Pi05DaggerCfg
 from rio.data.convert_pi05 import ConvertPi05Cfg, convert
 from rio.data.dagger import CONTROL_KEY, ControlSource, control_summary, dagger_segments
+from rio.policies import rollout as serve
+from rio.policies.rollout import RolloutSafetyCfg
 
 from .test_kassow_experiment import _register_model
 
@@ -157,6 +156,7 @@ class _Recorder:
     def save(self, wait=False):
         assert self.path is not None
         self.path.write_bytes(b"vla")
+        self.path.with_name(self.path.stem + "_meta.json").write_text("{}")
         self.closed = True
 
     def get_state(self):
@@ -286,6 +286,9 @@ def test_episodes_are_labelled_and_discarded_files_are_kept(tmp_path, monkeypatc
     discarded = json.loads((tmp_path / "r1" / "discarded" / "traj_0001.dagger.json").read_text())
     assert discarded["outcome"] == "discarded" and discarded["reason"] == "quit" and discarded["autonomous"]
     assert (tmp_path / "r1" / "discarded" / "traj_0001.vla").is_file()
+    assert (tmp_path / "r1" / "discarded" / "traj_0001_meta.json").is_file()
+    assert not (tmp_path / "r1" / "traj_0001_meta.json").exists()
+    assert (tmp_path / "r1" / "traj_0000_meta.json").is_file()
     summary = dagger_round_summary(tmp_path / "r1")
     assert summary.startswith("1 saved (0 without takeover), 1 discarded")
     assert "1.00 takeovers/episode" in summary and "operator 33% of frames" in summary
@@ -556,17 +559,18 @@ def test_serve_loop_drops_the_stale_chunk_and_restarts_after_handback(monkeypatc
     )
     human_pose = np.array([0.43, 0.02, 0.3, 0.0, 0.0, 0.0])
     dagger = _ScriptedDagger({1: "takeover", 20: "handback", 120: "save"}, human_pose)
-    monkeypatch.setattr(serve, "ActionQueue", _Queue)
-    monkeypatch.setattr(serve, "RTCConfig", SimpleNamespace)
-    monkeypatch.setattr(serve, "LatencyTracker", None)
-    monkeypatch.setattr(serve, "torch", SimpleNamespace(as_tensor=_Tensor))
-    monkeypatch.setattr(serve, "_dump_live_cameras", lambda *args: None)
+    runtime = serve.RolloutRuntime(
+        action_queue=_Queue,
+        rtc_config=SimpleNamespace,
+        latency_tracker=None,
+        as_tensor=_Tensor,
+        dump_cameras=lambda *args: None,
+    )
     monkeypatch.setattr(serve.time, "sleep", lambda duration: None)
     monkeypatch.setattr(serve.time, "now", lambda: clock[0])
     monkeypatch.setattr(serve.time, "precise_wait", lambda deadline: clock.__setitem__(0, deadline))
-    monkeypatch.setattr(serve, "threading", SimpleNamespace(Event=threading.Event, Thread=None))
 
-    serve.policy_loop(args, env, policy, dagger=dagger)
+    serve.policy_loop(args, env, policy, dagger=dagger, runtime=runtime)
 
     xs = np.array([command[0] for command in commands])
     # The chunk requested before the takeover (x=0.9) is never played.
@@ -616,6 +620,29 @@ def _tree_digest(root: Path) -> dict[str, str]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+@pytest.mark.unit
+def test_dagger_dry_run_uses_recorded_task_and_operator_segments(tmp_path):
+    raw = tmp_path / "rollouts"
+    raw.mkdir()
+    _write_rollout(raw / "traj_0000.vla", _control((P, 20), (H, 12), (W, 3), (P, 10), (H, 8)), "open space 2")
+    result = convert(
+        ConvertPi05Cfg(
+            input=raw,
+            src_fps=20,
+            dst_fps=20,
+            min_frames=4,
+            min_segment_s=0.3,
+            trim_idle=False,
+            trim_operator_pauses=False,
+            segments="human",
+            dry_run=True,
+        )
+    )
+    episode = result["episodes"][0]
+    assert episode["task"] == "open space 2"
+    assert episode["segments"] == [(20, 32), (45, 53)]
 
 
 @pytest.mark.integration

@@ -1,10 +1,14 @@
 # SPDX-FileCopyrightText: 2026 RIO Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import multiprocessing as mp
 import os
 import tempfile
+import threading
 from pathlib import Path
+from queue import Queue
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -15,6 +19,7 @@ from rio_hw.middleware import ServerManager
 from tqdm import tqdm
 
 from rio.data.loader import dict_to_step
+from rio.data.recorder import Recorder
 from rio.envs.factory import make_node
 from rio.schema import Camera, Observation, Step
 
@@ -240,3 +245,116 @@ def test_recorder_loader_roundtrip(temp_trajectory_path, middleware, freq, durat
     logger.info("All steps verified successfully!")
 
     # TODO: Implement loader verification logic
+
+
+def _recorder_stub():
+    published = []
+    recorder = object.__new__(Recorder)
+    recorder._close_lock = threading.Lock()
+    recorder._close_queue = Queue()
+    recorder._pending_closes = 0
+    recorder._completed_save_id = 0
+    recorder.error_code = 0
+    recorder.is_closed = True
+    recorder.is_saving = False
+    recorder.freq = 100
+    recorder.request_queue = Queue()
+    recorder.ring_buffer = SimpleNamespace(
+        put=lambda value, **kwargs: published.append(value),
+        get=lambda: published[-1] if published else {},
+    )
+    return recorder, published
+
+
+@pytest.mark.unit
+def test_recorder_writes_schema_version_and_manifest_after_a_successful_save(tmp_path):
+    from rio.schema import RECORDING_SCHEMA_VERSION
+
+    recorder, published = _recorder_stub()
+    recorder._manifest = {"rio": {"git_commit": "abc"}}
+    recorder._pending_closes = 1
+    recorder._close_queue.put((SimpleNamespace(close=lambda: None), str(tmp_path / "traj_0003.vla"), 7))
+    recorder._close_queue.put(None)
+    recorder._close_worker()
+    meta = json.loads((tmp_path / "traj_0003_meta.json").read_text())
+    assert meta["schema_version"] == RECORDING_SCHEMA_VERSION
+    assert meta["trajectory"] == "traj_0003.vla"
+    assert meta["manifest"] == {"rio": {"git_commit": "abc"}}
+    assert not published[-1]["failed"] and published[-1]["save_id"] == 7
+
+
+@pytest.mark.unit
+def test_recorder_close_failure_is_latched_and_blocks_further_recording():
+    recorder, published = _recorder_stub()
+
+    def fail():
+        raise OSError("disk failure")
+
+    recorder._pending_closes = 1
+    recorder.is_saving = True
+    recorder._close_queue.put((SimpleNamespace(close=fail), "failed.vla", 123))
+    recorder._close_queue.put(None)
+    recorder._close_worker()
+    assert published[-1]["failed"]
+    assert published[-1]["error_code"] == 2
+    assert published[-1]["save_id"] == 123
+    assert not published[-1]["is_saving"]
+    with pytest.raises(RuntimeError, match="Recorder failed"):
+        recorder.record_dict({"action": [0.0]})
+    with pytest.raises(RuntimeError, match="Recorder failed"):
+        recorder.new_trajectory(wait=False)
+
+
+@pytest.mark.unit
+def test_recorder_frame_failure_is_not_silently_discarded():
+    recorder, published = _recorder_stub()
+    recorder.is_closed = False
+
+    def fail(*args, **kwargs):
+        raise OSError("recording failed")
+
+    recorder.datamanager = SimpleNamespace(add_by_dict=fail)
+    recorder._record({"action": [0.0]})
+    assert published[-1]["failed"]
+    assert published[-1]["error_code"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("unit", "timestamp"), [("s", 0.125), ("ms", 125.0), ("us", 125000.0)])
+def test_recorder_preserves_subsecond_timestamps_as_integer_nanoseconds(unit, timestamp):
+    recorder, _ = _recorder_stub()
+    calls = []
+    recorder.is_closed = False
+    recorder.time_unit = unit
+    recorder.datamanager = SimpleNamespace(add_by_dict=lambda *args, **kwargs: calls.append(kwargs))
+    recorder._record({"action": [0.0]}, timestamp)
+    assert calls == [{"timestamp": 125000000, "time_unit": "ns"}]
+    assert recorder.error_code == 0
+
+
+@pytest.mark.unit
+def test_recorder_save_waits_for_the_requested_save_id(monkeypatch):
+    recorder, _ = _recorder_stub()
+    monkeypatch.setattr("rio.data.recorder.time.now_ns", lambda: 123)
+    monkeypatch.setattr("rio.data.recorder.time.Rate", lambda frequency: SimpleNamespace(sleep=lambda: None))
+    reads = []
+
+    def status():
+        reads.append(True)
+        return {"is_closed": True, "is_saving": False, "save_id": 0 if len(reads) == 1 else 123}
+
+    recorder.ring_buffer.get = status
+    recorder.save()
+    assert len(reads) == 2
+    assert recorder.request_queue.get()["save_id"] == 123
+
+
+@pytest.mark.unit
+def test_recorder_timeout_also_applies_when_no_status_arrives(monkeypatch):
+    recorder, _ = _recorder_stub()
+    clock = iter([0.0, 0.2])
+    monkeypatch.setattr("rio.data.recorder.time.now", lambda: next(clock))
+    monkeypatch.setattr("rio.data.recorder.time.Rate", lambda frequency: SimpleNamespace(sleep=lambda: None))
+    recorder.ring_buffer.get = lambda: None
+    with pytest.raises(TimeoutError):
+        recorder.save(timeout=0.1)

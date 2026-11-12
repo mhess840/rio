@@ -233,7 +233,6 @@ class Pi05(Policy):
         rtc_execution_horizon: int = RTC_EXECUTION_HORIZON,
         rtc_max_guidance_weight: float = RTC_MAX_GUIDANCE_WEIGHT,
         action_space: str | None = None,
-        resident_slot: str = "",
         **kwargs,
     ):
         if IMPORT_ERROR is not None:
@@ -252,7 +251,6 @@ class Pi05(Policy):
         self.rtc_execution_horizon = rtc_execution_horizon
         self.rtc_max_guidance_weight = rtc_max_guidance_weight
         self.requested_action_space = action_space
-        self.resident_slot = str(resident_slot or "")
         self.action_space = (action_space or "tcp").strip().lower()
         self.action_dim = JOINT_ACTION_DIM if self.action_space == "joints" else ACTION_DIM
         self.policy_cfg = None
@@ -286,7 +284,6 @@ class Pi05(Policy):
                 rtc_execution_horizon=self.rtc_execution_horizon,
                 rtc_max_guidance_weight=self.rtc_max_guidance_weight,
                 action_space=self.requested_action_space,
-                slot=self.resident_slot,
             )
             client = try_connect(identity)
             if client is not None:

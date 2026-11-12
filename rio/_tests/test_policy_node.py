@@ -143,7 +143,8 @@ def test_request_generation_is_shared_with_spawned_worker():
     process = mp.get_context("spawn").Process(target=_advance_request_generation, args=(client._request_generation,))
     try:
         process.start()
-        process.join(timeout=5)
+        # A spawned child re-imports this module (pytest, rio.policies, scipy): several seconds on a loaded Windows host.
+        process.join(timeout=60)
         assert process.exitcode == 0
         assert client._request_generation.value == 1
         client.send_observation(_worker_observation(2))

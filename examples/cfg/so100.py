@@ -1,17 +1,20 @@
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from rio.cfg import NodeCfg, VisualizerCfg
 from rio.cfg.common import RecorderCfg
 
+CALIBRATION_DIR = Path.home() / ".cache/huggingface/lerobot/calibration/robots/so100_follower"
+
 
 @dataclass
-class SO100Station:
+class So100Station:
     arm: str = "SoArm"
     arm_cfg: NodeCfg | None = field(
         default_factory=lambda: NodeCfg(
             addr="127.0.0.1:5555",
             port="/dev/ttyACM0",
-            calibration_file="/home/portegak/.cache/huggingface/lerobot/calibration/robots/so100_follower/follower_L.json",
+            calibration_file=str(CALIBRATION_DIR / "follower_L.json"),
             robot_controller="joint_pos",
         )
     )
@@ -25,7 +28,7 @@ class SO100Station:
             motors_enabled=False,
             robot_model="so100",
             robot_controller="joint_pos",
-            calibration_file="/home/portegak/.cache/huggingface/lerobot/calibration/robots/so100_follower/leader_R.json",
+            calibration_file=str(CALIBRATION_DIR / "leader_R.json"),
         )
     )
 

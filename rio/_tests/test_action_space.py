@@ -64,6 +64,36 @@ def test_single_arm_task_pos_dim():
     assert arm.arm_dim == 6
 
 
+@pytest.mark.parametrize("space", ["TASK_POS", "JOINT_POS"])
+def test_single_arm_proprio_is_joints_and_gripper_in_every_action_space(space):
+    """Recorded ``observation/proprio`` keeps one layout, so old and new datasets mean the same."""
+    eef = np.arange(6.0)
+    joints = np.arange(7.0) + 10.0
+    robot = SingleArm(
+        arm=StubArm(state={"eef_pose": eef, "joint_q": joints, "gripper_position": 0.4}),
+        action_space=space,
+    )
+    observed = robot.get_obs({})
+    np.testing.assert_array_equal(observed.proprio, np.r_[joints, 0.4])
+    np.testing.assert_array_equal(observed.proprio_eef, eef)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"joint_q": None},
+        {"joint_q": np.full(7, np.nan)},
+        {"joint_q": np.zeros(5)},
+        {"joint_q": np.zeros(7), "gripper_position": float("nan")},
+    ],
+)
+def test_single_arm_omits_invalid_proprio_without_stopping_teleop(state):
+    robot = SingleArm(arm=StubArm(state={"eef_pose": np.zeros(6), **state}), action_space="TASK_POS")
+    observed = robot.get_obs({})
+    assert observed.proprio is None
+    np.testing.assert_array_equal(observed.proprio_eef, np.zeros(6))
+
+
 def test_single_arm_parse_build_roundtrip():
     arm = SingleArm(arm=StubArm(num_joints=7), action_space="JOINT_POS")
     action = arm.build_action(np.arange(7.0), gripper_cmd=0.5)
@@ -93,22 +123,25 @@ def test_bimanual_parse_indices():
 
 def test_bimanual_nan_proprio_is_dropped():
     """Non-finite arm state must not leak into proprio (safety guard)."""
-    bad = StubArm(state={"eef_pose": np.full(6, np.nan), "joint_q": np.zeros(6)})
-    good = StubArm(state={"eef_pose": np.ones(6), "joint_q": np.zeros(6)})
+    bad = StubArm(state={"eef_pose": np.ones(6), "joint_q": np.full(7, np.nan)})
+    good = StubArm(state={"eef_pose": np.ones(6), "joint_q": np.zeros(7)})
     arm = Bimanual(arm1=bad, arm2=good, action_space="TASK_POS")
 
     obs = arm.get_obs(cams={})
     assert obs.proprio is None
-    assert np.isnan(obs.arm1_proprio_eef).any()
+    assert np.isnan(obs.arm1_proprio_joints).any()
 
 
-def test_bimanual_valid_proprio_is_concatenated():
-    a1 = StubArm(state={"eef_pose": np.ones(6), "joint_q": np.zeros(6)})
-    a2 = StubArm(state={"eef_pose": np.full(6, 2.0), "joint_q": np.zeros(6)})
-    arm = Bimanual(arm1=a1, arm2=a2, action_space="TASK_POS")
+@pytest.mark.parametrize("space", ["TASK_POS", "JOINT_POS"])
+def test_bimanual_proprio_is_joints_and_gripper_per_arm_in_every_action_space(space):
+    """Same layout as SingleArm, so one recording schema covers both embodiments."""
+    a1 = StubArm(state={"eef_pose": np.ones(6), "joint_q": np.arange(7.0)})
+    a2 = StubArm(state={"eef_pose": np.full(6, 2.0), "joint_q": np.arange(7.0) + 10.0})
+    arm = Bimanual(arm1=a1, arm2=a2, action_space=space)
 
     obs = arm.get_obs(cams={})
-    assert obs.proprio.shape == (14,)
+    np.testing.assert_array_equal(obs.proprio, np.r_[np.arange(7.0), 0.0, np.arange(7.0) + 10.0, 0.0])
+    np.testing.assert_array_equal(obs.arm1_proprio_eef, np.ones(6))
 
 
 def test_integrated_gripper_commanded_via_arm_moveG(monkeypatch):

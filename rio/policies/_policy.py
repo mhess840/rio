@@ -15,9 +15,6 @@ class Policy(Protocol):
     def set_instruction(self, instruction):
         raise NotImplementedError("Policy set_instruction not implemented yet")
 
-    def _process_observation(self, observation):
-        raise NotImplementedError("Policy _process_observation not implemented yet")
-
     def inference(self, observation, current_plan=None):
         raise NotImplementedError("Policy inference not implemented yet")
 

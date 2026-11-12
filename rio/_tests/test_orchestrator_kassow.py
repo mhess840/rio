@@ -9,9 +9,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from examples.cfg.kassow_experiments import load_state, resolve_experiment, save_state
-from examples.orchestrator_board import DemoBoard, PAGE
-from examples.orchestrator_kassow import (
+from rio.apps.kassow.crate import CrateReading, CrateThresholds, Decision, read_crate
+from rio.apps.kassow.experiments import load_state, resolve_experiment, save_state
+from rio.apps.kassow.orchestrator import (
     Args,
     CycleLog,
     GripperOpened,
@@ -22,9 +22,11 @@ from examples.orchestrator_kassow import (
     station_cfg,
     vla_cfg,
 )
+from rio.apps.kassow.orchestrator.board import PAGE, DemoBoard
+from rio.apps.kassow.orchestrator.machine import Move
 from rio.arm_resume import Phase, PhaseKind
-from rio.jev import CrateReading, Decision
 from rio.jev.client import JevError
+from rio.policies.rollout import RolloutControl
 
 pytestmark = pytest.mark.unit
 
@@ -50,7 +52,9 @@ def _reading(decision: Decision, space: int | None = None, reason: str = "") -> 
     )
 
 
-def _orchestrator(tmp_path, readings, keys, vla_reasons=(), goto_ok=True, goto_script=None, recover=None):
+def _orchestrator(
+    tmp_path, readings, keys, vla_reasons=(), goto_ok=True, goto_script=None, recover=None, max_organize_attempts=3
+):
     calls = []
     readings = list(readings)
     vla_reasons = list(vla_reasons)
@@ -81,6 +85,7 @@ def _orchestrator(tmp_path, readings, keys, vla_reasons=(), goto_ok=True, goto_s
         organize_home=ORGANIZE_HOME,
         spaces=SPACES,
         log=CycleLog(tmp_path / "run"),
+        max_organize_attempts=max_organize_attempts,
     )
     return orchestrator, calls
 
@@ -122,15 +127,14 @@ def test_leave_lifts_before_the_home_move(tmp_path):
     orchestrator, calls = _orchestrator(tmp_path, [], ScriptedKeys())
     seen = []
     orchestrator.lift = lambda: seen.append("lift") or True
-    orchestrator.lift_before_goto = True
-    orchestrator.goto_path = ORGANIZE_HOME
+    orchestrator.moves = [Move(ORGANIZE_HOME, lift_first=True)]
     orchestrator.after_goto = State.ASK
     orchestrator.state = State.GOTO
     orchestrator.step()
     assert seen == ["lift"]
     assert calls == [("goto", "home_organize.json")]
     assert orchestrator.state is State.ASK
-    assert orchestrator.lift_before_goto is False
+    assert orchestrator.moves == []
 
 
 def test_open_stops_at_the_waiting_pose_before_the_space(tmp_path):
@@ -151,6 +155,23 @@ def test_open_stops_at_the_waiting_pose_before_the_space(tmp_path):
     ]
 
 
+def test_failed_approach_does_not_redirect_a_later_move(tmp_path):
+    orchestrator, calls = _orchestrator(
+        tmp_path,
+        [_reading("open", space=2), _reading("organize"), _reading("hold", reason="placed")],
+        ScriptedKeys("j", "j", "q"),
+        goto_script=[False, True],
+        vla_reasons=["stop_when"],
+    )
+    orchestrator.wait_home = Path("home_open_wait.json")
+    orchestrator.run()
+    assert calls == [
+        ("goto", "home_open_wait.json"),
+        ("goto", "home_organize.json"),
+        ("vla", "organize", ""),
+    ]
+
+
 def test_open_path_runs_space_n_plus_one_then_waits_for_p(tmp_path):
     orchestrator, calls = _orchestrator(
         tmp_path,
@@ -166,7 +187,6 @@ def test_open_path_runs_space_n_plus_one_then_waits_for_p(tmp_path):
     ]
     events = [json.loads(line)["event"] for line in (tmp_path / "run" / "events.jsonl").read_text().splitlines()]
     assert events == ["reading", "goto", "vla", "lift", "goto", "reading", "hold"]
-    assert orchestrator.count_only is True
 
 
 def test_organize_path_asks_again_after_the_rollout(tmp_path):
@@ -174,7 +194,7 @@ def test_organize_path_asks_again_after_the_rollout(tmp_path):
         tmp_path,
         [_reading("organize"), _reading("open", space=1), _reading("hold", reason="placed")],
         ScriptedKeys("j", "p", "q"),
-        vla_reasons=["timeout", "stop_when"],
+        vla_reasons=["stop_when", "stop_when"],
     )
     orchestrator.run()
     assert calls == [
@@ -184,6 +204,69 @@ def test_organize_path_asks_again_after_the_rollout(tmp_path):
         ("vla", "open", "put the object in space 1"),
         ("goto", "home_organize.json"),
     ]
+
+
+def test_failed_inlay_recovery_is_rechecked_before_any_open_action(tmp_path):
+    calls = []
+    answers = {
+        "view_clear": {"type": "noul", "noul": 0.95},
+        "organized": {"type": "noul", "noul": 0.1},
+        "box_count": {"type": "choice", "choice": "zero", "probabilities": {"zero": 1.0}, "confidence": 1.0},
+        "any_box": {"type": "noul", "noul": 0.1},
+    }
+    orchestrator = Orchestrator(
+        ask=lambda: read_crate(answers, available_spaces=SPACES, thresholds=CrateThresholds()),
+        goto=lambda path: True,
+        run_vla=lambda job: calls.append(job.experiment) or "stop_when",
+        keys=ScriptedKeys("j", "q"),
+        organize_home=ORGANIZE_HOME,
+        spaces=SPACES,
+        log=CycleLog(tmp_path / "run"),
+        max_organize_attempts=2,
+    )
+    orchestrator.run()
+    assert calls == ["organize", "organize"]
+    assert "fix it by hand" in orchestrator.hold_reason
+
+
+def test_organize_timeout_asks_jev_again_and_never_opens_unverified(tmp_path):
+    orchestrator, calls = _orchestrator(
+        tmp_path, [_reading("organize"), _reading("hold", reason="view unsure")], ScriptedKeys("j", "q"), ["timeout"]
+    )
+    orchestrator.run()
+    assert calls == [("goto", "home_organize.json"), ("vla", "organize", "")]
+    assert [event["event"] for event in _events(tmp_path)].count("reading") == 2
+    assert orchestrator.hold_reason == "view unsure"
+
+
+def test_operator_j_in_hold_grants_a_fresh_organize_budget(tmp_path):
+    """Regression: an exhausted organize budget must not lock the cell in HOLD until restart."""
+    orchestrator, calls = _orchestrator(
+        tmp_path,
+        [_reading("organize"), _reading("organize"), _reading("organize"), _reading("hold", reason="placed")],
+        ScriptedKeys("j", "j", "q"),
+        vla_reasons=["stop_when", "stop_when"],
+        max_organize_attempts=1,
+    )
+    orchestrator.run()
+    assert calls == [("goto", "home_organize.json"), ("vla", "organize", "")] * 2
+    holds = [event["reason"] for event in _events(tmp_path) if event["event"] == "hold"]
+    assert "fix it by hand" in holds[0]
+    assert holds[-1] == "placed"
+
+
+def test_open_reading_resets_the_organize_budget(tmp_path):
+    orchestrator, _ = _orchestrator(
+        tmp_path,
+        [_reading("organize"), _reading("open", space=1)],
+        ScriptedKeys("j"),
+        vla_reasons=["stop_when"],
+        max_organize_attempts=1,
+    )
+    for _ in range(5):
+        orchestrator.step()
+    assert orchestrator.job is not None and orchestrator.job.experiment == "open"
+    assert orchestrator.organize_attempts == 0
 
 
 @pytest.mark.parametrize(
@@ -338,7 +421,7 @@ def test_organize_vla_stops_only_after_leaving_and_returning_home():
 
 def test_run_diagram_names_the_reorganize_loop():
     assert ">Waiting<" in PAGE
-    assert ">Ask JEV<" in PAGE
+    assert ">Ask Jev<" in PAGE
     assert ">Error<" in PAGE
     assert ">Move to reorganize<" in PAGE
     assert ">Organize<" in PAGE
@@ -363,13 +446,30 @@ def test_gripper_opened_needs_a_closed_command_first():
         GripperOpened(0.3, 0.0)
 
 
-def _register(experiment_name: str, tmp_path: Path, instructions: list[str]) -> None:
+def test_rollout_control_latches_completion_and_ignores_unsent_commands():
+    plans = []
+    control = RolloutControl(
+        stop_when=lambda command: bool(command[-1] > 0.5),
+        plan_done=lambda waypoints: plans.append(waypoints.copy()) or True,
+    )
+    command = np.array([0.0, 0.7])
+    assert not control.should_stop(command, has_action=False)
+    assert control.note_plan(np.zeros((2, 3)))
+    assert control.note_plan(np.ones((2, 3)))
+    assert len(plans) == 1
+    assert control.should_stop(command, has_action=True)
+    assert control.reason == "stop_when"
+    stopped = RolloutControl()
+    stopped.stop.set()
+    assert stopped.should_stop(command, has_action=False)
+    assert stopped.reason == "stopped"
+
+
+def _register(experiment_name: str, instructions: list[str]) -> None:
     experiment = resolve_experiment(experiment_name)
-    checkpoint = tmp_path / f"ckpt_{experiment_name}"
-    checkpoint.mkdir()
+    checkpoint = experiment.models_dir / "m1"
+    checkpoint.mkdir(parents=True)
     (checkpoint / "config.json").write_text(json.dumps({"chunk_size": 50, "n_action_steps": 50}))
-    experiment.models_dir.mkdir(parents=True)
-    (experiment.models_dir / "m1").symlink_to(checkpoint)
     state = load_state(experiment)
     state["model"] = "m1"
     state["models"]["m1"] = {"dataset": "d", "instructions": instructions}
@@ -377,8 +477,8 @@ def _register(experiment_name: str, tmp_path: Path, instructions: list[str]) -> 
 
 
 def test_vla_configs_carry_slot_sentence_home_and_gripper_encoding(tmp_path):
-    _register("organize", tmp_path, ["organize the inlay"])
-    _register("open", tmp_path, [f"put the object in space {n}" for n in (1, 2, 3)])
+    _register("organize", ["organize the inlay"])
+    _register("open", [f"put the object in space {n}" for n in (1, 2, 3)])
     args = Args(device="cuda:1")
     organize = vla_cfg(args, VlaJob("organize", "", ORGANIZE_HOME))
     opened = vla_cfg(args, VlaJob("open", "put the object in space 2", SPACES[2]))

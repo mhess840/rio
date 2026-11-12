@@ -3,7 +3,7 @@
 
 """
 Tier 2: policy-node safety end-to-end
-Uses the Dummy policy over the in-process Shm middleware so we can exercise
+Uses the Dummy policy over Thread and, on POSIX, Shm so we can exercise
 the stale/gap-detection path the control loop relies on when the policy is
 slow or hasn't produced anything yet.
 """
@@ -22,9 +22,32 @@ pytestmark = pytest.mark.integration
 
 mp.set_start_method("spawn", force=True)
 
-MW = "Shm"
 ACTION_DIM = 7
 CHUNK = 8
+
+
+def _shm_allocator_works() -> bool:
+    """rio-hw before the int() allocator fix passes numpy integers to Windows CreateFileMapping."""
+    from multiprocessing.managers import SharedMemoryManager
+
+    from rio_hw.middlewares.shared_memory.shared_ndarray import SharedNDArray
+
+    manager = SharedMemoryManager()
+    manager.start()
+    try:
+        SharedNDArray.create_from_shape(manager, (2, 3), np.float32)
+    except (TypeError, OverflowError):
+        return False
+    finally:
+        manager.shutdown()
+    return True
+
+
+@pytest.fixture(params=["Thread", "Shm"])
+def middleware(request):
+    if request.param == "Shm" and not _shm_allocator_works():
+        pytest.skip("This rio-hw SharedNDArray allocator cannot create Windows shared memory; update rio-hw")
+    return request.param
 
 
 def _kwargs():
@@ -48,12 +71,12 @@ def _obs():
     }
 
 
-def test_gap_returns_safe_default_then_recovers():
+def test_gap_returns_safe_default_then_recovers(middleware):
     kw = _kwargs()
-    server = lambda: PolicyInterfaceServer(MW, **kw)
-    client = lambda: PolicyInterfaceClient(MW, **kw)
+    server = lambda: PolicyInterfaceServer(middleware, **kw)
+    client = lambda: PolicyInterfaceClient(middleware, **kw)
 
-    with ServerManager(MW, [server]), client() as pc:
+    with ServerManager(middleware, [server]), client() as pc:
         # No observation sent yet -> must hand back a well-formed not-ready
         # chunk quickly, never None and never a hang.
         t0 = time.perf_counter()
@@ -76,12 +99,12 @@ def test_gap_returns_safe_default_then_recovers():
         assert ready["actions"].shape == (CHUNK, ACTION_DIM)
 
 
-def test_get_action_chunk_never_blocks():
+def test_get_action_chunk_never_blocks(middleware):
     kw = _kwargs()
-    server = lambda: PolicyInterfaceServer(MW, **kw)
-    client = lambda: PolicyInterfaceClient(MW, **kw)
+    server = lambda: PolicyInterfaceServer(middleware, **kw)
+    client = lambda: PolicyInterfaceClient(middleware, **kw)
 
-    with ServerManager(MW, [server]), client() as pc:
+    with ServerManager(middleware, [server]), client() as pc:
         for _ in range(20):
             t0 = time.perf_counter()
             data = pc.get_action_chunk()

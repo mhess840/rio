@@ -5,10 +5,9 @@ from dataclasses import dataclass
 
 import numpy as np
 from loguru import logger
-from rio_hw.middlewares._middleware import Client
 
 from ..schema import ActionSpace, Observation
-from .base import BaseEmbodiment
+from .base import ArmClient, BaseEmbodiment, GripperClient, JointClient
 
 
 @dataclass
@@ -31,12 +30,12 @@ class BimanualObs(Observation):
 class Bimanual(BaseEmbodiment):
     def __init__(
         self,
-        arm1: Client,
-        arm2: Client,
-        gripper1: Client | None = None,
-        gripper2: Client | None = None,
-        hand1: Client | None = None,
-        hand2: Client | None = None,
+        arm1: ArmClient,
+        arm2: ArmClient,
+        gripper1: GripperClient | None = None,
+        gripper2: GripperClient | None = None,
+        hand1: JointClient | None = None,
+        hand2: JointClient | None = None,
         action_space: str = "TASK_POS",
         **kwargs,
     ):
@@ -67,21 +66,6 @@ class Bimanual(BaseEmbodiment):
 
         self.urdf_path = kwargs.get("urdf_path", "")
         self.__obs_schema__ = BimanualObs
-
-    def _get_num_joints(self, arm: Client) -> int:
-        if hasattr(arm, "num_joints"):
-            return arm.num_joints
-        else:
-            logger.warning(
-                "Arm client does not have 'num_joints' attribute; using state to determine joint count.  \
-                    Consider adding 'num_joints' attribute to the client for efficiency."
-            )
-            state = arm.get_state()
-            joint_q = state.get("joint_q", None)
-            if joint_q is not None:
-                return len(joint_q)
-            else:
-                raise ValueError("Cannot determine number of joints for the given arm client.")
 
     def move(
         self,
@@ -217,21 +201,13 @@ class Bimanual(BaseEmbodiment):
         if arm2_joint_q is None:
             logger.warning("Arm2 state does not contain joint_q.")
 
-        # Build default proprio for each arm
-        arm1_default = arm1_tcp_pose if self.action_space == ActionSpace.TASK_POS else arm1_joint_q
-
-        if arm1_default is None or gripper1_pos is None or not np.isfinite(gripper1_pos) or np.any(~np.isfinite(arm1_default)):
-            arm1_proprio = None
-            logger.warning(f"invalid arm1 proprioception detected. arm1_default: {arm1_default}, gripper1_pos: {gripper1_pos}")
-        else:
-            arm1_proprio = np.concatenate([arm1_default, [gripper1_pos]])
-
-        arm2_default = arm2_tcp_pose if self.action_space == ActionSpace.TASK_POS else arm2_joint_q
-        if arm2_default is None or gripper2_pos is None or not np.isfinite(gripper2_pos) or np.any(~np.isfinite(arm2_default)):
-            arm2_proprio = None
-            logger.warning(f"invalid arm2 proprioception detected. arm2_default: {arm2_default}, gripper2_pos: {gripper2_pos}")
-        else:
-            arm2_proprio = np.concatenate([arm2_default, [gripper2_pos]])
+        # Same layout as SingleArm in every action space: per arm measured joints + gripper.
+        arm1_proprio = self.joint_gripper_proprio(arm1_joint_q, gripper1_pos, self.arm1_num_joints)
+        if arm1_proprio is None:
+            logger.warning(f"invalid arm1 proprioception detected. joint_q: {arm1_joint_q}, gripper1_pos: {gripper1_pos}")
+        arm2_proprio = self.joint_gripper_proprio(arm2_joint_q, gripper2_pos, self.arm2_num_joints)
+        if arm2_proprio is None:
+            logger.warning(f"invalid arm2 proprioception detected. joint_q: {arm2_joint_q}, gripper2_pos: {gripper2_pos}")
 
         # Concatenate for full proprio
         if arm1_proprio is not None and arm2_proprio is not None:

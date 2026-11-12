@@ -59,7 +59,7 @@ Support for XArm, UR5, Franka, SO100, Leap Hand, XHand — configure any robot w
 <div class="card" markdown>
 **:material-gamepad-variant: Teleoperation**
 
-Collect demonstrations with Spacemouse, gamepad, keyboard, or Gello leader arms. Record trajectories automatically.
+Collect demonstrations with Spacemouse, gamepad, keyboard, Gello leader arms, or a Vive tracker. Record trajectories automatically.
 </div>
 
 <div class="card" markdown>

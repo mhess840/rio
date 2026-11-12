@@ -14,16 +14,15 @@ from loguru import logger
 
 from ._formatter import Formatter
 
-if TYPE_CHECKING:
-    import tensorflow as tf
-
 try:
     import tensorflow as tf
 
     RLDS_AVAILABLE = True
 except ImportError:
+    if TYPE_CHECKING:
+        raise
     RLDS_AVAILABLE = False
-    tf = None  # type: ignore
+    tf = None
 
 
 try:
@@ -101,7 +100,7 @@ class RLDSFormatter(Formatter):
         if not verbose:
             logger.disable("rio.data.rlds_formatter")
 
-    def _process_data(self, trajectory: robodm.Trajectory) -> dict[str, Any]:
+    def _process_data(self, trajectory: robodm.Trajectory | None = None) -> dict[str, Any]:
         """
         Process robodm trajectory data into RLDS-compatible format.
 
@@ -112,6 +111,8 @@ class RLDSFormatter(Formatter):
             Dictionary containing processed data ready for writing
         """
         # Load all data from trajectory
+        if trajectory is None:
+            trajectory = robodm.Trajectory(path=str(self.robodm_path), mode="r")
         trajectory_data = trajectory.load()
 
         # Extract all feature names
@@ -275,7 +276,7 @@ class RLDSFormatter(Formatter):
                     if np.issubdtype(dtype, np.floating):
                         tf_dtype = tf.float32
                     elif np.issubdtype(dtype, np.integer):
-                        if feature_name in self.image_keys:
+                        if feature_name in (self.image_keys or []):
                             tf_dtype = tf.uint8
                         else:
                             tf_dtype = tf.int32
@@ -285,7 +286,7 @@ class RLDSFormatter(Formatter):
                     feature_spec[feature_name] = {
                         "dtype": tf_dtype,
                         "shape": shape,
-                        "is_image": feature_name in self.image_keys,
+                        "is_image": feature_name in (self.image_keys or []),
                     }
                 elif isinstance(sample, (int, float)):
                     feature_spec[feature_name] = {

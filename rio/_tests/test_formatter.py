@@ -173,7 +173,19 @@ class TestLeRobotFormatter:
         assert info["total_episodes"] == 1
         assert info["total_frames"] == 100
         assert "features" in info
-        assert len(info["features"]) == 6  # All features from sample data
+        assert set(info["features"]) == {
+            "observation.joint_positions",
+            "observation.joint_velocities",
+            "observation.ee_pose",
+            "observation.gripper_position",
+            "observation.images.camera_rgb",
+            "action",
+            "timestamp",
+            "frame_index",
+            "episode_index",
+            "index",
+            "task_index",
+        }
 
     def test_stats_json_content(self, sample_robodm_path, lerobot_output_path):
         """Test that stats.json contains statistics for features."""
@@ -194,7 +206,7 @@ class TestLeRobotFormatter:
             stats = json.load(f)
 
         # Check that stats exist for non-video features
-        assert "observation/joint_positions" in stats
+        assert "observation.joint_positions" in stats
         assert "action" in stats
 
         # Check that each stat has required fields
@@ -231,11 +243,16 @@ class TestLeRobotFormatter:
         assert "timestamp" in table.column_names
         assert "episode_index" in table.column_names
         assert "frame_index" in table.column_names
-        assert "observation/joint_positions" in table.column_names
+        assert "observation.joint_positions" in table.column_names
         assert "action" in table.column_names
 
         # Check that it has the correct number of rows
         assert len(table) == 100
+        source = robodm.Trajectory(path=sample_robodm_path, mode="r").load()
+        np.testing.assert_allclose(
+            table["observation.joint_positions"].to_pylist(),
+            source["observation/joint_positions"],
+        )
 
     def test_episode_metadata(self, sample_robodm_path, lerobot_output_path):
         """Test that episode metadata is created correctly."""
@@ -262,13 +279,13 @@ class TestLeRobotFormatter:
 
         assert "episode_index" in table.column_names
         assert "length" in table.column_names
-        assert "task_index" in table.column_names
+        assert "tasks" in table.column_names
 
         # Check episode values
         df = table.to_pandas()
         assert df.iloc[0]["episode_index"] == 0
         assert df.iloc[0]["length"] == 100
-        assert df.iloc[0]["task_index"] == 0
+        assert list(df.iloc[0]["tasks"]) == ["Test task"]
 
     def test_video_key_detection(self, sample_robodm_path, lerobot_output_path):
         """Test that video keys are auto-detected correctly."""
@@ -290,7 +307,8 @@ class TestLeRobotFormatter:
             info = json.load(f)
 
         # Check that camera_rgb was detected as a video key
-        assert "observation/images/camera_rgb" in info["video_keys"]
+        assert formatter.video_keys == ["observation.images.camera_rgb"]
+        assert info["features"]["observation.images.camera_rgb"]["dtype"] in {"image", "video"}
 
     def test_explicit_video_keys(self, sample_robodm_path, lerobot_output_path):
         """Test that explicitly provided video keys are used."""
@@ -311,7 +329,8 @@ class TestLeRobotFormatter:
         with open(info_path) as f:
             info = json.load(f)
 
-        assert info["video_keys"] == ["observation/images/camera_rgb"]
+        assert formatter.video_keys == ["observation.images.camera_rgb"]
+        assert info["features"]["observation.images.camera_rgb"]["shape"] == [64, 64, 3]
 
     def test_tasks_parquet(self, sample_robodm_path, lerobot_output_path):
         """Test that tasks.parquet is created correctly."""
@@ -333,8 +352,7 @@ class TestLeRobotFormatter:
         table = pq.read_table(tasks_path)
 
         assert "task_index" in table.column_names
-        assert "task" in table.column_names
 
         df = table.to_pandas()
         assert df.iloc[0]["task_index"] == 0
-        assert df.iloc[0]["task"] == task_description
+        assert df.index[0] == task_description

@@ -4,7 +4,9 @@
 """Unit tests for Kassow → LeRobot π₀.₅ conversion."""
 
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -21,6 +23,8 @@ from rio.data.convert_pi05 import (
     convert,
     idle_start_index,
     joints_as_action,
+    lerobot_io,
+    merge_lerobot_datasets,
     parse_task_map,
     prepare_episode,
     slice_episode,
@@ -31,7 +35,85 @@ from rio.data.convert_pi05 import (
     write_task_template,
 )
 
+pytestmark = pytest.mark.unit
+
 rng = np.random.default_rng(0)
+
+
+@pytest.mark.parametrize("invalid_path", [False, True])
+def test_video_fallback_escapes_paths_and_forbids_network_protocols(tmp_path, monkeypatch, invalid_path):
+    def unsupported(*args, **kwargs):
+        raise AttributeError("add_stream_from_template unavailable")
+
+    video_module = SimpleNamespace(get_video_info=lambda *args: {}, concatenate_video_files=unsupported)
+    monkeypatch.setattr(lerobot_io, "video_utils", video_module)
+    monkeypatch.setattr(lerobot_io.imageio_ffmpeg, "get_ffmpeg_exe", lambda: "fake_ffmpeg")
+    calls = []
+
+    def run(command, **kwargs):
+        assert command[command.index("-protocol_whitelist") + 1] == "file,pipe"
+        manifest = Path(command[command.index("-i") + 1]).read_text(encoding="utf-8")
+        assert "quote'\\''s.mp4" in manifest
+        calls.append(command)
+        Path(command[-1]).write_bytes(b"video")
+
+    monkeypatch.setattr(lerobot_io.subprocess, "run", run)
+    lerobot_io.patch_lerobot_pyav()
+    output = tmp_path / "out.mp4"
+    source = tmp_path / ("bad\nfile.mp4" if invalid_path else "quote's.mp4")
+    if invalid_path:
+        with pytest.raises(ValueError, match="line breaks"):
+            video_module.concatenate_video_files([source], output)
+        assert not calls and not output.exists()
+    else:
+        video_module.concatenate_video_files([source], output)
+        assert output.read_bytes() == b"video"
+        assert len(calls) == 1
+    assert not list(tmp_path.glob(".rio_concat_*"))
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_merge_publishes_only_complete_results_and_preserves_sources(tmp_path, monkeypatch, fail):
+    source = tmp_path / "source"
+    (source / "meta").mkdir(parents=True)
+    info = {"total_episodes": 1, "total_frames": 3}
+    (source / "meta" / "info.json").write_text(json.dumps(info))
+    output = tmp_path / "merged"
+    output.mkdir()
+    marker = output / "previous.txt"
+    marker.write_text("previous dataset")
+
+    def aggregate(**kwargs):
+        assert kwargs["roots"] == [source]
+        assert kwargs["concatenate_videos"] is False
+        staging = kwargs["aggr_root"]
+        (staging / "meta").mkdir(parents=True)
+        (staging / "meta" / "info.json").write_text(json.dumps(info))
+        if fail:
+            raise RuntimeError("aggregation failed")
+
+    monkeypatch.setitem(sys.modules, "lerobot.datasets.aggregate", SimpleNamespace(aggregate_datasets=aggregate))
+    if fail:
+        with pytest.raises(RuntimeError, match="aggregation failed"):
+            merge_lerobot_datasets([source], output, "local/merged", clean=True)
+        assert marker.read_text() == "previous dataset"
+    else:
+        assert merge_lerobot_datasets([source], output, "local/merged", clean=True) == {"episodes": 1, "frames": 3}
+        assert not marker.exists()
+        assert json.loads((output / "meta" / "info.json").read_text()) == info
+    assert json.loads((source / "meta" / "info.json").read_text()) == info
+
+
+@pytest.mark.parametrize("destination", ["same", "parent", "child"])
+def test_merge_refuses_outputs_overlapping_a_source(tmp_path, destination):
+    source = tmp_path / "source"
+    source.mkdir()
+    marker = source / "keep.txt"
+    marker.write_text("source")
+    output = {"same": source, "parent": tmp_path, "child": source / "child"}[destination]
+    with pytest.raises(ValueError, match="overlaps"):
+        merge_lerobot_datasets([source], output, "local/merged", clean=True)
+    assert marker.read_text() == "source"
 
 
 def test_traj_index_from_filename():
@@ -175,10 +257,10 @@ def test_convert_uses_the_explicit_gripper_state_source(tmp_path, monkeypatch, s
         data[converter.GRIPPER_COMMANDED_KEY] = np.array([0.7, 0.0], dtype=np.float32)
     frames = []
     dataset = SimpleNamespace(add_frame=frames.append, save_episode=lambda: None)
-    monkeypatch.setattr(converter.robodm, "Trajectory", lambda **kwargs: SimpleNamespace(load=lambda: data))
-    monkeypatch.setattr(converter, "LeRobotDataset", object())
-    monkeypatch.setattr(converter, "_patch_lerobot_pyav", lambda: None)
-    monkeypatch.setattr(converter, "_create_lerobot_dataset", lambda *args: dataset)
+    monkeypatch.setattr(robodm, "Trajectory", lambda **kwargs: SimpleNamespace(load=lambda: data))
+    monkeypatch.setattr(lerobot_io, "LeRobotDataset", object())
+    monkeypatch.setattr(lerobot_io, "patch_lerobot_pyav", lambda: None)
+    monkeypatch.setattr(lerobot_io, "create_lerobot_dataset", lambda *args: dataset)
     result = convert(
         ConvertPi05Cfg(
             input=path,
@@ -197,8 +279,10 @@ def test_convert_uses_the_explicit_gripper_state_source(tmp_path, monkeypatch, s
 
 
 def test_documented_converter_entrypoint_forwards_to_the_shared_implementation(monkeypatch, tmp_path):
-    from examples.data import convert_to_lerobot_pi05 as cli
+    from examples.data import convert_to_lerobot_pi05 as wrapper
+    from rio.apps.kassow import convert as cli
 
+    assert wrapper.cli is cli.cli
     cfg = ConvertPi05Cfg(input=tmp_path, dry_run=True)
     calls = []
     monkeypatch.setattr(cli, "convert", lambda value: calls.append(value) or {"dry_run": True})

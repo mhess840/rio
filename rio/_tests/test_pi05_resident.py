@@ -17,8 +17,16 @@ import numpy as np
 import pytest
 
 from rio.policies import pi05_resident as resident
+from rio.policies.pi05_resident import client as resident_client
+from rio.policies.pi05_resident import host, paths, process, server
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def isolated_resident_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "LOCK_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(paths, "LEGACY_LOCK_DIR", tmp_path / "legacy")
 
 
 def test_gpu_index_and_device_tag():
@@ -26,6 +34,22 @@ def test_gpu_index_and_device_tag():
     assert resident.gpu_index("cuda") == 0
     assert resident.gpu_index("cpu") is None
     assert resident.device_tag("cuda:1") == "cuda-1"
+    assert resident.device_tag("cuda:1", "open") == "cuda-1-open"
+
+
+@pytest.mark.parametrize("slot", ["../escape", "open/other", "UPPER", "a" * 33])
+def test_invalid_resident_slots_are_rejected(slot):
+    with pytest.raises(ValueError, match="slot"):
+        resident.lock_path("cuda:1", slot)
+
+
+def test_resident_slots_have_independent_metadata_and_cleanup(tmp_path):
+    for slot in ("open", "organize"):
+        resident.write_lock({"pid": os.getpid(), "device": "cuda:1", "slot": slot, "authkey": "ab" * 16})
+    assert resident.lock_path("cuda:1", "open") != resident.lock_path("cuda:1", "organize")
+    resident.clear_lock("cuda:1", slot="open", expected_pid=os.getpid())
+    assert resident.read_lock("cuda:1", "open") is None
+    assert resident.read_lock("cuda:1", "organize")["slot"] == "organize"
 
 
 def test_identity_matches_ckpt_and_device(tmp_path: Path):
@@ -59,7 +83,7 @@ def test_process_liveness_probe_does_not_signal_the_current_process():
 
 
 def test_try_connect_clears_stale_lock(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(resident, "LOCK_DIR", tmp_path)
+    monkeypatch.setattr(paths, "LOCK_DIR", tmp_path)
     identity = resident.resident_identity(tmp_path / "ckpt", "cuda:1", use_rtc=False, compile=False)
     meta = {**identity, "pid": 99999999, "address": str(tmp_path / "missing.sock"), "authkey": "ab"}
     resident.write_lock(meta)
@@ -119,7 +143,7 @@ def test_gpu_compute_apps_parses_nvidia_smi(monkeypatch):
         assert "-i" in cmd and "1" in cmd
         return "12345, python, 9312\n67890, python, 400\n"
 
-    monkeypatch.setattr(resident.subprocess, "check_output", fake_check_output)
+    monkeypatch.setattr(host.subprocess, "check_output", fake_check_output)
     apps = resident.gpu_compute_apps("cuda:1")
     assert [a["pid"] for a in apps] == [12345, 67890]
     assert apps[0]["memory_mib"] == "9312"
@@ -129,26 +153,26 @@ def test_mismatched_resident_exits_before_replacement_is_spawned(tmp_path, monke
     events = []
     client = SimpleNamespace(pid=456)
     connects = iter([None, None, client])
-    monkeypatch.setattr(resident, "try_connect", lambda identity: next(connects))
-    monkeypatch.setattr(resident, "_device_lock", lambda device, slot="": nullcontext())
-    monkeypatch.setattr(resident, "log_gpu_occupancy", lambda device: None)
-    monkeypatch.setattr(resident, "read_lock", lambda device, slot="": {"device": device, "pid": 123})
-    monkeypatch.setattr(resident, "_shutdown_metadata", lambda meta: events.append("old_exited"))
-    monkeypatch.setattr(resident, "spawn_resident", lambda *args: events.append("spawn") or SimpleNamespace(pid=456))
+    monkeypatch.setattr(process, "try_connect", lambda identity: next(connects))
+    monkeypatch.setattr(process, "_device_lock", nullcontext)
+    monkeypatch.setattr(process, "log_gpu_occupancy", lambda device: None)
+    monkeypatch.setattr(process, "read_lock", lambda device, slot="": {"device": device, "slot": slot, "pid": 123})
+    monkeypatch.setattr(process, "_shutdown_metadata", lambda meta: events.append("old_exited"))
+    monkeypatch.setattr(process, "spawn_resident", lambda *args: events.append("spawn") or SimpleNamespace(pid=456))
     assert resident.ensure_resident(tmp_path, "cuda:1", use_rtc=True, rtc_execution_horizon=30) is client
     assert events == ["old_exited", "spawn"]
 
 
 def test_resident_that_cannot_stop_is_not_replaced(tmp_path, monkeypatch):
     spawned = []
-    monkeypatch.setattr(resident, "try_connect", lambda identity: None)
-    monkeypatch.setattr(resident, "_device_lock", lambda device, slot="": nullcontext())
-    monkeypatch.setattr(resident, "log_gpu_occupancy", lambda device: None)
-    monkeypatch.setattr(resident, "read_lock", lambda device, slot="": {"device": device, "pid": 123})
+    monkeypatch.setattr(process, "try_connect", lambda identity: None)
+    monkeypatch.setattr(process, "_device_lock", nullcontext)
+    monkeypatch.setattr(process, "log_gpu_occupancy", lambda device: None)
+    monkeypatch.setattr(process, "read_lock", lambda device, slot="": {"device": device, "slot": slot, "pid": 123})
     monkeypatch.setattr(
-        resident, "_shutdown_metadata", lambda meta: (_ for _ in ()).throw(TimeoutError("old resident still running"))
+        process, "_shutdown_metadata", lambda meta: (_ for _ in ()).throw(TimeoutError("old resident still running"))
     )
-    monkeypatch.setattr(resident, "spawn_resident", lambda *args: spawned.append(True))
+    monkeypatch.setattr(process, "spawn_resident", lambda *args: spawned.append(True))
     with pytest.raises(TimeoutError, match="still running"):
         resident.ensure_resident(tmp_path, "cuda:1")
     assert not spawned
@@ -161,16 +185,16 @@ def test_shutdown_rejects_reused_or_mismatched_pid_without_sending_a_signal(monk
         call=calls.append,
         close=lambda: None,
     )
-    monkeypatch.setattr(resident, "pid_alive", lambda pid: True)
-    monkeypatch.setattr(resident, "ResidentClient", lambda **kwargs: client)
-    monkeypatch.setattr(resident.os, "kill", lambda *args: calls.append("signal"))
+    monkeypatch.setattr(process, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(process, "ResidentClient", lambda **kwargs: client)
+    monkeypatch.setattr(os, "kill", lambda *args: calls.append("signal"))
     with pytest.raises(RuntimeError, match="identity changed"):
-        resident._shutdown_metadata({"pid": 123, "device": "cuda:1", "policy_path": "/checkpoint", "authkey": "ab" * 16})
+        process._shutdown_metadata({"pid": 123, "device": "cuda:1", "policy_path": "/checkpoint", "authkey": "ab" * 16})
     assert not calls
 
 
 def test_write_lock_roundtrip(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(resident, "LOCK_DIR", tmp_path)
+    monkeypatch.setattr(paths, "LOCK_DIR", tmp_path)
     meta = {
         "policy_path": "/ckpt",
         "device": "cuda:1",
@@ -186,37 +210,6 @@ def test_write_lock_roundtrip(tmp_path: Path, monkeypatch):
     assert json.loads(resident.lock_path("cuda:1").read_text())["device"] == "cuda:1"
 
 
-def test_slots_get_their_own_files_and_identity(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(resident, "LOCK_DIR", tmp_path)
-    assert resident.device_tag("cuda:1", "open") == "cuda-1-open"
-    assert resident.lock_path("cuda:1", "open") != resident.lock_path("cuda:1", "organize")
-    assert resident.socket_path("cuda:1", "open").name == "rio_pi05_cuda-1-open.sock"
-    assert "slot" not in resident.resident_identity(tmp_path, "cuda:1", use_rtc=True, compile=False)
-    assert resident.resident_identity(tmp_path, "cuda:1", use_rtc=True, compile=False, slot="open")["slot"] == "open"
-    with pytest.raises(ValueError, match="slot"):
-        resident.lock_path("cuda:1", "../x")
-    meta = {"policy_path": "/ckpt", "device": "cuda:1", "use_rtc": True, "compile": False, "pid": 1, "slot": "open"}
-    resident.write_lock(meta)
-    assert resident.read_lock("cuda:1", "open")["slot"] == "open"
-    assert resident.read_lock("cuda:1") is None
-    assert resident.read_lock("cuda:1", "organize") is None
-
-
-def test_ensure_resident_in_a_slot_only_replaces_that_slot(tmp_path, monkeypatch):
-    seen = []
-    client = SimpleNamespace(pid=7)
-    connects = iter([None, None, client])
-    monkeypatch.setattr(resident, "try_connect", lambda identity: next(connects))
-    monkeypatch.setattr(resident, "_device_lock", lambda device, slot="": nullcontext())
-    monkeypatch.setattr(resident, "log_gpu_occupancy", lambda device: None)
-    monkeypatch.setattr(resident, "read_lock", lambda device, slot="": seen.append(slot))
-    monkeypatch.setattr(
-        resident, "spawn_resident", lambda identity, extra: seen.append(identity["slot"]) or SimpleNamespace(pid=7)
-    )
-    assert resident.ensure_resident(tmp_path, "cuda:1", slot="open") is client
-    assert seen == ["open", "open"]
-
-
 @pytest.mark.parametrize("device", ["../escape", "cuda:1/../../escape", "not-a-device"])
 def test_resident_device_cannot_escape_runtime_directory(device):
     with pytest.raises(ValueError, match="device"):
@@ -228,14 +221,14 @@ def test_rpc_timeout_closes_the_connection_without_hanging(monkeypatch):
     client = resident.ResidentClient(address="unused", authkey=b"a" * 16, meta={}, timeout_s=0.01)
     connection = SimpleNamespace(send=lambda payload: None, poll=lambda timeout: False, close=lambda: closed.append(True))
     monkeypatch.setattr(client, "_connect", lambda: setattr(client, "_conn", connection))
-    monkeypatch.setattr(resident.time, "sleep", lambda duration: None)
+    monkeypatch.setattr(resident_client.time, "sleep", lambda duration: None)
     with pytest.raises(ConnectionError, match="not reachable"):
         client.ping()
     assert closed
 
 
 def test_clear_lock_does_not_remove_a_newer_resident(tmp_path, monkeypatch):
-    monkeypatch.setattr(resident, "LOCK_DIR", tmp_path)
+    monkeypatch.setattr(paths, "LOCK_DIR", tmp_path)
     resident.write_lock({"pid": 222, "device": "cuda:1", "authkey": "ab" * 16})
     resident.clear_lock("cuda:1", expected_pid=111)
     loaded = resident.read_lock("cuda:1")
@@ -280,7 +273,7 @@ def test_server_recovers_from_bad_authentication_and_exits_after_shutdown(tmp_pa
     def accept():
         attempts.append(True)
         if len(attempts) == 1:
-            raise resident.AuthenticationError("stale test key")
+            raise server.AuthenticationError("stale test key")
         return connection
 
     def listener(address, **kwargs):
@@ -290,16 +283,14 @@ def test_server_recovers_from_bad_authentication_and_exits_after_shutdown(tmp_pa
     def inline_thread(*, target, args=(), **kwargs):
         return SimpleNamespace(start=lambda: target(*args))
 
-    monkeypatch.setattr(resident, "LOCK_DIR", tmp_path / "runtime")
-    monkeypatch.setattr(resident, "LEGACY_LOCK_DIR", tmp_path / "legacy")
-    monkeypatch.setattr(resident, "Listener", listener)
-    monkeypatch.setattr(resident.threading, "Thread", inline_thread)
-    monkeypatch.setattr(resident.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(paths, "LOCK_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(paths, "LEGACY_LOCK_DIR", tmp_path / "legacy")
+    monkeypatch.setattr(server, "Listener", listener)
+    monkeypatch.setattr(server.threading, "Thread", inline_thread)
+    monkeypatch.setattr(server.signal, "signal", lambda *args: None)
     monkeypatch.setattr(pi05, "Pi05", FakePolicy)
-    cfg = SimpleNamespace(
-        policy_path=str(tmp_path), device="cpu", use_rtc=False, compile=False, binarize_gripper=True, action_space="tcp"
-    )
-    resident._serve_forever(cfg)
+    cfg = server.ResidentCfg(policy_path=str(tmp_path), device="cpu", use_rtc=False, action_space="tcp")
+    server._serve_forever(cfg)
     assert attempts == [True, True]
     assert calls == ["loaded", "reset"]
     assert replies == [{"ok": True}, {"ok": True}]
@@ -309,7 +300,7 @@ def test_server_recovers_from_bad_authentication_and_exits_after_shutdown(tmp_pa
 @pytest.mark.skipif(os.name != "posix", reason="POSIX credential permissions")
 def test_resident_credentials_are_private(tmp_path, monkeypatch):
     runtime = tmp_path / "runtime"
-    monkeypatch.setattr(resident, "LOCK_DIR", runtime)
+    monkeypatch.setattr(paths, "LOCK_DIR", runtime)
     resident.write_lock({"pid": os.getpid(), "device": "cuda:1", "authkey": "ab" * 16})
     assert runtime.stat().st_mode & 0o777 == 0o700
     assert resident.lock_path("cuda:1").stat().st_mode & 0o777 == 0o600

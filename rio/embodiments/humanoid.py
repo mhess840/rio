@@ -4,11 +4,9 @@
 from dataclasses import dataclass
 
 import numpy as np
-from loguru import logger
-from rio_hw.middlewares._middleware import Client
 
 from ..schema import ActionSpace, Observation
-from .base import BaseEmbodiment
+from .base import BaseEmbodiment, JointClient
 
 
 @dataclass
@@ -22,7 +20,7 @@ class HumanoidObs(Observation):
 class Humanoid(BaseEmbodiment):
     def __init__(
         self,
-        humanoid: Client,
+        humanoid: JointClient,
         action_space: str = "JOINT_POS",
         **kwargs,
     ):
@@ -33,21 +31,6 @@ class Humanoid(BaseEmbodiment):
 
         # Get number of joints dynamically
         self.num_joints = self._get_num_joints(self.humanoid)
-
-    def _get_num_joints(self, humanoid: Client) -> int:
-        if hasattr(humanoid, "num_joints"):
-            return humanoid.num_joints
-        else:
-            logger.warning(
-                "Humanoid client does not have 'num_joints' attribute; using state to determine joint count.  \
-                    Consider adding 'num_joints' attribute to the client for efficiency."
-            )
-            # Try to determine from state
-            state = humanoid.get_state()
-            if state and "q" in state:
-                return len(state["q"])
-            else:
-                raise ValueError("Cannot determine number of joints for the given humanoid client.")
 
     def move(
         self,
@@ -63,7 +46,9 @@ class Humanoid(BaseEmbodiment):
     def parse_action(self, action: np.ndarray) -> dict:
         return {"q": action}
 
-    def build_action(self, arm_cmd: np.ndarray) -> np.ndarray:
+    def build_action(self, arm_cmd: np.ndarray, gripper_cmd: np.ndarray | None = None) -> np.ndarray:
+        if gripper_cmd is not None:
+            raise ValueError("Humanoid actions do not have a gripper channel")
         return arm_cmd
 
     def get_state(self):

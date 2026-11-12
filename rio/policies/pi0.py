@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 RIO Developers
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Callable
+
 import numpy as np
 from loguru import logger
 
@@ -25,11 +27,11 @@ class Pi0(Policy):
         train_config: str | TrainConfig = "pi0_fast_droid",
         policy_path: str = "gs://openpi-assets/checkpoints/pi0_fast_droid",
         libero: bool = False,
-        obs_transforms: callable = lambda x: x,
+        obs_transforms: Callable[..., dict] = lambda observation, **kwargs: observation,
         dummy_obs: dict[str, np.ndarray] | None = None,
         **kwargs,
     ):
-        if IMPORT_ERROR is not None:
+        if IMPORT_ERROR is not None or _config is None or download is None or policy_config is None:
             raise ImportError("Pi0 dependencies not installed. Run: bash scripts/setup/vla/pi0_setup.sh") from IMPORT_ERROR
 
         self.ready = False
@@ -60,6 +62,8 @@ class Pi0(Policy):
         self.inference(dummy_obs)
 
     def construct_policy(self):
+        if policy_config is None:
+            raise ImportError("OpenPI policy dependencies are unavailable") from IMPORT_ERROR
         self.policy = policy_config.create_trained_policy(self.config, self.checkpoint_dir)
         self._warm_start()
         self.ready = True

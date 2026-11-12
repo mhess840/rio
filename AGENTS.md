@@ -1,5 +1,7 @@
 # Development Workflow
 
+**Project map:** for the Kassow crate-loading pilot (orchestrator, VLAs, Jev, DAgger) start at `docs/architecture.md`.
+
 **Always use `uv run`, not python**.
 
 We've bundled common commands into a Makefile for convenience.

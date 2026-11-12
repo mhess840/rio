@@ -18,7 +18,6 @@ from examples.policy_inference import (
     apply_serve_control,
     chunk_hold_pending,
     chunk_size_from_ckpt,
-    clamp_tcp_lead,
     command_tracking_error,
     create_obs,
     first_waypoint_needs_creep,
@@ -252,17 +251,6 @@ def test_rollout_rejects_missing_or_nonfinite_arm_feedback(state):
         require_arm_state_safe(state, np.zeros(7), now=10.0, joint_serve=False, limits=RolloutSafetyCfg())
 
 
-def test_tcp_lead_is_pulled_inside_the_tracking_limit():
-    limits = RolloutSafetyCfg()
-    measured = np.zeros(6)
-    command = np.zeros(7)
-    command[0] = 0.08
-    limited = clamp_tcp_lead(command, measured, limits)
-    assert np.linalg.norm(limited[:3]) == pytest.approx(0.04)
-    state = {"timestamp": 10.0, "alarm_code": 0, "eef_pose": measured}
-    require_arm_state_safe(state, limited, now=10.0, joint_serve=False, limits=limits)
-
-
 def test_rollout_rejects_tracking_error_seen_during_safety_stop():
     state = {"timestamp": 10.0, "eef_pose": np.zeros(6)}
     command = np.zeros(7)
@@ -494,134 +482,6 @@ def test_cpu_rollout_executes_startup_and_interpolation_with_custom_gripper(monk
     assert stopped
 
 
-def test_external_control_ends_the_rollout_on_the_first_open_command(monkeypatch, tmp_path):
-    from examples import policy_inference as serve
-
-    clock = [0.0]
-    pose = np.zeros(6, dtype=np.float32)
-    grip = [0.0]
-    commands = []
-    stopped = []
-
-    class Tensor:
-        def __init__(self, value):
-            self.array = np.asarray(value, dtype=np.float32)
-
-        def __len__(self):
-            return len(self.array)
-
-        def __getitem__(self, key):
-            return Tensor(self.array[key])
-
-        def detach(self):
-            return self
-
-        def cpu(self):
-            return self
-
-        def numpy(self):
-            return self.array
-
-    class Queue:
-        def __init__(self, cfg):
-            self.buffer = np.empty((0, 7), dtype=np.float32)
-            self.index = 0
-
-        def clear(self):
-            self.index = len(self.buffer)
-
-        def qsize(self):
-            return len(self.buffer) - self.index
-
-        def get_action_index(self):
-            return self.index
-
-        def merge(self, original, processed, delay, **kwargs):
-            self.buffer = processed.array[delay:].copy()
-            self.index = 0
-
-        def get_processed_left_over(self):
-            return Tensor(self.buffer[self.index :])
-
-        def get(self):
-            if not self.qsize():
-                return None
-            action = Tensor(self.buffer[self.index])
-            self.index += 1
-            return action
-
-    actions = np.zeros((6, 7), dtype=np.float32)
-    actions[:, -1] = [0.0, 0.0, 0.3, 0.3, 0.3, 0.3]
-    pending = [False]
-
-    def response():
-        ready = pending[0]
-        pending[0] = False
-        return {"ready": ready, "actions": actions, "original_actions": actions.copy()}
-
-    policy = SimpleNamespace(
-        policy_loaded=True,
-        reset=lambda: pending.__setitem__(0, False),
-        send_observation=lambda observation: pending.__setitem__(0, True),
-        get_action_chunk=response,
-    )
-    arm = _Arm("TASK_POS_IK")
-    monkeypatch.setattr(arm, "get_state", lambda: {"eef_pose": pose.copy(), "timestamp": clock[0], "alarm_code": 0})
-    monkeypatch.setattr(arm, "stop_motion", lambda: stopped.append(True))
-    gripper = SimpleNamespace(get_state=lambda: {"gripper_position": grip[0], "gripper_commanded_position": grip[0]})
-
-    def state(**kwargs):
-        return SimpleNamespace(
-            observation=SimpleNamespace(
-                cameras={
-                    "camera_1": SimpleNamespace(
-                        rgb=np.zeros((4, 4, 3), dtype=np.uint8), meta={"camera_receive_timestamp": clock[0]}
-                    )
-                },
-                proprio_joints=np.zeros(7),
-                gripper_position=grip[0],
-            )
-        )
-
-    def move(action, **kwargs):
-        commands.append(action.copy())
-        grip[0] = float(action[-1])
-        if len(commands) > 200:
-            raise AssertionError("rollout did not stop")
-
-    env = SimpleNamespace(
-        robot=SimpleNamespace(arm=arm, _gripper=gripper),
-        recorder=None,
-        set_start_time=lambda value: None,
-        set_instruction=lambda value: None,
-        get_state=state,
-        move=move,
-    )
-    args = SimpleNamespace(
-        freq=100,
-        policy_path="unused",
-        policy_node_cfg=SimpleNamespace(action_hz=20, action_dim=7, n_execute=30),
-        policy_cfg=SimpleNamespace(binarize_gripper=True, gripper_close=0.0, gripper_open=0.3, gripper_threshold=None),
-        instruction="put the object in space 1",
-        arm_latency=0.0,
-        diag_dir=str(tmp_path),
-    )
-    monkeypatch.setattr(serve, "ActionQueue", Queue)
-    monkeypatch.setattr(serve, "RTCConfig", SimpleNamespace)
-    monkeypatch.setattr(serve, "LatencyTracker", None)
-    monkeypatch.setattr(serve, "torch", SimpleNamespace(as_tensor=Tensor))
-    monkeypatch.setattr(serve, "_dump_live_cameras", lambda *args: None)
-    monkeypatch.setattr(serve.time, "sleep", lambda duration: None)
-    monkeypatch.setattr(serve.time, "now", lambda: clock[0])
-    monkeypatch.setattr(serve.time, "precise_wait", lambda deadline: clock.__setitem__(0, deadline))
-    control = serve.RolloutControl(stop_when=lambda command: float(command[-1]) >= 0.15)
-    serve.policy_loop(args, env, policy, control=control)
-    assert control.reason == "stop_when"
-    assert commands[-1][-1] == pytest.approx(0.3)
-    assert all(command[-1] == pytest.approx(0.0) for command in commands[:-1])
-    assert stopped
-
-
 def test_task_pos_action_is_eef_plus_gripper():
     arm = SingleArm(arm=cast(Client, _Arm("TASK_POS_IK")), action_space="TASK_POS")
     assert arm.arm_dim == 6
@@ -809,8 +669,6 @@ def test_pi05_lerobot_cfg_is_cartesian_without_vive():
     assert cfg.arm_cfg.max_pos_speed == pytest.approx(0.45)
     assert cfg.arm_cfg.max_rot_speed == pytest.approx(1.0)
     assert list(cfg.cameras) == ["camera_1", "camera_2"]
-    assert cfg.experiment == "sort"
-    assert cfg.cameras["camera_2"].serial == "261222078043"
 
 
 def test_chunk_hold_pending_blocks_until_deadline():

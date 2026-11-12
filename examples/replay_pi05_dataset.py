@@ -1,13 +1,11 @@
 # SPDX-FileCopyrightText: 2026 RIO Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Play a LeRobot episode through the same Kassow IK as Serve. No policy.
+"""Play a kassow_pi05 episode through the same Kassow IK as Serve. No policy.
 
 Same 100 Hz loop and ActionInterpolator x5 as ``examples.policy_inference``.
 If the arm tracks this smoothly, IK can execute 20 Hz TCP. If it jitters on
-ground-truth actions, the Kassow path is the problem, not π₀.₅. Uses the
-selected dataset of the active experiment unless ``--dataset``/``--dataset-root``
-is given:
+ground-truth actions, the Kassow path is the problem, not π₀.₅.
 
     POLICY=Pi05LerobotCfg uv run --group pi --no-group docs -m examples.replay_pi05_dataset \\
         --episode 0
@@ -25,7 +23,6 @@ from rio_hw import time
 from rio_hw.interpolators import ActionInterpolator
 from rio_hw.middleware import ServerManager
 
-from examples.cfg.kassow_experiments import dataset_repo_id, resolve_dataset, resolve_experiment
 from examples.diagnose_pi05_offline import _action_window, _episode_bounds, _load_dataset
 from examples.policy_inference import (
     RolloutSafetyCfg,
@@ -49,13 +46,7 @@ def replay_loop(args, env) -> None:
     require_arm_controller(env.robot.arm)
     if is_joint_serve(args):
         raise ValueError("This replay expects a TCP dataset and Cartesian station configuration")
-    root, repo_id = Path(args.dataset_root), args.repo_id
-    if not args.dataset_root:
-        experiment = resolve_experiment(args.experiment)
-        variant, root = resolve_dataset(experiment, args.dataset or None)
-        repo_id = dataset_repo_id(experiment, variant)
-    logger.info("Replaying episode {} of {}", args.episode, root)
-    ds = _load_dataset(root, repo_id or f"local/{root.name}")
+    ds = _load_dataset(Path(args.dataset_root), args.repo_id)
     from_i, to_i = _episode_bounds(ds, args.episode)
     if args.start_frame is not None:
         start = int(from_i) + int(args.start_frame)
@@ -142,13 +133,8 @@ if __name__ == "__main__":
 
     @dataclass
     class Args(PolicyCfg):
-        # No policy runs; these keep the policy config from looking up a model.
-        policy_path: str = "unused"
-        instruction: str = "replay (no policy)"
-        # Empty: the selected LeRobot variant of the experiment.
-        dataset: str = ""
-        dataset_root: str = ""
-        repo_id: str = ""
+        dataset_root: str = "data/lerobot/kassow_pi05"
+        repo_id: str = "local/kassow_pi05"
         episode: int = 0
         start_frame: int | None = None
         safety_cfg: RolloutSafetyCfg = field(default_factory=RolloutSafetyCfg)

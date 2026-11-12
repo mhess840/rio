@@ -13,7 +13,7 @@ uv python pin 3.12
 uv sync --python 3.12 --group pi --no-group docs
 ```
 
-`lerobot==0.6.1` extras `[pi,training]`. After a Python minor change, rebuild `_kord_bridge` against this interpreter (`cmake -DPython_EXECUTABLE=$PWD/.venv/bin/python` in `../rio-hw/kord_bridge`).
+`lerobot==0.6.1` extras `[pi,training]`. After a Python minor change, rebuild `_kord_bridge` against this interpreter (`bash scripts/setup/kord_bridge.sh`, which passes `-DPython_EXECUTABLE=$PWD/.venv/bin/python` to CMake in `../rio-hw/kord_bridge`).
 
 A 0.6 checkpoint will not load on 3.11 / 0.4.4.
 
@@ -37,10 +37,13 @@ The Kassow LeRobot configs take the model, instruction, cameras, and home from t
 
 ```bash
 uv run -m examples.experiment use sort --model run1
-POLICY=Pi05LerobotCfg uv run --group pi --no-group docs -m examples.policy_inference \
+POLICY=Pi05LerobotCfg uv run --group pi --no-group docs -m rio.apps.kassow.serve \
   --policy-cfg.device cuda:1 \
   --instruction "put the object in space 2"
 ```
+
+`rio.apps.kassow.serve` offers only the Kassow configs and adds DAgger takeover; `examples.policy_inference` serves
+any `POLICY` from `examples/policy_cfgs/` through the same `rio.policies.serve` code.
 
 List available stations and policies:
 
@@ -67,13 +70,13 @@ The `action_space` in the policy config automatically sets the arm controller â€
 
 ```bash
 # pi0.5
-STATION=Xarm7EEFStation POLICY=Pi05Cfg uv run -m examples.policy_inference \
+STATION=Xarm7EefStation POLICY=Pi05Cfg uv run -m examples.policy_inference \
   --policy-path /data/ckpt/pi05_multi_fold \
   --asset-id robotio/multirobot_fold \
   --instruction "Fold the shirt in half."
 
 # SmolVLA
-STATION=Xarm7EEFStation POLICY=SmolVLACfg uv run -m examples.policy_inference \
+STATION=Xarm7EefStation POLICY=SmolVLACfg uv run -m examples.policy_inference \
   --policy-path ckpts/smolvla \
   --instruction "Place the cup on the shelf."
 ```
@@ -92,7 +95,7 @@ Press **Enter** when prompted to start the loop.
 | `--policy-node-cfg.chunk-size` | `16` | Actions per chunk |
 | `--policy-node-cfg.chunk-request-threshold` | `0.1` | Fraction consumed before next chunk request |
 | `--policy-node-cfg.no-use-rtc` | RTC on (`Pi05LerobotCfg`) | Disable RTC; play `n_execute` steps, then request the next chunk |
-| `--diag-dir` | `/tmp/pi05_diag` | Chunk npy + cmd-vs-eef CSV |
+| `--diag-dir` | `<experiments workspace>/pi05_diag` (`$RIO_EXPERIMENTS_DIR`, else `experiments/`) | Chunk npy + cmd-vs-eef CSV, one `session_*` folder per rollout |
 
 ## Inference loop
 

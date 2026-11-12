@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 import scipy.spatial.transform as st
 from loguru import logger
-from rio_hw.middlewares._middleware import Client
 
 from rio.envs.poll import TeleopMode
 
 from ..schema import ActionSpace, Observation
-from .base import BaseEmbodiment
+from .base import ArmClient, BaseEmbodiment, GripperClient, JointClient
 
 
 @dataclass
@@ -28,9 +28,9 @@ class SingleArmObs(Observation):
 class SingleArm(BaseEmbodiment):
     def __init__(
         self,
-        arm: Client,
-        gripper: Client | None = None,
-        hand: Client | None = None,
+        arm: ArmClient,
+        gripper: GripperClient | None = None,
+        hand: JointClient | None = None,
         action_space: str = "TASK_POS",
         **kwargs,
     ):
@@ -67,21 +67,6 @@ class SingleArm(BaseEmbodiment):
 
         if self.hand is not None and parsed["hand_cmd"] is not None:
             self.hand.moveJ(parsed["hand_cmd"].tolist(), t_cmd_target)
-
-    def _get_num_joints(self, arm: Client) -> int:
-        if hasattr(arm, "num_joints"):
-            return arm.num_joints
-        else:
-            logger.warning(
-                "Arm client does not have 'num_joints' attribute; using state to determine joint count.  \
-                    Consider adding 'num_joints' attribute to the client for efficiency."
-            )
-            state = arm.get_state()
-            joint_q = state.get("joint_q", None)
-            if joint_q is not None:
-                return len(joint_q)
-            else:
-                raise ValueError("Cannot determine number of joints for the given arm client.")
 
     def parse_action(self, action):
         # Parse arm command
@@ -142,8 +127,6 @@ class SingleArm(BaseEmbodiment):
         # Get proprioceptive states
         eef_pose = robot_state["arm"].get("eef_pose", None)
         joint_q = robot_state["arm"].get("joint_q", None)
-        if joint_q is None:
-            logger.warning("Robot arm state does not contain joint_q.")
 
         if "gripper" in robot_state.keys():
             gripper_pos = robot_state["gripper"].get("gripper_position", None)
@@ -153,13 +136,10 @@ class SingleArm(BaseEmbodiment):
             gripper_pos = robot_state["arm"].get("gripper_position", 0.0)
             gripper_commanded = robot_state["arm"].get("gripper_commanded_position", None)
 
-        default_proprio = eef_pose if self.action_space == "EEF_POSE" else joint_q
-        default_proprio = np.concatenate([default_proprio, [gripper_pos]])
-
         hand_joints = robot_state["hand"].get("joint_q") if "hand" in robot_state else None
 
         obs = SingleArmObs(
-            proprio=default_proprio,
+            proprio=self._joint_gripper_proprio(joint_q, gripper_pos),
             proprio_eef=eef_pose,
             proprio_joints=joint_q,
             gripper_position=gripper_pos,
@@ -168,6 +148,14 @@ class SingleArm(BaseEmbodiment):
             cameras=cams,
         )
         return obs
+
+    def _joint_gripper_proprio(self, joint_q, gripper_pos) -> np.ndarray | None:
+        """``joint_gripper_proprio`` of this arm; warns once instead of stopping teleop on a momentary gap."""
+        proprio = self.joint_gripper_proprio(joint_q, gripper_pos, self.arm_num_joints)
+        if proprio is None and not getattr(self, "_proprio_warned", False):
+            logger.warning("Arm state has no finite {}D joint_q and gripper position; proprio omitted", self.arm_num_joints)
+            self._proprio_warned = True
+        return proprio
 
     @staticmethod
     def make_teleop_eef_cmd(freq, teleop_mode, delta_pose, target_pose, max_pos_speed, max_rot_speed):
@@ -185,7 +173,8 @@ class SingleArm(BaseEmbodiment):
         else:
             raise RuntimeError(teleop_mode)
         drot = st.Rotation.from_euler("xyz", drot_xyz)
-        rot = (drot * st.Rotation.from_rotvec(target_pose[3:])).as_rotvec()
+        rotation = cast(st.Rotation, drot * st.Rotation.from_rotvec(target_pose[3:]))
+        rot = rotation.as_rotvec()
         target_pose[:3] += dpos
         target_pose[3:] = rot
         return target_pose

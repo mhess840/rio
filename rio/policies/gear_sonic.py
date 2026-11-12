@@ -6,21 +6,15 @@ from __future__ import annotations
 import os
 import queue
 import traceback
+from typing import cast
 
 import numpy as np
+import scipy.spatial.transform as st
 from loguru import logger
 from rio_hw import time
 from rio_hw.middleware import ClientFactory, ServerFactory
 from rio_hw.node import Node
 from threadpoolctl import threadpool_limits
-
-try:
-    import scipy.spatial.transform as st
-
-    SCIPY_IMPORT_ERROR = None
-except ImportError as e:
-    st = None
-    SCIPY_IMPORT_ERROR = e
 
 try:
     import onnxruntime as ort
@@ -35,12 +29,6 @@ try:
     from gear_sonic.scripts.pico_manager_thread_server import compute_from_body_poses
     from gear_sonic.trl.utils import torch_transform
     from gear_sonic.trl.utils.rotation_conversion import decompose_rotation_aa
-
-    # compute_human_body_joints inside compute_from_body_poses loads data from a relative path
-    # we directly load the data first
-    gear_sonic_root = os.path.dirname(os.path.dirname(gear_sonic.__file__))
-    f = os.path.join(gear_sonic_root, "gear_sonic/data/human/human_joints_info.pkl")
-    torch_transform.human_joints_info = torch.load(f)
 
     GEAR_SONIC_IMPORT_ERROR = None
 except ImportError as e:
@@ -182,9 +170,8 @@ class GearSonic(Node):
     ):
         if ORT_IMPORT_ERROR is not None:
             raise ImportError("onnxruntime is required to run GearSonic.") from ORT_IMPORT_ERROR
-        if SCIPY_IMPORT_ERROR is not None:
-            raise ImportError("scipy is required to run GearSonic.") from SCIPY_IMPORT_ERROR
         self.freq = freq
+        self._human_metadata_loaded = False
         self.model_dir = model_dir
         self.last_timestamp = time.now()
         super().__init__(freq=freq, max_buffer_size=max_buffer_size, max_queue_size=max_queue_size, **kwargs)
@@ -298,6 +285,11 @@ class GearSonic(Node):
                     # NOTE: currently we don't do any SMPL interpolation
                     if GEAR_SONIC_IMPORT_ERROR is not None:
                         raise ImportError("gear_sonic is required for raw body tracking mode.") from GEAR_SONIC_IMPORT_ERROR
+                    if not self._human_metadata_loaded:
+                        root = os.path.dirname(os.path.dirname(gear_sonic.__file__))
+                        metadata = os.path.join(root, "gear_sonic/data/human/human_joints_info.pkl")
+                        torch_transform.human_joints_info = torch.load(metadata, weights_only=True, map_location="cpu")
+                        self._human_metadata_loaded = True
 
                     positions = np.array(data["raw_body_pos"])
                     global_quats = np.array(data["raw_body_quat"])
@@ -328,7 +320,6 @@ class GearSonic(Node):
                         state_buffer.buffers["wrist_joints"][:] = wrist_joints
                 else:
                     ref_root_quat_xyzw = np.array(data["root_quat"], dtype=np.float32)[0][[1, 2, 3, 0]]
-                    ref_fi = data["ref_fi"]
 
                 state_buffer.append(state_dict)
 
@@ -346,6 +337,8 @@ class GearSonic(Node):
                     if encoder_mode == "smpl":
                         heading_initialized = True
 
+                if heading_delta_rot is None:
+                    raise RuntimeError("Heading alignment is unavailable")
                 if encoder_mode == "joint":
                     encoder_obs = self._build_encoder_input_joint(
                         data=data,
@@ -410,8 +403,8 @@ class GearSonic(Node):
             (jp1[:, MUJOCO_TO_ISAACLAB] - jp[:, MUJOCO_TO_ISAACLAB]) * 50
         ).flatten()  # motion_joint_velocities_10frame_step5
 
-        new_ref_rot = heading_delta_rot * st.Rotation.from_quat(root_quat[fi], scalar_first=True)
-        base_to_ref = st.Rotation.from_quat(quat_xyzw).inv() * new_ref_rot
+        new_ref_rot = cast(st.Rotation, heading_delta_rot * st.Rotation.from_quat(root_quat[fi], scalar_first=True))
+        base_to_ref = cast(st.Rotation, st.Rotation.from_quat(quat_xyzw).inv() * new_ref_rot)
         out[601:661] = base_to_ref.as_matrix()[:, :, :2].flatten()  # motion_anchor_orientation_10frame_step5
 
         return out
@@ -429,8 +422,8 @@ class GearSonic(Node):
         wrist_joints_hist = state_buffer.get_history("wrist_joints", 10)
         smpl_root_quats = state_buffer.get_history("smpl_root_quat_xyzw", 10).reshape(10, 4)
 
-        new_ref_rot = heading_delta_rot * st.Rotation.from_quat(smpl_root_quats)
-        base_to_ref = st.Rotation.from_quat(quat_xyzw).inv() * new_ref_rot
+        new_ref_rot = cast(st.Rotation, heading_delta_rot * st.Rotation.from_quat(smpl_root_quats))
+        base_to_ref = cast(st.Rotation, st.Rotation.from_quat(quat_xyzw).inv() * new_ref_rot)
 
         out[922:1642] = smpl_joints_hist  # smpl_joints_hist
         out[1642:1702] = base_to_ref.as_matrix()[:, :, :2].flatten()  # smpl_anchor_ori

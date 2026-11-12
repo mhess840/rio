@@ -13,7 +13,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from examples.cfg.kassow_experiments import (
+from rio.apps.kassow.convert import ConvertExperimentCfg, resolve_experiment_paths
+from rio.apps.kassow.experiment_cli import main as experiment_cli
+from rio.apps.kassow.experiments import (
     EXPERIMENTS,
     JEV_CAMERA_ADDR,
     JEV_SERIAL,
@@ -30,12 +32,10 @@ from examples.cfg.kassow_experiments import (
     save_state,
     set_active_experiment,
 )
-from examples.cfg.kassow_vive_gripper import KassowViveGripperStation
-from examples.data.convert_to_lerobot_pi05 import ConvertExperimentCfg, resolve_experiment_paths
-from examples.experiment import main as experiment_cli
-from examples.goto_kassow_q import MoveStatus, goto_home, home_owner, load_pose
-from examples.policy_cfgs.pi05_lerobot import Pi05LerobotCfg
-from examples.teleop_vive_hand import home_q_path, load_home_state, write_home_state
+from rio.apps.kassow.goto import MoveStatus, goto_home, home_owner, load_pose
+from rio.apps.kassow.homing import home_q_path, load_home_state, write_home_state
+from rio.apps.kassow.policy_cfgs.pi05_lerobot import Pi05LerobotCfg
+from rio.apps.kassow.stations import KassowViveGripperStation
 from rio.data.convert_pi05 import binarize_action_gripper
 
 pytestmark = pytest.mark.unit
@@ -43,11 +43,9 @@ pytestmark = pytest.mark.unit
 
 def _register_model(experiment_name, tmp_path, name="run1", instructions=("put the object in space 1",)):
     experiment = EXPERIMENTS[experiment_name]
-    target = tmp_path / f"ckpt_{experiment_name}_{name}"
-    target.mkdir()
+    target = experiment.models_dir / name
+    target.mkdir(parents=True)
     (target / "config.json").write_text("{}")
-    experiment.models_dir.mkdir(parents=True, exist_ok=True)
-    (experiment.models_dir / name).symlink_to(target)
     state = load_state(experiment)
     state["models"][name] = {"dataset": "spaces_notrim", "instructions": list(instructions)}
     state["model"] = name
@@ -98,10 +96,10 @@ def test_frozen_experiment_refuses_to_record_but_teleops_without_recorder():
     assert cfg.cameras["camera_2"].serial == "262522075082"
 
 
-def test_broken_raw_link_is_not_replaced_by_an_empty_folder(tmp_path):
+def test_broken_raw_link_is_not_replaced_by_an_empty_folder(tmp_path, symlink_capable):
     experiment = EXPERIMENTS["organize"]
     experiment.root.mkdir(parents=True)
-    experiment.raw_dir.symlink_to(tmp_path / "gone")
+    experiment.raw_dir.symlink_to(tmp_path / "gone", target_is_directory=True)
     with pytest.raises(FileNotFoundError):
         KassowViveGripperStation(experiment="organize")
 
@@ -124,12 +122,40 @@ def test_custom_recorder_path_is_not_clobbered():
 
 
 def test_home_q_path_prefers_home_file_then_experiment():
-    explicit = SimpleNamespace(home_file="examples/cfg/kassow_homes/home_sort.json", experiment="pick")
+    explicit = SimpleNamespace(home_file="rio/apps/kassow/homes/home_sort.json", experiment="pick")
     explicit_path = home_q_path(explicit)
     assert explicit_path is not None
     assert explicit_path.name == "home_sort.json"
     named = SimpleNamespace(home_file=None, experiment="pick", recorder_cfg=None)
     assert home_q_path(named) == EXPERIMENTS["pick"].home_path
+
+
+def test_captured_home_overrides_the_packaged_one_and_capture_never_writes_the_package(tmp_path):
+    from rio.apps.kassow.experiments import PACKAGED_HOMES_DIR, home_file, homes_dir, writable_home
+
+    packaged = PACKAGED_HOMES_DIR / "home_sort.json"
+    assert homes_dir().is_relative_to(tmp_path)
+    assert home_file("home_sort.json") == packaged
+    assert EXPERIMENTS["sort"].home_path == packaged
+    assert writable_home(packaged) == homes_dir() / "home_sort.json"
+
+    captured = homes_dir() / "home_sort.json"
+    captured.parent.mkdir(parents=True)
+    captured.write_text("{}")
+    assert home_file("home_sort.json") == captured
+    assert EXPERIMENTS["sort"].home_path == captured
+    custom = tmp_path / "elsewhere" / "home.json"
+    assert writable_home(custom) == custom
+
+
+def test_experiments_workspace_follows_the_environment_then_the_working_directory(tmp_path, monkeypatch):
+    from rio.workspace import EXPERIMENTS_DIR_ENV, experiments_root
+
+    monkeypatch.setenv(EXPERIMENTS_DIR_ENV, str(tmp_path / "workspace"))
+    assert experiments_root() == (tmp_path / "workspace").resolve()
+    monkeypatch.delenv(EXPERIMENTS_DIR_ENV)
+    monkeypatch.chdir(tmp_path)
+    assert experiments_root() == (tmp_path / "experiments").resolve()
 
 
 def test_named_homes_load_and_keep_their_poses():
@@ -160,7 +186,7 @@ def test_resolve_model_uses_the_selected_model(tmp_path):
 
 
 def test_resolve_model_without_selection_explains_the_fix():
-    with pytest.raises(FileNotFoundError, match=r"examples\.experiment use organize --model"):
+    with pytest.raises(FileNotFoundError, match=r"rio\.apps\.kassow\.experiment_cli use organize --model"):
         resolve_model(EXPERIMENTS["organize"])
 
 
@@ -208,11 +234,11 @@ def test_convert_variant_resolves_paths_from_the_experiment():
     assert cfg.repo_id == "local/kassow_organize_crop"
 
 
-def test_convert_variant_never_targets_a_linked_dataset(tmp_path):
+def test_convert_variant_never_targets_a_linked_dataset(tmp_path, symlink_capable):
     experiment = EXPERIMENTS["organize"]
     experiment.raw_dir.mkdir(parents=True)
     experiment.lerobot_dir.mkdir(parents=True)
-    (experiment.lerobot_dir / "old").symlink_to(tmp_path)
+    (experiment.lerobot_dir / "old").symlink_to(tmp_path, target_is_directory=True)
     with pytest.raises(ValueError, match="linked existing dataset"):
         resolve_experiment_paths(ConvertExperimentCfg(experiment="organize", variant="old"))
     with pytest.raises(ValueError, match="needs --variant"):
@@ -254,23 +280,27 @@ def _checkpoint(folder: Path, q01: list[float]) -> Path:
     return folder
 
 
-def test_add_model_registers_a_copied_checkpoint_in_place_or_links_one_elsewhere(tmp_path):
+@pytest.mark.parametrize("linked", [False, True])
+def test_add_model_registers_a_copied_checkpoint_in_place_or_links_one_elsewhere(tmp_path, request, linked):
+    if linked:
+        request.getfixturevalue("symlink_capable")
     sort = EXPERIMENTS["sort"]
     dataset = sort.lerobot_dir / "dagger_r1"
     (dataset / "meta").mkdir(parents=True)
     (dataset / "meta" / "stats.json").write_text(json.dumps({"action": {"q01": [0.1, 0.2]}}))
     pq.write_table(pa.table({"task_index": [0], "task": ["put the object in space 2"]}), dataset / "meta" / "tasks.parquet")
 
-    copied = _checkpoint(sort.models_dir / "dagger_r1", [0.1, 0.2])
+    folder = tmp_path / "outputs" / "pretrained_model" if linked else sort.models_dir / "dagger_r1"
+    copied = _checkpoint(folder, [0.1, 0.2])
     experiment_cli(["add-model", "dagger_r1", str(copied), "--experiment", "sort"])
-    assert copied.is_dir() and not copied.is_symlink()
+    assert copied.is_dir()
+    assert (sort.models_dir / "dagger_r1").resolve() == copied.resolve()
+    assert (sort.models_dir / "dagger_r1").is_symlink() is linked
     notes = load_state(sort)["models"]["dagger_r1"]
     assert notes["dataset"] == "dagger_r1"
     assert notes["instructions"] == ["put the object in space 2"]
 
-    elsewhere = _checkpoint(tmp_path / "outputs" / "pretrained_model", [0.1, 0.2])
-    experiment_cli(["add-model", "dagger_r1_4k", str(elsewhere), "--experiment", "sort"])
-    assert (sort.models_dir / "dagger_r1_4k").resolve() == elsewhere.resolve()
+    elsewhere = _checkpoint(tmp_path / "different_model", [0.1, 0.2])
     with pytest.raises(FileExistsError):
         experiment_cli(["add-model", "dagger_r1", str(elsewhere), "--experiment", "sort"])
 
@@ -418,7 +448,7 @@ def test_open_spaces_are_the_recorded_homes():
 
 
 def test_goto_home_is_true_when_already_there_and_false_on_alarm(monkeypatch):
-    monkeypatch.setattr("examples.goto_kassow_q.time.sleep", lambda _duration: None)
+    monkeypatch.setattr("rio.apps.kassow.goto.time.sleep", lambda _duration: None)
     home = load_pose(EXPERIMENTS["open"].homes[0].path, 0.3, "open")
 
     class _Arm:

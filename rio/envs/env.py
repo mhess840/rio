@@ -7,6 +7,8 @@ import numpy as np
 from loguru import logger
 from rio_hw import time
 
+from ..embodiments.base import BaseEmbodiment
+from ..manifest import check_rio_hw_pin
 from ..schema import Camera, Step
 from .factory import get_mbody_components, instantiate_station_cfg
 
@@ -19,7 +21,7 @@ class Env:
         self.action_space = action_space.upper()
         self.embodiment_type = embodiment_type
         self._exit_stack = None
-        self.robot = None
+        self.robot: BaseEmbodiment | None = None
         self.cameras: dict = {}
         self.kwargs = kwargs
         self.instruction = kwargs.get("instruction", "")
@@ -40,7 +42,14 @@ class Env:
     def get_client(self, key):
         if self._clients.get(key) is None:
             return None
+        if self._exit_stack is None:
+            raise RuntimeError("Environment is not started")
         return self._exit_stack.enter_context(self._clients[key]())
+
+    def _require_robot(self) -> BaseEmbodiment:
+        if self.robot is None:
+            raise RuntimeError("Environment is not started")
+        return self.robot
 
     def set_start_time(self, start_time: float):
         logger.info(f"Setting environment start time to {start_time:.4f}")
@@ -51,46 +60,44 @@ class Env:
         self.instruction = instruction
 
     def start(self):
+        if self._exit_stack is not None:
+            raise RuntimeError("Environment is already started")
         self._exit_stack = ExitStack()
-
-        # Embodiment Components
-        components, EmbodimentClass = get_mbody_components(embodiment_type=self.embodiment_type, clients=self._clients)
-        for comp_name, client_factory in components.items():
-            components[comp_name] = self._exit_stack.enter_context(client_factory())
-
-        self.robot = EmbodimentClass(
-            **components,
-            action_space=self.action_space,
-            **self.kwargs,
-        )
-
-        # Data recorder
-        self.recorder = self.get_client("recorder")
-
-        # Cameras
-        for key, client_factory in self._camera_clients.items():
-            if client_factory is not None:
-                self.cameras[key] = self._exit_stack.enter_context(client_factory())
-
-        # Visualizer
-        self.visualizer = self.get_client("visualizer")
+        try:
+            components, embodiment_class = get_mbody_components(embodiment_type=self.embodiment_type, clients=self._clients)
+            for comp_name, client_factory in components.items():
+                components[comp_name] = self._exit_stack.enter_context(client_factory())
+            self.robot = embodiment_class(**components, action_space=self.action_space, **self.kwargs)
+            self.recorder = self.get_client("recorder")
+            for key, client_factory in self._camera_clients.items():
+                if client_factory is not None:
+                    self.cameras[key] = self._exit_stack.enter_context(client_factory())
+            self.visualizer = self.get_client("visualizer")
+        except BaseException:
+            self.stop()
+            raise
 
     def stop(self):
-        if self._exit_stack:
-            self._exit_stack.close()
-            self._exit_stack = None
+        stack, self._exit_stack = self._exit_stack, None
+        try:
+            if stack is not None:
+                stack.close()
+        finally:
             self.robot = None
             self.cameras = {}
             self.visualizer = None
+            self.recorder = None
 
     def reset(self):
         return self.get_state()
 
     def get_state(self, action: np.ndarray | None = None, use_relative_time: bool = True) -> Step:
         cams = self.get_cameras()
-        obs = self.robot.get_obs(cams)
+        obs = self._require_robot().get_obs(cams)
 
         if use_relative_time:
+            if self.start_time is None:
+                raise RuntimeError("Environment start time is not set")
             _timestamp = time.now() - self.start_time
         else:
             _timestamp = time.now()
@@ -108,15 +115,16 @@ class Env:
         action: np.ndarray,
         t_cmd_target: float | None,
     ):
-        self.robot.move(
-            action,
-            t_cmd_target,
-        )
+        self.move(action, t_cmd_target)
         # action = self.build_action(arm_cmd, gripper_cmd)
         return self.get_state(action=action)
 
     def move(self, action: np.ndarray, t_cmd_target: float | None):
-        self.robot.move(action, t_cmd_target)
+        robot = self._require_robot()
+        deadline = time.now() + 0.01 if t_cmd_target is None else float(t_cmd_target)
+        if not np.isfinite(deadline):
+            raise ValueError("Command deadline must be finite")
+        robot.move(action, deadline)
 
     def get_cameras(self) -> dict[str, Camera]:
         obs = {}
@@ -143,8 +151,9 @@ class Env:
 
 
 def make_env(station_cfg, **kwargs):
+    check_rio_hw_pin()
     servers, clients, camera_clients = instantiate_station_cfg(station_cfg, **kwargs)
-    action_space = getattr(station_cfg, "action_space", "EEF_POSE")
+    action_space = getattr(station_cfg, "action_space", "TASK_POS")
     urdf_path = getattr(station_cfg, "urdf_path", None)
 
     # Determine embodiment type from components

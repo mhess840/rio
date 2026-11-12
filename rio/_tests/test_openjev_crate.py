@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from examples.openjev_crate import (
+from rio.apps.kassow.openjev_crate import (
     CONFIDENCE_ACT_THRESHOLD,
     INLAY_ACT_THRESHOLD,
     choice_confidence,
@@ -73,6 +73,14 @@ def test_an_unknown_sentence_does_not_drive():
     decision = decision_from_answers(_answers("open the lid", {SPACE1: 0.1, "open the lid": 0.9}, 0.0))
     assert decision.act is False
     assert decision.reason == "unknown_choice"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -0.1, 1.1, None])
+def test_invalid_visual_probabilities_are_rejected(value):
+    with pytest.raises(ValueError):
+        decision_from_answers(_answers(SPACE1, {SPACE1: 0.9, SPACE2: 0.05, SPACE3: 0.05}, value))
+    with pytest.raises(ValueError):
+        decision_from_answers(_answers(SPACE1, {SPACE1: value, SPACE2: 0.05, SPACE3: 0.05}, 0.1))
 
 
 def test_probe_label_roundtrip(tmp_path):
