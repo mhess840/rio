@@ -344,6 +344,23 @@ def test_count_question_counts_one_low_carton_and_not_the_shelf():
     assert "shelves" in COUNT_INSTRUCTIONS
 
 
+def test_trust_inlay_skips_the_rib_and_still_holds_a_blocked_view():
+    """After the organize VLA the same 0.1 rib score is not straightened again.
+
+    View and count stay a clear empty crate. Without the flag the arm organizes.
+    With the flag it opens space 1. A blocked view still holds before the count.
+    """
+    spaces = {1, 2, 3}
+    collapsed = _answers(0.1, "zero", 0.95, 0.1)
+    assert read_crate(collapsed, available_spaces=spaces).decision == "organize"
+    trusted = read_crate(collapsed, available_spaces=spaces, trust_inlay=True)
+    assert trusted.decision == "open"
+    assert trusted.space == 1
+    blocked = read_crate(_answers(0.1, "zero", 0.95, 0.1, view_clear=0.1), available_spaces=spaces, trust_inlay=True)
+    assert blocked.decision == "hold"
+    assert "view" in blocked.reason
+
+
 def test_a_middling_organized_noul_is_straightened():
     """The question is whether 0.55 still opens a space.
 

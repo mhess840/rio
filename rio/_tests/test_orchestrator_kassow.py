@@ -23,7 +23,7 @@ from rio.apps.kassow.orchestrator import (
     vla_cfg,
 )
 from rio.apps.kassow.orchestrator.board import PAGE, DemoBoard
-from rio.apps.kassow.orchestrator.machine import Move
+from rio.apps.kassow.orchestrator.machine import InlayTrust, Move
 from rio.arm_resume import Phase, PhaseKind
 from rio.jev.client import JevError
 from rio.policies.rollout import RolloutControl
@@ -270,8 +270,14 @@ def test_organize_path_asks_again_after_the_rollout(tmp_path):
     ]
 
 
-def test_failed_inlay_recovery_is_rechecked_before_any_open_action(tmp_path):
+def test_a_finished_organize_counts_cartons_without_rechecking_the_rib(tmp_path):
+    """The photo after the VLA still scores the rib at 0.1. That no longer organizes again.
+
+    The same answers before the rollout organize. Once the VLA has finished, the
+    next ask skips the rib and opens space 1 because the crate is empty.
+    """
     calls = []
+    trust = InlayTrust()
     answers = {
         "view_clear": {"type": "noul", "noul": 0.95},
         "organized": {"type": "noul", "noul": 0.1},
@@ -279,18 +285,18 @@ def test_failed_inlay_recovery_is_rechecked_before_any_open_action(tmp_path):
         "any_box": {"type": "noul", "noul": 0.1},
     }
     orchestrator = Orchestrator(
-        ask=lambda: read_crate(answers, available_spaces=SPACES, thresholds=CrateThresholds()),
+        ask=lambda: read_crate(answers, available_spaces=SPACES, thresholds=CrateThresholds(), trust_inlay=trust.skip),
         goto=lambda path: True,
         run_vla=lambda job: calls.append(job.experiment) or "stop_when",
         keys=ScriptedKeys("j", "q"),
         organize_home=ORGANIZE_HOME,
         spaces=SPACES,
         log=CycleLog(tmp_path / "run"),
-        max_organize_attempts=2,
+        inlay_trust=trust,
     )
     orchestrator.run()
-    assert calls == ["organize", "organize"]
-    assert "fix it by hand" in orchestrator.hold_reason
+    assert calls == ["organize", "open"]
+    assert orchestrator.state is State.DONE
 
 
 def test_organize_timeout_asks_jev_again_and_never_opens_unverified(tmp_path):

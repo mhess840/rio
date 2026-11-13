@@ -299,19 +299,23 @@ def read_crate(
     available_spaces: Collection[int],
     thresholds: CrateThresholds | None = None,
     expected_count: int | None = None,
+    trust_inlay: bool = False,
 ) -> CrateReading:
     """Turn the answers into a decision.
 
     A blocked view always holds. The count is read only when the organized noul
     reaches ``yes``. Anything below that is straightened, including the band
-    between ``no`` and ``yes``. With ``count_prior`` off, ``expected_count`` is
-    ignored. With it on, a split below ``count_min_p`` may follow that count.
+    between ``no`` and ``yes``. ``trust_inlay`` skips that rib check: the organize
+    VLA has already run, so the photo is read for the carton count. With
+    ``count_prior`` off, ``expected_count`` is ignored. With it on, a split below
+    ``count_min_p`` may follow that count.
 
     Args:
         answers: The ``answers`` object of the response.
         available_spaces: 1-based spaces that have a recorded home pose.
         thresholds: Trust limits; defaults to ``CrateThresholds()``.
         expected_count: Cartons a finished place left in the crate. Unset: the photo alone.
+        trust_inlay: Skip the rib check and read the count. The view check still holds.
 
     Raises:
         ValueError: If an answer is missing, has the wrong type, or names an unknown count.
@@ -365,7 +369,7 @@ def read_crate(
         return reading("hold", "view blocked")
     if view_clear_p < limits.yes:
         return reading("hold", f"view unsure ({view_clear_p:.2f})")
-    if organized_q < limits.yes:
+    if organized_q < limits.yes and not trust_inlay:
         reason = (
             "inlay is not organized" if organized_q <= limits.no else f"inlay rib is not clearly upright ({organized_q:.2f})"
         )
@@ -402,6 +406,7 @@ def ask_crate(
     thresholds: CrateThresholds | None = None,
     inlay_dir: Path | None = None,
     expected_count: int | None = None,
+    trust_inlay: bool = False,
 ) -> tuple[JevReply, CrateReading]:
     """Ask the crate questions about one JPEG and decide.
 
@@ -416,6 +421,7 @@ def ask_crate(
         thresholds: Trust limits.
         inlay_dir: Folder with ``good_1.jpg`` … ``bad_3.jpg`` and any later ``bad_N.jpg``. Unset: the default.
         expected_count: Cartons a finished place left in the crate. Used only when ``count_prior`` is on.
+        trust_inlay: Skip the rib check. Set after the organize VLA has already straightened it.
     """
     extra_images: dict[str, bytes] = {}
     inlay_examples: dict[str, list[bytes]] | None = None
@@ -436,7 +442,11 @@ def ask_crate(
         inlay_examples=inlay_examples,
     )
     return reply, read_crate(
-        reply.answers, available_spaces=available_spaces, thresholds=thresholds, expected_count=expected_count
+        reply.answers,
+        available_spaces=available_spaces,
+        thresholds=thresholds,
+        expected_count=expected_count,
+        trust_inlay=trust_inlay,
     )
 
 

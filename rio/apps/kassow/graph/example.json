@@ -1,0 +1,39 @@
+{
+  "task": "If the gray crate is fully visible, move to the organize home. Otherwise stop.",
+  "start": "look",
+  "max_steps": 8,
+  "nodes": {
+    "look": {
+      "kind": "jev",
+      "note": "Top-down photo of one gray plastic crate on a perforated metal table.",
+      "questions": {
+        "view_clear": {
+          "type": "noul",
+          "instructions": "Is the gray crate in `crate` fully visible, with no arm, hand, or person covering it?"
+        }
+      },
+      "route": "view_clear",
+      "threshold": 0.7,
+      "yes": "go_home",
+      "no": "blocked"
+    },
+    "go_home": {
+      "kind": "move_to",
+      "pose": "home_organize.json",
+      "ok": "done",
+      "fail": "stuck"
+    },
+    "blocked": {
+      "kind": "stop",
+      "reason": "the crate is not fully visible"
+    },
+    "stuck": {
+      "kind": "stop",
+      "reason": "moveJ to the organize home failed"
+    },
+    "done": {
+      "kind": "stop",
+      "reason": "at the organize home"
+    }
+  }
+}

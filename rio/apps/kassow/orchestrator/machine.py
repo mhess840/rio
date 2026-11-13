@@ -158,6 +158,13 @@ class Snapshot:
 
 
 @dataclass
+class InlayTrust:
+    """The next photo skips the rib check once the organize VLA has finished."""
+
+    skip: bool = False
+
+
+@dataclass
 class CartonCounter:
     """Cartons a finished place leaves in the crate.
 
@@ -207,6 +214,7 @@ class Orchestrator:
         log: CycleLog,
         max_organize_attempts: int = 3,
         counter: CartonCounter | None = None,
+        inlay_trust: InlayTrust | None = None,
     ):
         if max_organize_attempts < 1:
             raise ValueError("max_organize_attempts must be at least 1")
@@ -221,6 +229,7 @@ class Orchestrator:
         self.spaces = spaces
         self.log = log
         self.counter = counter if counter is not None else CartonCounter()
+        self.inlay_trust = inlay_trust if inlay_trust is not None else InlayTrust()
         self.max_organize_attempts = max_organize_attempts
         self.organize_attempts = 0
         self.state = State.IDLE
@@ -299,7 +308,9 @@ class Orchestrator:
         self.log.cycle += 1
         try:
             reading = self.ask()
+            self.inlay_trust.skip = False
         except (JevError, ValueError, RuntimeError) as error:
+            self.inlay_trust.skip = False
             return self._hold(f"Jev request failed: {error}")
         self.reading = reading
         term(f"Jev: {reading.summary()}")
@@ -410,6 +421,9 @@ class Orchestrator:
             # so return to that same initial home before the next photo.
             if reason not in ("stop_when", "operator", "timeout"):
                 return self._hold(f"organize ended without a completion condition ({reason})")
+            # The VLA has straightened the rib. The next photo counts cartons and does not
+            # send the arm back to organize on the organized score.
+            self.inlay_trust.skip = True
             return self._begin_goto([self.organize_home], State.ASK, lift_first=True)
         if reason == "stop_when":
             return State.WAIT_PROCEED

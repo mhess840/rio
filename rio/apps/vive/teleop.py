@@ -227,6 +227,10 @@ def teleop_vive_hand(
 
             # Clutch and orientation toggles, on key-down only
             pressed = keys - previous_keys
+            if getattr(args, "calibration_key", None) in pressed:
+                from rio.apps.kassow.graph.calibrate import save_sample
+
+                save_sample(env, eef_pose, joint_q)
             if args.clutch_key in pressed:
                 if homing_active():
                     logger.info("Still homing — wait for Home reached, then clutch")

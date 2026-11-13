@@ -32,7 +32,7 @@ from .actions import (
     preload,
     station_cfg,
 )
-from .machine import ORGANIZE, CartonCounter, CycleLog, Orchestrator, State, recover_unavailable
+from .machine import ORGANIZE, CartonCounter, CycleLog, InlayTrust, Orchestrator, State, recover_unavailable
 
 
 def main(args: Args) -> None:
@@ -47,7 +47,8 @@ def main(args: Args) -> None:
     with ExitStack() as stack:
         camera = stack.enter_context(jev_camera_session(args.jev_serial, args.mw))
         counter = CartonCounter()
-        ask = make_ask(args, client, camera, set(spaces), log, counter)
+        inlay_trust = InlayTrust()
+        ask = make_ask(args, client, camera, set(spaces), log, counter, inlay_trust)
         if args.dry_run:
             server, keyboard_client = make_node(args.mw, "interfaces", "SshKeyboard", {"addr": KEYBOARD_ADDR, "freq": 100})
             stack.enter_context(ServerManager(args.mw, [server]))
@@ -79,6 +80,7 @@ def main(args: Args) -> None:
             log=log,
             max_organize_attempts=args.max_organize_attempts,
             counter=counter,
+            inlay_trust=inlay_trust,
         )
         orchestrator.lift = skills.lift
         if args.board:
