@@ -1,0 +1,42 @@
+{
+  "task": "Put the cube on the plate.",
+  "start": "find_cube",
+  "max_steps": 10,
+  "nodes": {
+    "find_cube": {
+      "kind": "locate",
+      "object": "the cube",
+      "store": "cube",
+      "found": "find_plate",
+      "missing": "no_cube",
+      "fail": "no_answer"
+    },
+    "find_plate": {
+      "kind": "locate",
+      "object": "the plate",
+      "store": "plate",
+      "found": "grab",
+      "missing": "no_plate",
+      "fail": "no_answer"
+    },
+    "grab": {
+      "kind": "pick_at",
+      "target": "cube",
+      "ok": "put",
+      "fail": "missed"
+    },
+    "put": {
+      "kind": "place_at",
+      "target": "plate",
+      "z_offset_m": 0.02,
+      "ok": "done",
+      "fail": "not_placed"
+    },
+    "no_cube": {"kind": "stop", "reason": "no cube inside the calibrated area"},
+    "no_plate": {"kind": "stop", "reason": "no plate inside the calibrated area"},
+    "no_answer": {"kind": "stop", "reason": "Jev did not answer"},
+    "missed": {"kind": "stop", "reason": "the cube is not in the gripper"},
+    "not_placed": {"kind": "stop", "reason": "placing on the plate failed"},
+    "done": {"kind": "stop", "reason": "the cube is on the plate"}
+  }
+}

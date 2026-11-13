@@ -7,6 +7,40 @@ Part 1 comes from this chat. Part 2 is reconstructed from the assistant's workin
 
 ---
 
+## 2026-11-13
+
+### Added
+
+- Graph as Policy can locate and grasp an object on the table:
+  - `rio/apps/kassow/graph/locate.py`: `locate_questions` (Jev noul `visible` plus box `where`), `read_box` and `read_noul` with range and order checks.
+  - `rio/apps/kassow/graph/table_map.py`: `TableMap` (homography from Jev image fractions to base `x, y`, grasp-height plane, mean grasp orientation, calibrated area, IK seeds). `label` asks Jev to box the object in each sample photo; `fit` refuses the map above 20 mm leave-one-out error or 10 mm grasp-height deviation.
+  - Node `locate` (`object`, `store`; edges `found`, `missing`, optional `fail`) and skill `pick_at` (`target`, `approach_m` 0.03–0.25, `z_offset_m` 0–0.10; edges `ok`, `fail`). `check` requires every `pick_at` target to be stored by a `locate` node.
+  - `KassowSkills.pick_at`: open, `moveJ` above the target, check the measured TCP, descend to the calibrated height, close, lift, and report whether the object is still held. `goto.move_tcp` adds the URDF-to-controller TCP offset and refuses IK answers that miss, leave joint limits or turn a joint by more than 180°.
+  - `run --no-dry-run` waits for space before each `pick_at` (`--no-confirm` turns this off). `run` needs a Jev-camera table map with the current `JEV_SERIAL` for graphs that locate.
+  - `rio/apps/kassow/graph/pick_cube.json` example.
+- Graph as Policy as a task-independent planning interface for an agent (the crate orchestrator is unchanged):
+  - Commands `--command describe` (node kinds, limits, poses, VLAs with instructions and usability, table-map status), `look` (one photo each from the Jev, overview and wrist cameras), `ask` (Jev question map or `--locate`, with base coordinates on Jev photos). They print JSON. A failed `check` now ends with the problem list instead of a traceback.
+  - Skills `gripper` (`state` open or close, no object check), `place_at` (refused while nothing is held; `z_offset_m` 0–0.15), `move_above` (`height_m` 0.03–0.30).
+  - Node `vla` (`experiment`, `instruction`, `timeout_s` 5–300): moves to the experiment's start pose, then runs the orchestrator's own `make_run_vla` with its stop rules. `check` refuses VLAs whose overview camera differs from the graph station's (currently `pick`) and `open` without one of its instructions.
+  - On the cell, every target move and every VLA waits for space. Each run log holds `graph.json` next to `events.jsonl`.
+  - `rio/apps/kassow/graph/pick_place.json` example and `.github/agents/robot.agent.md`: a VS Code agent that runs describe → look/ask → graph → check → dry run → run (only after the user agrees) → log, and never edits code.
+
+### Changed
+
+- `graph/calibrate.py`: one sample takes two presses of `k`. The first stores the TCP while the object rests in the closed gripper, the second stores the photos after the arm has moved away. Samples are `NNN/pose.json` plus `overview.jpg` and `jev.jpg`; `poses.jsonl` is no longer written.
+
+### Fixed
+
+- `graph/check.py`: an edge to a missing node made the reachability check raise `KeyError` instead of reporting the problem.
+
+### Open
+
+- Not run on the cell: calibration, Jev box accuracy, `move_tcp`, `pick_at`, `place_at`, `move_above`, `look`, and `vla` nodes. The descent is a joint-space `moveJ`, not a straight line.
+- Samples recorded with the old one-press `calibrate` are not read.
+- MCP server around `describe`, `look`, `ask`, `check` and `run`; wrist-camera refinement of a grasp.
+
+---
+
 ## 2026-11-12
 
 ### Renamed and moved

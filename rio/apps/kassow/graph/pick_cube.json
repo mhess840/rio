@@ -1,0 +1,40 @@
+{
+  "task": "Pick up the cube from the table and lift it.",
+  "start": "find",
+  "max_steps": 6,
+  "nodes": {
+    "find": {
+      "kind": "locate",
+      "object": "the cube",
+      "store": "cube",
+      "note": "Top-down photo of a table in front of a Kassow arm.",
+      "threshold": 0.6,
+      "found": "grab",
+      "missing": "not_seen",
+      "fail": "no_answer"
+    },
+    "grab": {
+      "kind": "pick_at",
+      "target": "cube",
+      "approach_m": 0.1,
+      "ok": "done",
+      "fail": "missed"
+    },
+    "not_seen": {
+      "kind": "stop",
+      "reason": "no cube inside the calibrated area"
+    },
+    "no_answer": {
+      "kind": "stop",
+      "reason": "Jev did not answer"
+    },
+    "missed": {
+      "kind": "stop",
+      "reason": "the cube is not in the gripper"
+    },
+    "done": {
+      "kind": "stop",
+      "reason": "holding the cube"
+    }
+  }
+}

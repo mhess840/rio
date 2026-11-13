@@ -208,6 +208,74 @@ def lift_z(env, meters: float, *, home_joint_speed: float) -> MoveStatus:
     return goto_home(env, {"joint_q": q_goal, "eef_pose": pose}, home_joint_speed=home_joint_speed, set_gripper=False)
 
 
+REACH_M = 0.005
+REACH_ROT_RAD = 0.02
+# An IK answer that turns any joint further than this is a wrap or a flip, not a short move.
+MAX_JOINT_TRAVEL_RAD = np.pi
+
+
+def move_tcp(
+    env,
+    xyz: np.ndarray,
+    rotvec: np.ndarray,
+    *,
+    home_joint_speed: float,
+    seed_q: np.ndarray | None = None,
+) -> MoveStatus:
+    """``moveJ`` so that the measured TCP lands on ``xyz`` with orientation ``rotvec``.
+
+    IK runs on the URDF, whose TCP differs from the controller's by a few millimetres.
+    That difference at the current joints is added to the goal.
+
+    Args:
+        env: Started environment with a Kassow arm.
+        xyz: Goal in the base frame, as the controller reports ``eef_pose``.
+        rotvec: Goal orientation, axis-angle.
+        home_joint_speed: Fastest joint speed in rad/s.
+        seed_q: IK start. Unset: the current joints.
+
+    Returns:
+        ``MISSED`` without moving when IK misses the goal, leaves the joint limits,
+        or turns a joint by more than ``MAX_JOINT_TRAVEL_RAD``; otherwise as ``goto_home``.
+    """
+    from typing import cast
+
+    from scipy.spatial.transform import Rotation
+
+    arm = env.robot.arm
+    kin = getattr(arm, "_kin", None)
+    if kin is None:
+        logger.error("Arm has no kinematics; cannot move the TCP")
+        return MoveStatus.MISSED
+    state = arm.get_state()
+    q = np.asarray(state["joint_q"], dtype=float)
+    offset = np.asarray(kin.fk(q), dtype=float)[:3] - np.asarray(state["eef_pose"], dtype=float)[:3]
+    goal = np.concatenate([np.asarray(xyz, dtype=float) + offset, np.asarray(rotvec, dtype=float)])
+    q_goal = np.asarray(kin.ik(q if seed_q is None else np.asarray(seed_q, dtype=float), goal), dtype=float)
+    reached = np.asarray(kin.fk(q_goal), dtype=float)
+    pos_err = float(np.linalg.norm(reached[:3] - goal[:3]))
+    rot_err = float(cast(Rotation, Rotation.from_rotvec(reached[3:]).inv() * Rotation.from_rotvec(goal[3:])).magnitude())
+    if pos_err > REACH_M or rot_err > REACH_ROT_RAD:
+        logger.error(
+            "TCP {} is not reachable (IK off by {:.0f} mm, {:.1f} deg)",
+            np.round(xyz, 3).tolist(),
+            pos_err * 1000,
+            np.degrees(rot_err),
+        )
+        return MoveStatus.MISSED
+    model = getattr(kin, "model", None)
+    lower = getattr(model, "lowerPositionLimit", None)
+    upper = getattr(model, "upperPositionLimit", None)
+    if lower is not None and upper is not None and (np.any(q_goal < lower) or np.any(q_goal > upper)):
+        logger.error("IK answer for {} leaves the joint limits", np.round(xyz, 3).tolist())
+        return MoveStatus.MISSED
+    travel = float(np.max(np.abs(q_goal - q)))
+    if travel > MAX_JOINT_TRAVEL_RAD:
+        logger.error("IK answer for {} turns a joint by {:.0f} deg", np.round(xyz, 3).tolist(), np.degrees(travel))
+        return MoveStatus.MISSED
+    return goto_home(env, {"joint_q": q_goal, "eef_pose": goal}, home_joint_speed=home_joint_speed, set_gripper=False)
+
+
 WAIT_SHIFT_Y_M = -0.10
 
 

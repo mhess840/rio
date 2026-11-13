@@ -1,11 +1,18 @@
 # SPDX-FileCopyrightText: 2026 RIO Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Record table points for the image-to-robot map. The arm is not moved.
+"""Record table samples for the image-to-robot map. The arm is not moved.
 
-Drive with the Vive clutch, hold the gripper tip at grasp height, release the
-clutch, then press ``k``. Each press stores the measured TCP and one photo from
-the overview camera and the Jev camera. Ctrl-C ends the session.
+One sample, two presses of ``k``:
+
+1. Drive with the Vive clutch, set the object (e.g. the cube) down on the table
+   and keep it in the closed gripper. Release the clutch and press ``k``: the TCP is stored.
+2. Open the gripper, move the arm out of the camera view, press ``k`` again:
+   one photo from the overview camera and one from the Jev camera are stored.
+
+Grasp every sample at the same height and orientation, and spread the samples
+over the whole area the arm should pick from. Ctrl-C ends the session. Then
+``table_map label`` and ``table_map fit``.
 
     uv run python -m rio.apps.kassow.graph.calibrate
 """
@@ -20,58 +27,63 @@ from pathlib import Path
 import numpy as np
 from loguru import logger
 
-from rio.apps.kassow.experiments import experiments_root, jev_camera
+from rio.apps.kassow.experiments import jev_camera
 from rio.apps.kassow.jev_ask import fresh_frame
 from rio.apps.kassow.stations.kassow_vive_gripper import KassowViveGripperStation
 from rio.apps.kassow.teleop import cli
 from rio.jev import encode_jpeg
 
+from .table_map import POSE_NAME, calibration_dir, sample_folders
+
+# Photo names must match table_map.CAMERAS.
 CAMERA_KEYS = (("camera_2", "overview"), ("camera_jev", "jev"))
 
 
-def calibration_dir() -> Path:
-    """Folder of the table samples, outside the orchestrator logs."""
-    return experiments_root() / "graph" / "calibration" / "table"
+def pending_sample(root: Path) -> Path | None:
+    """The newest sample that has a TCP but no photos yet."""
+    folders = sample_folders(root)
+    if folders and not all((folders[-1] / f"{name}.jpg").is_file() for _key, name in CAMERA_KEYS):
+        return folders[-1]
+    return None
 
 
 def save_sample(env, eef_pose: np.ndarray, joint_q: np.ndarray, root: Path | None = None) -> Path:
-    """Write one folder of two JPEGs and one pose line. Returns the folder.
+    """First press stores the TCP in a new folder, the next press the photos of that folder.
 
-    The files are ``overview.jpg`` and ``jev.jpg``.
+    Returns:
+        The sample folder.
 
     Raises:
-        RuntimeError: If either overview camera has no fresh frame.
+        RuntimeError: If either camera has no fresh frame.
         KeyError: If the environment is missing one of the cameras.
     """
     folder = calibration_dir() if root is None else root
     folder.mkdir(parents=True, exist_ok=True)
-    poses = folder / "poses.jsonl"
-    index = sum(1 for _ in poses.open()) + 1 if poses.is_file() else 1
-    sample = folder / f"{index:03d}"
-    sample.mkdir()
-    images: dict[str, str] = {}
-    for key, name in CAMERA_KEYS:
-        jpeg = encode_jpeg(fresh_frame(env.cameras[key], max_age_s=0.5))
-        path = sample / f"{name}.jpg"
-        path.write_bytes(jpeg)
-        images[name] = f"{sample.name}/{path.name}"
-    pose = np.asarray(eef_pose, dtype=float).reshape(-1)
-    record = {
-        "t": datetime.now().isoformat(timespec="seconds"),
-        "images": images,
-        "xyz": [round(float(value), 6) for value in pose[:3]],
-        "eef_pose": [round(float(value), 6) for value in pose[:6]],
-        "joint_q": [round(float(value), 6) for value in np.asarray(joint_q, dtype=float).reshape(-1)],
-    }
-    with poses.open("a") as handle:
-        handle.write(json.dumps(record) + "\n")
-    logger.info("Saved {}  xyz={}", sample.name, record["xyz"])
-    return sample
+    pending = pending_sample(folder)
+    if pending is None:
+        folders = sample_folders(folder)
+        sample = folder / f"{(int(folders[-1].name) if folders else 0) + 1:03d}"
+        sample.mkdir()
+        pose = np.asarray(eef_pose, dtype=float).reshape(-1)
+        record = {
+            "t": datetime.now().isoformat(timespec="seconds"),
+            "xyz": [round(float(value), 6) for value in pose[:3]],
+            "eef_pose": [round(float(value), 6) for value in pose[:6]],
+            "joint_q": [round(float(value), 6) for value in np.asarray(joint_q, dtype=float).reshape(-1)],
+        }
+        (sample / POSE_NAME).write_text(json.dumps(record) + "\n")
+        logger.info("Sample {} TCP xyz={}. Open, move the arm out of view, press k for the photos", sample.name, record["xyz"])
+        return sample
+    jpegs = {name: encode_jpeg(fresh_frame(env.cameras[key], max_age_s=0.5)) for key, name in CAMERA_KEYS}
+    for name, jpeg in jpegs.items():
+        (pending / f"{name}.jpg").write_bytes(jpeg)
+    logger.info("Sample {} photos stored", pending.name)
+    return pending
 
 
 @dataclass
 class CalibrateStation(KassowViveGripperStation):
-    """Vive drive with the overview camera and the Jev camera. ``k`` stores both."""
+    """Vive drive with the overview camera and the Jev camera. ``k`` stores the TCP, then the photos."""
 
     calibration_key: str = "k"
 

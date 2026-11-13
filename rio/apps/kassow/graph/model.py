@@ -13,11 +13,30 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-SKILL_KINDS = ("move_to", "lift", "pick", "place")
+SKILL_KINDS = ("move_to", "lift", "pick", "place", "gripper", "pick_at", "place_at", "move_above")
+# Skills that act at a target stored by a locate node.
+TARGET_KINDS = ("pick_at", "place_at", "move_above")
 STOP_KIND = "stop"
 JEV_KIND = "jev"
+LOCATE_KIND = "locate"
+VLA_KIND = "vla"
 QUESTION_TYPES = ("noul", "choice", "score", "box")
+GRIPPER_STATES = ("open", "close")
 EXAMPLE_PATH = Path(__file__).resolve().parent / "example.json"
+PICK_EXAMPLE_PATH = Path(__file__).resolve().parent / "pick_cube.json"
+
+APPROACH_M = 0.10
+APPROACH_M_RANGE = (0.03, 0.25)
+# pick_at may only raise the calibrated grasp height, never lower it.
+Z_OFFSET_M_RANGE = (0.0, 0.10)
+PLACE_Z_OFFSET_M = 0.01
+PLACE_Z_OFFSET_M_RANGE = (0.0, 0.15)
+HOVER_M = 0.10
+HOVER_M_RANGE = (0.03, 0.30)
+VLA_TIMEOUT_S = 60.0
+VLA_TIMEOUT_S_RANGE = (5.0, 300.0)
+OBJECT_MAX_CHARS = 120
+INSTRUCTION_MAX_CHARS = 200
 
 
 class GraphError(ValueError):
@@ -44,6 +63,10 @@ class Graph:
             return self.nodes[name]
         except KeyError as error:
             raise GraphError(f"node {name!r} is not in the graph") from error
+
+    def needs_table(self) -> bool:
+        """True when a node locates an object or acts at a located one."""
+        return any(node.get("kind") in (LOCATE_KIND, *TARGET_KINDS) for node in self.nodes.values())
 
 
 def load_graph(path: Path) -> Graph:

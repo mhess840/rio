@@ -10,22 +10,43 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from .check import BOX_YES, NOUL_YES
-from .model import SKILL_KINDS, Graph, GraphError
+from .locate import BOX_KEY, VISIBLE_KEY, locate_questions, read_box, read_noul
+from .model import (
+    APPROACH_M,
+    HOVER_M,
+    LOCATE_KIND,
+    PLACE_Z_OFFSET_M,
+    SKILL_KINDS,
+    TARGET_KINDS,
+    VLA_KIND,
+    VLA_TIMEOUT_S,
+    Graph,
+    GraphError,
+)
+
+if TYPE_CHECKING:
+    from .table_map import TableMap, Target
 
 Ask = Callable[[str, dict, str], dict]
 SkillCall = Callable[[dict], object]
+Confirm = Callable[[str], bool]
+RunVla = Callable[[str, str, float], object]
 
 
 class Skills(Protocol):
-    """The four arm skills a graph node may name."""
+    """The arm skills a graph node may name."""
 
     def move_to(self, pose: Path) -> object: ...
     def lift(self, meters: float = 0.1) -> object: ...
     def pick(self) -> object: ...
     def place(self) -> object: ...
+    def gripper(self, state: str) -> object: ...
+    def pick_at(self, target: Target, *, approach_m: float, z_offset_m: float) -> object: ...
+    def place_at(self, target: Target, *, approach_m: float, z_offset_m: float) -> object: ...
+    def move_above(self, target: Target, *, height_m: float) -> object: ...
 
 
 class Keys(Protocol):
@@ -74,12 +95,18 @@ def walk(
     log: WalkLog,
     *,
     keys: Keys | None = None,
+    table: TableMap | None = None,
+    confirm: Confirm | None = None,
+    run_vla: RunVla | None = None,
 ) -> str:
     """Follow edges from ``graph.start`` until a stop node, a quit key, or the step limit.
 
     A skill result of True takes ``ok``. False and an alarm string take ``fail``.
     A Jev noul or box at or above its threshold takes ``yes``. A score at or above
     its threshold takes ``high``. A choice takes the matching ``when`` edge.
+    A locate node takes ``found`` and stores the target when the object is visible,
+    boxed confidently, and inside the calibrated area; otherwise ``missing``.
+    A vla node takes ``ok`` when the rollout finished, else ``fail``.
 
     Args:
         graph: Already checked.
@@ -87,10 +114,14 @@ def walk(
         ask: ``ask(node, questions, note)`` returns the ``answers`` object.
         log: Where each step is appended.
         keys: When ``q`` is pressed before a node, the walk ends.
+        table: Image-to-table map; required by locate nodes.
+        confirm: Called before each move to a located target and each VLA; False ends the walk.
+        run_vla: ``run_vla(experiment, instruction, timeout_s)``; required by vla nodes.
 
     Returns:
         The stop reason.
     """
+    targets: dict[str, Target] = {}
     name = graph.start
     for _ in range(graph.max_steps):
         if keys is not None and "q" in keys.pressed():
@@ -103,9 +134,50 @@ def walk(
             log.add(Step(name, kind, "stop", reason, None))
             return reason
         if kind in SKILL_KINDS:
-            result = _skill(skills, node)
+            target = targets.get(str(node.get("target"))) if kind in TARGET_KINDS else None
+            if target is not None and confirm is not None and not confirm(_target_message(node, target)):
+                log.add(Step(name, kind, "quit", "operator declined", None))
+                return "quit"
+            result = _skill(skills, node, targets)
             outcome = "ok" if result is True else "fail"
             detail = "" if result is True else str(result)
+            nxt = str(node[outcome])
+            log.add(Step(name, kind, outcome, detail, nxt))
+            name = nxt
+            continue
+        if kind == VLA_KIND:
+            if run_vla is None:
+                raise GraphError(f"vla node {name!r} needs a VLA runner")
+            experiment = str(node["experiment"])
+            instruction = str(node.get("instruction") or "")
+            timeout_s = float(node.get("timeout_s", VLA_TIMEOUT_S))
+            message = f"vla {experiment} {instruction!r}, up to {timeout_s:.0f} s (s ends, x aborts)"
+            if confirm is not None and not confirm(message):
+                log.add(Step(name, kind, "quit", "operator declined", None))
+                return "quit"
+            result = run_vla(experiment, instruction, timeout_s)
+            outcome = "ok" if result is True else "fail"
+            nxt = str(node[outcome])
+            log.add(Step(name, kind, outcome, "" if result is True else str(result), nxt))
+            name = nxt
+            continue
+        if kind == LOCATE_KIND:
+            if table is None:
+                raise GraphError(f"locate node {name!r} needs a table map")
+            try:
+                answers = ask(name, locate_questions(str(node["object"])), str(node.get("note") or ""))
+                outcome, found, detail = _locate(node, answers, table)
+            except Exception as error:
+                nxt = node.get("fail")
+                detail = f"locate failed: {error}"
+                if not isinstance(nxt, str):
+                    log.add(Step(name, kind, "fail", detail, None))
+                    return detail
+                log.add(Step(name, kind, "fail", detail, nxt))
+                name = nxt
+                continue
+            if found is not None:
+                targets[str(node["store"])] = found
             nxt = str(node[outcome])
             log.add(Step(name, kind, outcome, detail, nxt))
             name = nxt
@@ -132,7 +204,7 @@ def walk(
     return f"stopped after {graph.max_steps} steps"
 
 
-def _skill(skills: Skills, node: dict) -> object:
+def _skill(skills: Skills, node: dict, targets: dict[str, Target]) -> object:
     kind = node["kind"]
     if kind == "move_to":
         from .check import resolve_pose
@@ -143,7 +215,40 @@ def _skill(skills: Skills, node: dict) -> object:
         return skills.lift(meters)
     if kind == "pick":
         return skills.pick()
+    if kind == "gripper":
+        return skills.gripper(str(node["state"]))
+    if kind in TARGET_KINDS:
+        target = targets.get(str(node["target"]))
+        if target is None:
+            return f"no target {node['target']!r} located yet"
+        if kind == "move_above":
+            return skills.move_above(target, height_m=float(node.get("height_m", HOVER_M)))
+        approach_m = float(node.get("approach_m", APPROACH_M))
+        if kind == "place_at":
+            return skills.place_at(target, approach_m=approach_m, z_offset_m=float(node.get("z_offset_m", PLACE_Z_OFFSET_M)))
+        return skills.pick_at(target, approach_m=approach_m, z_offset_m=float(node.get("z_offset_m", 0.0)))
     return skills.place()
+
+
+def _target_message(node: dict, target: Target) -> str:
+    return (
+        f"{node['kind']} {target.name}: x={target.x:.3f} y={target.y:.3f} m, "
+        f"footprint {target.width_m * 100:.1f} x {target.depth_m * 100:.1f} cm"
+    )
+
+
+def _locate(node: dict, answers: dict, table: TableMap) -> tuple[str, Target | None, str]:
+    what = str(node["object"])
+    visible = read_noul(answers, VISIBLE_KEY)
+    if visible < float(node.get("visible_threshold", NOUL_YES)):
+        return "missing", None, f"{what} not visible ({visible:.2f})"
+    box = read_box(answers, BOX_KEY)
+    if box.confidence < float(node.get("threshold", BOX_YES)):
+        return "missing", None, f"box confidence {box.confidence:.2f}"
+    target = table.target(box, what)
+    if not table.contains(target.x, target.y):
+        return "missing", None, f"{what} at x={target.x:.3f} y={target.y:.3f} is outside the calibrated area"
+    return "found", target, json.dumps(target.to_dict())
 
 
 def _jev_edge(node: dict, answers: dict) -> str:
