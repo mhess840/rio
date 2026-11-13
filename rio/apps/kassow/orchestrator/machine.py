@@ -158,6 +158,17 @@ class Snapshot:
 
 
 @dataclass
+class CartonCounter:
+    """Cartons a finished place leaves in the crate.
+
+    ``expected`` stays None until the operator presses ``p`` after the open VLA.
+    The count decision reads it only when ``CrateThresholds.count_prior`` is on.
+    """
+
+    expected: int | None = None
+
+
+@dataclass
 class Move:
     """One queued ``moveJ``. ``lift_first`` raises the TCP before it and is cleared once that has run."""
 
@@ -195,6 +206,7 @@ class Orchestrator:
         spaces: dict[int, Path],
         log: CycleLog,
         max_organize_attempts: int = 3,
+        counter: CartonCounter | None = None,
     ):
         if max_organize_attempts < 1:
             raise ValueError("max_organize_attempts must be at least 1")
@@ -208,6 +220,7 @@ class Orchestrator:
         self.at_wait_pose = False
         self.spaces = spaces
         self.log = log
+        self.counter = counter if counter is not None else CartonCounter()
         self.max_organize_attempts = max_organize_attempts
         self.organize_attempts = 0
         self.state = State.IDLE
@@ -268,6 +281,10 @@ class Orchestrator:
         term("\nHolding the compartment open. Place the object. p: move clear and look again | q: quit")
         if wait_key(self.keys, "pq") == "q":
             return State.DONE
+        # ``p`` means the carton went into the compartment the photo had chosen.
+        if self.reading is not None and self.reading.space is not None:
+            self.counter.expected = self.reading.space
+            self.log.write("cartons", expected=self.counter.expected)
         return self._begin_goto([self.wait_home or self.organize_home], State.ASK, lift_first=True)
 
     def _held(self) -> State:
@@ -389,10 +406,11 @@ class Orchestrator:
         if reason == "aborted" or reason.startswith("error"):
             return self._hold(f"{job.experiment} VLA {reason}")
         if job.experiment == ORGANIZE:
-            # A timeout ends the rollout like ``s``; the fresh Jev reading decides what follows.
+            # A timeout ends the rollout like ``s``. The plan may stop 20 cm short of home,
+            # so return to that same initial home before the next photo.
             if reason not in ("stop_when", "operator", "timeout"):
                 return self._hold(f"organize ended without a completion condition ({reason})")
-            return State.ASK
+            return self._begin_goto([self.organize_home], State.ASK, lift_first=True)
         if reason == "stop_when":
             return State.WAIT_PROCEED
         return self._hold(f"open VLA ended without opening the gripper ({reason})")

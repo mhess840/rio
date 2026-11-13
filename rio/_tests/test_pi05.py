@@ -274,6 +274,38 @@ def test_tcp_lead_is_pulled_inside_the_tracking_limit():
     require_arm_state_safe(state, limited, now=10.0, joint_serve=False, limits=limits)
 
 
+def test_the_booked_command_is_the_point_sent_to_the_arm():
+    """The next tick checks the remembered command. That has to be the clamped point, or an 8 cm step aborts."""
+    from rio_hw import time as rio_time
+
+    from rio.policies.rollout import move_action_checked
+
+    sent = []
+    now = rio_time.now()
+
+    class _Arm:
+        robot_controller = SimpleNamespace(name="TASK_POS_IK")
+
+        def get_state(self):
+            return {"eef_pose": np.zeros(6), "timestamp": now, "alarm_code": 0}
+
+    class _Env:
+        robot = SimpleNamespace(arm=_Arm())
+
+        def move(self, command, t_cmd_target):
+            sent.append(np.asarray(command, dtype=np.float32).copy())
+
+    limits = RolloutSafetyCfg()
+    command = np.zeros(7, dtype=np.float32)
+    command[0] = 0.08
+    booked = move_action_checked(_Env(), command, 1.0, joint_serve=False, limits=limits)
+    assert booked[0] == pytest.approx(0.04)
+    assert sent[0][0] == pytest.approx(0.04)
+    require_arm_state_safe(_Env().robot.arm.get_state(), booked, now=now, joint_serve=False, limits=limits)
+    with pytest.raises(RuntimeError, match="position tracking"):
+        require_arm_state_safe(_Env().robot.arm.get_state(), command, now=now, joint_serve=False, limits=limits)
+
+
 def test_rollout_accepts_equivalent_rotation_vectors_across_pi():
     state = {"timestamp": 10.0, "eef_pose": np.array([0.0, 0.0, 0.0, np.pi - 0.01, 0.0, 0.0])}
     command = np.array([0.0, 0.0, 0.0, -np.pi + 0.01, 0.0, 0.0, 0.7])
@@ -657,6 +689,41 @@ def test_make_policy_resolves_pi05_class():
     assert policy.policy_path == "ckpts/pi05"
 
 
+def test_construct_policy_attaches_to_the_named_resident_slot(monkeypatch):
+    """The orchestrator keeps organize and open in named slots. The node must ask for that slot."""
+    from rio.policies import pi05 as pi05_mod
+    from rio.policies.pi05 import IMPORT_ERROR, Pi05
+
+    if IMPORT_ERROR is not None:
+        pytest.skip(str(IMPORT_ERROR))
+    captured = {}
+
+    class _Cfg:
+        device = None
+
+        @staticmethod
+        def from_pretrained(path):
+            return _Cfg()
+
+    def identity(*args, **kwargs):
+        captured["slot"] = kwargs.get("slot")
+        return {"slot": kwargs.get("slot", "")}
+
+    def connect(ident):
+        captured["connected"] = ident["slot"]
+        return SimpleNamespace(pid=7, meta={"action_space": "tcp", "action_dim": 7}, set_instruction=lambda text: None)
+
+    monkeypatch.setattr(pi05_mod, "PreTrainedConfig", _Cfg)
+    monkeypatch.setattr(pi05_mod, "_load_pi05_class", lambda: object)
+    monkeypatch.setattr("rio.policies.pi05_resident.resident_identity", identity)
+    monkeypatch.setattr("rio.policies.pi05_resident.try_connect", connect)
+    policy = Pi05(policy_path="ckpts/pi05", device="cpu", resident_slot="organize")
+    policy.construct_policy()
+    assert captured["slot"] == "organize"
+    assert captured["connected"] == "organize"
+    assert policy._resident is not None
+
+
 def test_pi05_lerobot_cfg_is_cartesian_without_vive():
     from examples.policy_cfgs.pi05_lerobot import Pi05LerobotCfg
 
@@ -669,7 +736,8 @@ def test_pi05_lerobot_cfg_is_cartesian_without_vive():
     assert cfg.policy_node_cfg.action_dim == 7
     assert cfg.policy_node_cfg.proprio_dim == 8
     assert cfg.policy_cfg.binarize_gripper is True
-    assert cfg.policy_cfg.gripper_open == pytest.approx(0.7)
+    assert cfg.policy_cfg.gripper_open == pytest.approx(0.4)
+    assert cfg.gripper_cfg.force == 70
     assert cfg.gripper_cfg.startup_position is None
     assert cfg.freq == 100
     assert cfg.policy_node_cfg.action_hz == 20

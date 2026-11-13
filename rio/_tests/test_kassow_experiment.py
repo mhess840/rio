@@ -359,8 +359,9 @@ def test_open_gripper_stays_on_this_experiment():
     assert policy.policy_cfg.gripper_close == pytest.approx(0.0)
     assert policy.gripper_cfg.startup_position is None
     sort = KassowViveGripperStation(experiment="sort")
-    assert sort.gripper_open == pytest.approx(0.7)
-    assert sort.gripper_cfg.startup_position == pytest.approx(0.7)
+    assert sort.gripper_open == pytest.approx(0.4)
+    assert sort.gripper_cfg.startup_position == pytest.approx(0.4)
+    assert sort.gripper_cfg.force == 70
     raw = EXPERIMENTS["open"].raw_dir
     raw.mkdir(parents=True, exist_ok=True)
     converted = resolve_experiment_paths(
@@ -435,6 +436,7 @@ def test_jev_camera_is_not_a_policy_camera():
     assert camera.addr == JEV_CAMERA_ADDR
     assert camera.cam_type == "Realsense"
     assert camera.enable_depth is False
+    assert camera.freq == 6
     assert camera.resolution == (480, 640)
     assert jev_camera("111111111111").serial == "111111111111"
 

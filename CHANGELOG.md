@@ -58,6 +58,7 @@ Part 1 comes from this chat. Part 2 is reconstructed from the assistant's workin
 
 - Orchestrator: a failed approach to the waiting pose left `approach_space` set, so a later unrelated `moveJ` could be redirected to a compartment. The queue is cleared on failure.
 - `at_wait_pose` is set only while the arm is at the waiting pose. A successful `moveJ` to any other target clears it, and so does an alarm. The next open then queues the approach again.
+- The organized noul is no longer mixed with a 0.9 standing prior. At or below 0.30 the inlay is reorganized, at or above 0.70 the count is used, and a value between those holds.
 
 ### Security
 

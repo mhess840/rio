@@ -197,7 +197,7 @@ def diagram_node(snapshot) -> str:
 def _reading_line(reading) -> str:
     space = f", Space {reading.space}" if reading.space is not None else ""
     return (
-        f"inlay q {reading.organized_q:.2f} to p {reading.organized_p:.2f}, "
+        f"inlay {reading.organized_q:.2f}, "
         f"view {reading.view_clear_p:.2f}, "
         f"{reading.count} cartons (p {reading.count_p:.2f}), "
         f"any_box {reading.any_box_p:.2f}{space}. {reading.reason}"

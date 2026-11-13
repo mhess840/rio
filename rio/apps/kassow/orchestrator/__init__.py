@@ -5,7 +5,8 @@ On ``j`` the Jev camera photographs the crate and Jev answers three questions
 
 - inlay crumpled: moveJ to the organize home, run the organize VLA until a
   predicted plan ends within 20 cm of that pose. That chunk is played out
-  and no further plan is requested. When the arm has stopped, ask Jev again.
+  and no further plan is requested. When the arm has stopped, it lifts and
+  moves back to the organize home, then Jev looks again.
   ``s`` and the timeout still cut the rollout short.
 - inlay organized, N cartons: moveJ to the home of space N+1, run the open VLA
   with "put the object in space N+1", and stop it at its first open-gripper

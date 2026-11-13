@@ -139,8 +139,13 @@ def clamp_tcp_lead(command: np.ndarray, measured: np.ndarray, limits: RolloutSaf
     return limited.astype(np.float32, copy=False)
 
 
-def move_action_checked(env, command, target_time: float, *, joint_serve: bool, limits: RolloutSafetyCfg):
-    """Check fresh feedback immediately before dispatching one arm/gripper command."""
+def move_action_checked(env, command, target_time: float, *, joint_serve: bool, limits: RolloutSafetyCfg) -> np.ndarray:
+    """Check fresh feedback immediately before dispatching one arm/gripper command.
+
+    Returns:
+        The command actually sent. A TCP lead is pulled back toward the measured pose first, and that
+        pulled point is what the caller should remember.
+    """
     state = env.robot.arm.get_state()
     if not joint_serve:
         measured = np.asarray(state.get("eef_pose", []), dtype=np.float64).reshape(-1)
@@ -150,6 +155,7 @@ def move_action_checked(env, command, target_time: float, *, joint_serve: bool, 
     if not np.isfinite(target_time):
         raise RuntimeError("Invalid command deadline")
     env.move(command, t_cmd_target=target_time)
+    return np.asarray(command, dtype=np.float32)
 
 
 def require_arm_controller(arm) -> str:

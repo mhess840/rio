@@ -13,12 +13,14 @@ import pytest
 from PIL import Image
 
 from rio.apps.kassow.crate import (
+    COUNT_INSTRUCTIONS,
     COUNT_KEYS,
     ORGANIZED_CRITERIA,
+    ORGANIZED_INSTRUCTIONS,
+    STATE_NOTE,
     CrateThresholds,
     ProbeScore,
     ask_crate,
-    bayes_posterior,
     crate_questions,
     inlay_example_jpegs,
     read_crate,
@@ -45,8 +47,7 @@ def _answers(organized: float, count: str, count_p: float, any_box: float, view_
     }
 
 
-# Isolate noul thresholds from the 90 % standing prior used in production.
-RAW = CrateThresholds(organized_prior=0.5)
+RAW = CrateThresholds()
 
 
 def _strings(value):
@@ -195,6 +196,20 @@ def test_an_extra_bad_photo_is_what_the_api_compares_against(tmp_path):
     assert captured["extra"][false_ref] == loaded["bad"][-1]
 
 
+def test_organized_question_asks_for_an_upright_rib_in_the_middle():
+    """The standing check is the central rib: about 90 degrees, in the middle, without a strong slope."""
+    text = " ".join((STATE_NOTE, ORGANIZED_INSTRUCTIONS, ORGANIZED_CRITERIA["true"], ORGANIZED_CRITERIA["false"]))
+    assert "90 degrees" in text
+    assert "middle of the crate" in text
+    assert "slanted wall" in text
+    assert "slightly off" in text
+    assert "open or folded" in text
+    assert "open compartment" not in text
+    assert "reachable from above" not in text
+    assert "both halves" not in text
+    assert "both the left" not in text
+
+
 def test_questions_avoid_bare_integer_option_names_and_name_the_image():
     questions = crate_questions()
     keys = list(questions["box_count"]["criteria"])
@@ -245,10 +260,10 @@ def test_reply_flags_a_text_only_token_count():
     ("answers", "decision", "space"),
     [
         (_answers(0.1, "three", 0.9, 0.9), "organize", None),
-        (_answers(0.5, "zero", 0.95, 0.1), "hold", None),
+        (_answers(0.5, "zero", 0.95, 0.1), "organize", None),
         (_answers(0.9, "zero", 0.95, 0.1), "open", 1),
         (_answers(0.9, "two", 0.9, 0.95), "open", 3),
-        (_answers(0.9, "two", 0.5, 0.95), "hold", None),
+        (_answers(0.9, "two", 0.52, 0.95), "open", 3),
         (_answers(0.9, "zero", 0.95, 0.9), "hold", None),
         (_answers(0.9, "three", 0.95, 0.95), "hold", None),
     ],
@@ -259,22 +274,97 @@ def test_crate_decision(answers, decision, space):
     assert reading.space == space
 
 
-def test_bayes_posterior_is_identity_at_half_prior():
-    assert bayes_posterior(0.62, 0.5) == pytest.approx(0.62)
-    assert bayes_posterior(0.62, 0.9) == pytest.approx(0.936, abs=0.01)
-    assert bayes_posterior(0.01, 0.9) == pytest.approx(0.083, abs=0.01)
+def _count_answers(organized: float, probs: dict[str, float], choice: str, any_box: float) -> dict:
+    return {
+        "view_clear": {"type": "noul", "noul": 0.95},
+        "organized": {"type": "noul", "noul": organized},
+        "box_count": {"type": "choice", "choice": choice, "probabilities": probs, "confidence": 0.62},
+        "any_box": {"type": "noul", "noul": any_box},
+    }
 
 
-def test_standing_prior_promotes_a_weak_yes_but_not_a_sure_no():
+def test_count_prior_stays_off_until_it_is_switched_on():
+    """0.55 against 0.40 would follow the process count, but the switch defaults to off.
+
+    The photo is a standing inlay and a sure carton. The process has just left one
+    carton in the crate. With the prior off the hard line holds. With the prior on
+    the same split opens space 2. A photo that already says zero at 0.80 still opens
+    space 1, and a split whose two leaders are not neighbors still holds.
+    """
+    split = _count_answers(0.9, {"one": 0.55, "two": 0.40, "zero": 0.05}, "one", 0.96)
+    held = read_crate(split, available_spaces={1, 2, 3}, expected_count=1)
+    assert held.decision == "hold"
+    assert "count unsure" in held.reason
+    limits = CrateThresholds(count_prior=True)
+    opened = read_crate(split, available_spaces={1, 2, 3}, thresholds=limits, expected_count=1)
+    assert opened.decision == "open"
+    assert opened.space == 2
+    assert opened.count == 1
+    assert "count prior 1" in opened.reason
+    sure_zero = _count_answers(0.9, {"zero": 0.80, "one": 0.20}, "zero", 0.05)
+    photo = read_crate(sure_zero, available_spaces={1, 2, 3}, thresholds=limits, expected_count=1)
+    assert photo.decision == "open"
+    assert photo.space == 1
+    assert photo.count == 0
+    far = _count_answers(0.9, {"zero": 0.50, "two": 0.40, "one": 0.10}, "zero", 0.05)
+    assert read_crate(far, available_spaces={1, 2, 3}, thresholds=limits, expected_count=1).decision == "hold"
+    outside = read_crate(split, available_spaces={1, 2, 3}, thresholds=limits, expected_count=0)
+    assert outside.decision == "hold"
+
+
+def test_count_prior_does_not_override_the_lead_rule_or_an_empty_process():
+    """A lead the photo already accepts stays the photo's count. No finished place means no prior."""
+    seen = _count_answers(0.83, {"zero": 0.01, "one": 0.65, "two": 0.30, "three": 0.04}, "one", 0.96)
+    limits = CrateThresholds(count_prior=True)
+    reading = read_crate(seen, available_spaces={1, 2, 3}, thresholds=limits, expected_count=0)
+    assert reading.decision == "open"
+    assert reading.space == 2
+    assert "count prior" not in reading.reason
+    split = _count_answers(0.9, {"one": 0.55, "two": 0.40, "zero": 0.05}, "one", 0.96)
+    assert read_crate(split, available_spaces={1, 2, 3}, thresholds=limits).decision == "hold"
+
+
+def test_a_sure_presence_accepts_a_count_that_leads_its_runner_up():
+    """The 18:36 photo: any_box 0.96, one 0.65, two 0.30. That lead opens space 2."""
+    seen = _count_answers(0.83, {"zero": 0.01, "one": 0.65, "two": 0.30, "three": 0.04}, "one", 0.96)
+    reading = read_crate(seen, available_spaces={1, 2, 3})
+    assert reading.decision == "open"
+    assert reading.space == 2
+    close = _count_answers(0.83, {"one": 0.52, "two": 0.40, "zero": 0.08}, "one", 0.96)
+    assert read_crate(close, available_spaces={1, 2, 3}).decision == "hold"
+    empty = _count_answers(0.82, {"zero": 1.0}, "zero", 0.01)
+    empty_reading = read_crate(empty, available_spaces={1, 2, 3})
+    assert empty_reading.decision == "open"
+    assert empty_reading.space == 1
+
+
+def test_count_question_counts_one_low_carton_and_not_the_shelf():
+    assert "one object" in COUNT_INSTRUCTIONS
+    assert "sits low" in COUNT_INSTRUCTIONS
+    assert "shelves" in COUNT_INSTRUCTIONS
+
+
+def test_a_middling_organized_noul_is_straightened():
+    """The question is whether 0.55 still opens a space.
+
+    View and count are held fixed at a clear empty crate. Only the organized
+    noul changes. 0.55 is below the yes gate 0.70, so the arm straightens the
+    inlay. 0.24 still organizes, 0.90 still opens space 1, and a blocked view
+    still holds before the inlay is read.
+    """
     spaces = {1, 2, 3}
-    prior = CrateThresholds(organized_prior=0.9)
-    weak_yes = read_crate(_answers(0.62, "zero", 0.95, 0.1), available_spaces=spaces, thresholds=prior)
-    assert weak_yes.decision == "open"
-    assert weak_yes.organized_q == pytest.approx(0.62)
-    assert weak_yes.organized_p > 0.9
-    sure_no = read_crate(_answers(0.24, "zero", 0.95, 0.1), available_spaces=spaces, thresholds=prior)
+    limits = CrateThresholds()
+    middle = read_crate(_answers(0.55, "zero", 0.95, 0.1), available_spaces=spaces, thresholds=limits)
+    assert middle.decision == "organize"
+    assert middle.organized_q == pytest.approx(0.55)
+    assert middle.organized_p == pytest.approx(0.55)
+    assert "not clearly upright" in middle.reason
+    sure_no = read_crate(_answers(0.24, "zero", 0.95, 0.1), available_spaces=spaces, thresholds=limits)
     assert sure_no.decision == "organize"
-    blocked = read_crate(_answers(0.9, "zero", 0.95, 0.1, view_clear=0.1), available_spaces=spaces, thresholds=prior)
+    standing = read_crate(_answers(0.90, "zero", 0.95, 0.1), available_spaces=spaces, thresholds=limits)
+    assert standing.decision == "open"
+    assert standing.space == 1
+    blocked = read_crate(_answers(0.9, "zero", 0.95, 0.1, view_clear=0.1), available_spaces=spaces, thresholds=limits)
     assert blocked.decision == "hold"
     assert "view" in blocked.reason
 

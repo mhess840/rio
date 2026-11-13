@@ -202,7 +202,7 @@ def test_failed_approach_does_not_redirect_a_later_move(tmp_path):
         tmp_path,
         [_reading("open", space=2), _reading("organize"), _reading("hold", reason="placed")],
         ScriptedKeys("j", "j", "q"),
-        goto_script=[False, True],
+        goto_script=[False, True, True],
         vla_reasons=["stop_when"],
     )
     orchestrator.wait_home = Path("home_open_wait.json")
@@ -211,6 +211,7 @@ def test_failed_approach_does_not_redirect_a_later_move(tmp_path):
         ("goto", "home_open_wait.json"),
         ("goto", "home_organize.json"),
         ("vla", "organize", ""),
+        ("goto", "home_organize.json"),
     ]
 
 
@@ -228,6 +229,26 @@ def test_open_path_runs_space_n_plus_one_then_waits_for_p(tmp_path):
         ("goto", "home_organize.json"),
     ]
     events = [json.loads(line)["event"] for line in (tmp_path / "run" / "events.jsonl").read_text().splitlines()]
+    assert events == ["reading", "goto", "vla", "cartons", "lift", "goto", "reading", "hold"]
+    assert orchestrator.counter.expected == 2
+
+
+def test_organize_returns_to_the_initial_home_before_the_next_photo(tmp_path):
+    """The plan can stop short of home. The next photo is taken from that same initial home."""
+    orchestrator, calls = _orchestrator(
+        tmp_path,
+        [_reading("organize"), _reading("hold", reason="placed")],
+        ScriptedKeys("j", "q"),
+        vla_reasons=["stop_when"],
+    )
+    orchestrator.wait_home = Path("home_open_wait.json")
+    orchestrator.run()
+    assert calls == [
+        ("goto", "home_organize.json"),
+        ("vla", "organize", ""),
+        ("goto", "home_organize.json"),
+    ]
+    events = [event["event"] for event in _events(tmp_path)]
     assert events == ["reading", "goto", "vla", "lift", "goto", "reading", "hold"]
 
 
@@ -242,6 +263,7 @@ def test_organize_path_asks_again_after_the_rollout(tmp_path):
     assert calls == [
         ("goto", "home_organize.json"),
         ("vla", "organize", ""),
+        ("goto", "home_organize.json"),
         ("goto", "home_open_space1.json"),
         ("vla", "open", "put the object in space 1"),
         ("goto", "home_organize.json"),
@@ -276,7 +298,7 @@ def test_organize_timeout_asks_jev_again_and_never_opens_unverified(tmp_path):
         tmp_path, [_reading("organize"), _reading("hold", reason="view unsure")], ScriptedKeys("j", "q"), ["timeout"]
     )
     orchestrator.run()
-    assert calls == [("goto", "home_organize.json"), ("vla", "organize", "")]
+    assert calls == [("goto", "home_organize.json"), ("vla", "organize", ""), ("goto", "home_organize.json")]
     assert [event["event"] for event in _events(tmp_path)].count("reading") == 2
     assert orchestrator.hold_reason == "view unsure"
 
@@ -291,7 +313,7 @@ def test_operator_j_in_hold_grants_a_fresh_organize_budget(tmp_path):
         max_organize_attempts=1,
     )
     orchestrator.run()
-    assert calls == [("goto", "home_organize.json"), ("vla", "organize", "")] * 2
+    assert calls == [("goto", "home_organize.json"), ("vla", "organize", ""), ("goto", "home_organize.json")] * 2
     holds = [event["reason"] for event in _events(tmp_path) if event["event"] == "hold"]
     assert "fix it by hand" in holds[0]
     assert holds[-1] == "placed"
@@ -305,7 +327,7 @@ def test_open_reading_resets_the_organize_budget(tmp_path):
         vla_reasons=["stop_when"],
         max_organize_attempts=1,
     )
-    for _ in range(5):
+    for _ in range(6):
         orchestrator.step()
     assert orchestrator.job is not None and orchestrator.job.experiment == "open"
     assert orchestrator.organize_attempts == 0

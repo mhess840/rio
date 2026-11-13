@@ -288,9 +288,11 @@ class CommandStreamer:
             self.interpolator.add(next_act)
 
     def _send(self, command: np.ndarray, target_time: float, limits: RolloutSafetyCfg) -> None:
-        self.action = command
-        self.last_sent = command
-        move_action_checked(self.env, command, target_time, joint_serve=self.settings.joint_serve, limits=limits)
+        sent = move_action_checked(self.env, command, target_time, joint_serve=self.settings.joint_serve, limits=limits)
+        # Remember the point the arm was given. The unclamped step would walk ahead while the arm lags,
+        # and the next tick would abort on that bookkeeping pose.
+        self.action = sent
+        self.last_sent = sent
         self.has_action = True
 
     def step(self, target_time: float, limits: RolloutSafetyCfg) -> None:
@@ -323,7 +325,7 @@ class CommandStreamer:
                 )
             self._send(command, target_time, limits)
         elif self.has_action:
-            move_action_checked(self.env, self.action, target_time, joint_serve=s.joint_serve, limits=limits)
+            self._send(self.action, target_time, limits)
 
     def send_operator(self, command: np.ndarray, target_time: float, limits: RolloutSafetyCfg) -> None:
         """Forward an operator (DAgger) command through the same checks."""

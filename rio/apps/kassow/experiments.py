@@ -87,6 +87,8 @@ class KassowExperiment:
     gripper_close: float = 0.0
     gripper_open: float = 0.7
     gripper_start: float | None = None
+    # None keeps the station force. Sort asks for a firmer jaw than that default.
+    gripper_force: int | None = None
 
     def __post_init__(self) -> None:
         if not self.home_filename and not self.homes:
@@ -189,6 +191,10 @@ EXPERIMENTS = {
         name="sort",
         overview_serial="261222078043",
         home_filename="home_sort.json",
+        # Recordings label the open jaw as 0.7. The calibrated stroke now stops near 0.3,
+        # so playback opens to 0.4 and closes a bit harder than the station default.
+        gripper_open=0.4,
+        gripper_force=70,
     ),
     "organize": KassowExperiment(
         name="organize",
@@ -213,7 +219,11 @@ EXPERIMENTS = {
 
 
 def jev_camera(serial: str | None = None, addr: str = JEV_CAMERA_ADDR) -> Camera:
-    """RealSense node spec for the Jev camera, 640x480 color only.
+    """RealSense node spec for the Jev camera, 640x480 color at 6 fps.
+
+    6 fps is a mode the D435i actually offers. One still photo for Jev does not
+    need 30, and 30 fps of this resolution does not fit the USB 2 link that
+    camera is on.
 
     Args:
         serial: Override ``JEV_SERIAL``.
@@ -226,6 +236,7 @@ def jev_camera(serial: str | None = None, addr: str = JEV_CAMERA_ADDR) -> Camera
         model="D400",
         enable_depth=False,
         hardware_reset=False,
+        freq=6,
         resolution=(480, 640),
         resolution_depth=(480, 640),
     )
@@ -528,6 +539,8 @@ def _apply_gripper_encoding(station, experiment: KassowExperiment) -> None:
     gripper_cfg = getattr(station, "gripper_cfg", None)
     if gripper_cfg is not None and getattr(gripper_cfg, "startup_position", None) == 0.7:
         gripper_cfg.startup_position = float(start)
+    if gripper_cfg is not None and experiment.gripper_force is not None and getattr(gripper_cfg, "force", None) == 50:
+        gripper_cfg.force = int(experiment.gripper_force)
     policy_cfg = getattr(station, "policy_cfg", None)
     if policy_cfg is not None:
         if getattr(policy_cfg, "gripper_open", None) == 0.7:

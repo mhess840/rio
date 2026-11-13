@@ -32,7 +32,7 @@ from .actions import (
     preload,
     station_cfg,
 )
-from .machine import ORGANIZE, CycleLog, Orchestrator, State, recover_unavailable
+from .machine import ORGANIZE, CartonCounter, CycleLog, Orchestrator, State, recover_unavailable
 
 
 def main(args: Args) -> None:
@@ -46,7 +46,8 @@ def main(args: Args) -> None:
 
     with ExitStack() as stack:
         camera = stack.enter_context(jev_camera_session(args.jev_serial, args.mw))
-        ask = make_ask(args, client, camera, set(spaces), log)
+        counter = CartonCounter()
+        ask = make_ask(args, client, camera, set(spaces), log, counter)
         if args.dry_run:
             server, keyboard_client = make_node(args.mw, "interfaces", "SshKeyboard", {"addr": KEYBOARD_ADDR, "freq": 100})
             stack.enter_context(ServerManager(args.mw, [server]))
@@ -77,6 +78,7 @@ def main(args: Args) -> None:
             spaces=spaces,
             log=log,
             max_organize_attempts=args.max_organize_attempts,
+            counter=counter,
         )
         orchestrator.lift = skills.lift
         if args.board:

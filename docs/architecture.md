@@ -67,12 +67,11 @@ stateDiagram-v2
 | VLAs `open`, `organize`, `sort` | `experiments.py` (registry), `policy_cfgs/` | One experiment selects model, instruction, camera, home poses and data folder. `sort` is not part of the orchestrator. |
 | Policy execution, RTC, 20 Hz | `rio/policies/rollout/`, `rio/policies/rtc.py`, `rio/policies/pi05.py` | Entry point `uv run -m rio.apps.kassow.serve`. |
 | Resident policy process | `rio/policies/pi05_resident/` | Keeps weights loaded between rollouts. |
-| Jev / OpenJev visual layer | `rio/jev/client.py` (transport), `rio/apps/kassow/crate.py` (questions, thresholds, Bayes prior), `jev_ask.py`, `openjev_crate.py` | "Jev" is the client and API, "OpenJev" the local helper (`scripts/openjev_serve.sh`). |
+| Jev / OpenJev visual layer | `rio/jev/client.py` (transport), `rio/apps/kassow/crate.py` (questions, thresholds), `jev_ask.py`, `openjev_crate.py` | "Jev" is the client and API, "OpenJev" the local helper (`scripts/openjev_serve.sh`). The organized noul is used as returned. |
 | Alarm-aware restart | `rio/arm_resume.py`, `Orchestrator._alarm` / `_reset` | Remembers the interrupted phase and decides retry or continue from the measured pose. |
 | Teleop (clutch, scaling, episode keys) | `rio/apps/vive/`, `rio/apps/kassow/teleop.py` | |
 | HG-DAgger corrections | `rio/apps/kassow/dagger.py`, `rio/data/dagger.py` | Takeover and recording; effect on success is unmeasured. |
 | Data conversion to LeRobot | `rio/data/convert_pi05/`, `rio/apps/kassow/convert.py` | |
-| Bayes prior fusion | `bayes_posterior`, `organized_prior` in `rio/apps/kassow/crate.py` | Prototype. |
 
 Not in the code: the second Kassow arm, the physical safety concept, a System 1/System 2 task-graph generator, serial-number reading.
 The gripper is driven as `AgGripper` (AG95).

@@ -6,17 +6,21 @@
 One request asks four things about the overview photo:
 
 - ``view_clear`` (noul): is the crate fully visible, not covered by a person or arm?
-- ``organized`` (noul): does the cardboard span both halves of the crate, with open
-  compartments? TypeSafe gets ``good_1.jpg`` and the last ``bad_*.jpg`` in the noul
+- ``organized`` (noul): is the inlay's central rib about 90 degrees to the floor
+  and in the middle of the crate? TypeSafe gets ``good_1.jpg`` and the last ``bad_*.jpg`` in the noul
   criteria. The local helper gets every ``good_*.jpg`` and ``bad_*.jpg`` beside
   the live photo.
 - ``box_count`` (choice ``zero`` … ``ten``): how many product cartons sit in the compartments?
 - ``any_box`` (noul): is there at least one carton? A cross-check on ``box_count``.
 
-``organized`` is mixed with a prior (default: 90 % of inlays arrive standing). A sure
-crumpled noul still wins — the prior may only promote a weak yes, never hide a no.
-The count is only read when the inlay is organized. A count of N means the next
-carton goes into space N+1.
+The organized noul is used as the model returned it. Below 0.70 the rib is not
+clear enough and the arm straightens the inlay. At or above 0.70 it is standing
+and the count is read. A count of N means the next carton goes into space N+1.
+
+The count prior is off (``CrateThresholds.count_prior``). Turned on, it still
+leaves a count at or above 0.70 to the photo. Below that it may pick the number
+of cartons a finished place left in the crate, and only when the photo's mass
+sits on two neighboring counts and that number is one of them.
 """
 
 from __future__ import annotations
@@ -41,9 +45,11 @@ COUNT_WORDS = {key: index for index, key in enumerate(COUNT_KEYS)}
 
 STATE_NOTE = (
     "Top-down photo of one gray plastic crate on a perforated metal table. "
-    "A tan cardboard inlay can divide the crate into compartments with upright separators. "
-    "When the inlay is standing, cardboard occupies both the left and the right half of the crate. "
-    "When it is collapsed, it sits in one side or corner and a large region of the crate is empty gray. "
+    "A tan cardboard inlay can divide the crate into compartments. "
+    "When the inlay is standing, its central rib is upright, about 90 degrees to the crate floor, "
+    "and that rib is in the middle of the crate. One end may be at 90 degrees while the other is slightly off. "
+    "A strong slope along the rib is not standing. Whether the side shelves are open or folded flat does not matter. "
+    "When it is collapsed, the rib slopes strongly, is clearly tilted, or sits well away from the middle. "
     "Small dark retail cartons (CPU-fan boxes with a printed face) may sit in the compartments. "
     "A black foam tray to the right of the crate is outside it. "
     "A person or arm may cover part of the crate."
@@ -59,20 +65,32 @@ VIEW_CLEAR_CRITERIA = {
 ORGANIZED_INSTRUCTIONS = (
     "Look only at the tan cardboard inlay in `crate`, ignoring product cartons and anything outside the gray crate. "
     "Standing-inlay examples and collapsed-inlay examples are attached; judge the live photo against them. "
-    "Does the inlay stand so that cardboard occupies both the left and the right half of the crate, "
-    "with open compartments reachable from above?"
+    "Is the central rib standing about 90 degrees to the crate floor, and is that rib in the middle of the crate? "
+    "Judge the rib, not the side shelves. "
+    "A small difference between the two ends still counts as standing: "
+    "one end may be at 90 degrees while the other is slightly off. "
+    "It is not standing when the rib leans so much that it looks like a slanted wall along much of its length. "
+    "That slope is too much even if one end is still upright and a carton would still fit. "
+    "Ignore whether the side shelves are open or folded."
 )
 ORGANIZED_CRITERIA = {
     "true": (
-        "The separators stand and span both halves of the crate. A whole left or right half is not empty gray. "
-        "Product cartons in the compartments do not matter."
+        "The central rib is a thin upright edge, about 90 degrees to the floor, in the middle of the crate. "
+        "One end may be upright while the other is slightly off 90 degrees. "
+        "Side shelves may be open or folded flat. Product cartons do not matter."
     ),
-    "false": ("The inlay is collapsed into one side or corner, so a large part of the crate is empty gray with no cardboard."),
+    "false": (
+        "The central rib leans like a slanted wall along much of its length. "
+        "That is more than a slight difference between the two ends. "
+        "Folded side shelves alone do not make it collapsed. Room for a carton does not make a sloped rib standing."
+    ),
 }
 COUNT_INSTRUCTIONS = (
     "How many product cartons are inside the compartments of the gray crate in `crate`? "
     "A product carton is a small dark retail box with a printed face; count it even if the printing is not readable. "
-    "Do not count the tan cardboard separators, shelves, or walls. Do not count anything outside the gray crate."
+    "One carton is one object, even when its printed face and its edge look like two things, "
+    "and even when it sits low in a compartment. "
+    "Do not count the tan cardboard separators, shelves, or walls above a carton. Do not count anything outside the gray crate."
 )
 ANY_BOX_INSTRUCTIONS = (
     "Does `crate` show at least one small dark product carton inside the gray crate, ignoring the tan cardboard separators?"
@@ -158,16 +176,22 @@ class CrateThresholds:
     """A noul at or below this reads as no; between ``no`` and ``yes`` is unsure."""
     count_min_p: float = 0.7
     """Minimum probability of the chosen count before the arm may act on it."""
-    organized_prior: float = 0.9
-    """P(inlay is standing) before the photo. ``0.5`` leaves the noul unchanged."""
+    count_lead: float = 0.2
+    """How far the chosen count must lead the runner-up when presence is already sure."""
+    count_prior: bool = False
+    """Follow the cartons a finished place left in the crate when the photo is split.
+
+    Off until the count question is calibrated. A probability at or above
+    ``count_min_p`` is never replaced by this prior.
+    """
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.no < self.yes <= 1.0:
             raise ValueError("thresholds need 0 <= no < yes <= 1")
         if not 0.0 < self.count_min_p <= 1.0:
             raise ValueError("count_min_p must be in (0, 1]")
-        if not 0.0 <= self.organized_prior <= 1.0:
-            raise ValueError("organized_prior must be in [0, 1]")
+        if not 0.0 <= self.count_lead <= 1.0:
+            raise ValueError("count_lead must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -175,7 +199,7 @@ class CrateReading:
     """Jev's view of the crate and what the orchestrator should do next."""
 
     organized_p: float
-    """Posterior P(standing | image), after mixing the noul with ``organized_prior``."""
+    """Same value as ``organized_q``. Kept so saved readings and the board stay one field."""
     count: int
     count_p: float
     confidence: float | None
@@ -187,7 +211,7 @@ class CrateReading:
     space: int | None = None
     reason: str = ""
     organized_q: float = 0.0
-    """Raw organized noul, before the prior."""
+    """Organized noul from the model, used as returned."""
     view_clear_p: float = 1.0
     """Noul that the crate is fully visible."""
 
@@ -196,25 +220,10 @@ class CrateReading:
         target = f" -> space {self.space}" if self.space is not None else ""
         confidence = "n/a" if self.confidence is None else f"{self.confidence:.2f}"
         return (
-            f"organized q={self.organized_q:.2f}→p={self.organized_p:.2f}  view={self.view_clear_p:.2f}  "
+            f"organized={self.organized_q:.2f}  view={self.view_clear_p:.2f}  "
             f"count={self.count} (p={self.count_p:.2f}, conf={confidence})  "
             f"any_box={self.any_box_p:.2f}  decision={self.decision}{target}  [{self.reason}]"
         )
-
-
-def bayes_posterior(likelihood: float, prior: float) -> float:
-    """Mix a model probability with a new prior, assuming the model used 0.5.
-
-    ``prior=0.5`` returns ``likelihood`` unchanged. Values are clamped off 0/1
-    so a sure noul cannot be washed out by arithmetic underflow.
-    """
-    prior = validate_probability(prior, "prior")
-    q = min(max(validate_probability(likelihood, "likelihood"), 1e-6), 1.0 - 1e-6)
-    if prior <= 0.0:
-        return 0.0
-    if prior >= 1.0:
-        return 1.0
-    return (q * prior) / (q * prior + (1.0 - q) * (1.0 - prior))
 
 
 def _noul(answers: dict, key: str, default: float | None = None) -> float:
@@ -226,22 +235,83 @@ def _noul(answers: dict, key: str, default: float | None = None) -> float:
     return validate_probability(answer.get("noul"), f"answer {key!r}")
 
 
+def count_is_accepted(
+    count: int,
+    count_p: float,
+    any_box_p: float,
+    probabilities: dict[str, float],
+    choice: str,
+    limits: CrateThresholds,
+) -> bool:
+    """True when the count may move the arm.
+
+    A probability at or above ``count_min_p`` is enough. Below that, a count of at least one
+    is still accepted when ``any_box`` is sure and the chosen word leads the runner-up by
+    ``count_lead``. A sure zero is never rescued this way.
+    """
+    if count_p >= limits.count_min_p:
+        return True
+    if count <= 0 or any_box_p < limits.yes:
+        return False
+    others = [value for key, value in probabilities.items() if key != choice]
+    lead = count_p - (max(others) if others else 0.0)
+    return lead >= limits.count_lead
+
+
+def count_from_process(probabilities: dict[str, float], expected: int, limits: CrateThresholds) -> int | None:
+    """Process count, when the photo is split across two neighboring numbers.
+
+    ``expected`` is how many cartons a finished place left in the crate. The
+    prior stays quiet unless ``count_prior`` is on, no count reaches
+    ``count_min_p``, the two strongest probabilities are neighbors and sum to
+    at least ``yes``, and ``expected`` is one of those two.
+
+    Args:
+        probabilities: Count distribution from ``box_count``.
+        expected: Cartons the last finished place left in the crate.
+        limits: Trust limits. ``count_prior`` must be set for a count to come back.
+
+    Returns:
+        ``expected`` when the photo leaves that choice open, otherwise None.
+    """
+    if not limits.count_prior:
+        return None
+    if isinstance(expected, bool) or not isinstance(expected, int) or not 0 <= expected < len(COUNT_KEYS):
+        raise ValueError(f"expected carton count must be an integer from 0 to {len(COUNT_KEYS) - 1}")
+    ranked = sorted(probabilities.items(), key=lambda item: item[1], reverse=True)
+    if len(ranked) < 2 or ranked[0][1] >= limits.count_min_p:
+        return None
+    if len(ranked) > 2 and ranked[2][1] == ranked[1][1]:
+        return None
+    first, second = COUNT_WORDS.get(ranked[0][0]), COUNT_WORDS.get(ranked[1][0])
+    if first is None or second is None or abs(first - second) != 1:
+        return None
+    if ranked[0][1] + ranked[1][1] < limits.yes:
+        return None
+    if expected not in (first, second):
+        return None
+    return expected
+
+
 def read_crate(
     answers: dict,
     *,
     available_spaces: Collection[int],
     thresholds: CrateThresholds | None = None,
+    expected_count: int | None = None,
 ) -> CrateReading:
     """Turn the answers into a decision.
 
-    A blocked view always holds. A sure crumpled noul organizes even when the
-    prior is high. Otherwise the organized posterior (noul mixed with
-    ``organized_prior``) must reach ``yes`` before the count is used.
+    A blocked view always holds. The count is read only when the organized noul
+    reaches ``yes``. Anything below that is straightened, including the band
+    between ``no`` and ``yes``. With ``count_prior`` off, ``expected_count`` is
+    ignored. With it on, a split below ``count_min_p`` may follow that count.
 
     Args:
         answers: The ``answers`` object of the response.
         available_spaces: 1-based spaces that have a recorded home pose.
         thresholds: Trust limits; defaults to ``CrateThresholds()``.
+        expected_count: Cartons a finished place left in the crate. Unset: the photo alone.
 
     Raises:
         ValueError: If an answer is missing, has the wrong type, or names an unknown count.
@@ -250,7 +320,7 @@ def read_crate(
         raise ValueError("Jev answers must be an object")
     limits = thresholds or CrateThresholds()
     organized_q = _noul(answers, "organized")
-    organized_p = bayes_posterior(organized_q, limits.organized_prior)
+    organized_p = organized_q
     view_clear_p = _noul(answers, "view_clear")
     any_box_p = _noul(answers, "any_box")
     count_answer = answers.get("box_count")
@@ -269,11 +339,18 @@ def read_crate(
     raw_confidence = count_answer.get("confidence")
     confidence = None if raw_confidence is None else validate_probability(raw_confidence, "box_count confidence")
 
-    def reading(decision: Decision, reason: str, space: int | None = None) -> CrateReading:
+    def reading(
+        decision: Decision,
+        reason: str,
+        space: int | None = None,
+        *,
+        used_count: int = count,
+        used_p: float = count_p,
+    ) -> CrateReading:
         return CrateReading(
             organized_p=organized_p,
-            count=count,
-            count_p=count_p,
+            count=used_count,
+            count_p=used_p,
             confidence=confidence,
             any_box_p=any_box_p,
             probabilities=probabilities,
@@ -288,22 +365,33 @@ def read_crate(
         return reading("hold", "view blocked")
     if view_clear_p < limits.yes:
         return reading("hold", f"view unsure ({view_clear_p:.2f})")
-    # Sure crumpled: the photo wins. The prior must not hide a collapsed inlay.
-    if organized_q <= limits.no:
-        return reading("organize", "inlay is not organized")
-    # Weak yes may be promoted by the 90 % standing prior.
-    if organized_p < limits.yes:
-        return reading("hold", f"inlay state unsure (q={organized_q:.2f} p={organized_p:.2f})")
-    if count_p < limits.count_min_p:
+    if organized_q < limits.yes:
+        reason = (
+            "inlay is not organized" if organized_q <= limits.no else f"inlay rib is not clearly upright ({organized_q:.2f})"
+        )
+        return reading("organize", reason)
+    chosen = count
+    chosen_p = count_p
+    photo_accepted = count_is_accepted(count, count_p, any_box_p, probabilities, choice, limits)
+    prior_count = (
+        None if photo_accepted or expected_count is None else count_from_process(probabilities, expected_count, limits)
+    )
+    if photo_accepted:
+        reason = f"{chosen} carton(s) loaded"
+    elif prior_count is not None:
+        chosen = prior_count
+        chosen_p = probabilities.get(COUNT_KEYS[chosen], 0.0)
+        reason = f"count prior {chosen} (photo {count} at {count_p:.2f})"
+    else:
         return reading("hold", f"count unsure (p={count_p:.2f} < {limits.count_min_p:.2f})")
-    if count == 0 and any_box_p >= limits.yes:
-        return reading("hold", "count is zero but any_box says there is a carton")
-    if count > 0 and any_box_p <= limits.no:
-        return reading("hold", f"count is {count} but any_box says the crate is empty")
-    space = count + 1
+    if chosen == 0 and any_box_p >= limits.yes:
+        return reading("hold", "count is zero but any_box says there is a carton", used_count=chosen, used_p=chosen_p)
+    if chosen > 0 and any_box_p <= limits.no:
+        return reading("hold", f"count is {chosen} but any_box says the crate is empty", used_count=chosen, used_p=chosen_p)
+    space = chosen + 1
     if space not in set(available_spaces):
-        return reading("hold", f"no home pose recorded for space {space}")
-    return reading("open", f"{count} carton(s) loaded", space)
+        return reading("hold", f"no home pose recorded for space {space}", used_count=chosen, used_p=chosen_p)
+    return reading("open", reason, space, used_count=chosen, used_p=chosen_p)
 
 
 def ask_crate(
@@ -313,6 +401,7 @@ def ask_crate(
     available_spaces: Collection[int],
     thresholds: CrateThresholds | None = None,
     inlay_dir: Path | None = None,
+    expected_count: int | None = None,
 ) -> tuple[JevReply, CrateReading]:
     """Ask the crate questions about one JPEG and decide.
 
@@ -326,6 +415,7 @@ def ask_crate(
         available_spaces: 1-based spaces that have a recorded home pose.
         thresholds: Trust limits.
         inlay_dir: Folder with ``good_1.jpg`` … ``bad_3.jpg`` and any later ``bad_N.jpg``. Unset: the default.
+        expected_count: Cartons a finished place left in the crate. Used only when ``count_prior`` is on.
     """
     extra_images: dict[str, bytes] = {}
     inlay_examples: dict[str, list[bytes]] | None = None
@@ -345,16 +435,18 @@ def ask_crate(
         extra_images=extra_images or None,
         inlay_examples=inlay_examples,
     )
-    return reply, read_crate(reply.answers, available_spaces=available_spaces, thresholds=thresholds)
+    return reply, read_crate(
+        reply.answers, available_spaces=available_spaces, thresholds=thresholds, expected_count=expected_count
+    )
 
 
 @dataclass
 class ProbeScore:
     """Agreement of readings with hand labels ``{"organized": bool, "count": int}``.
 
-    ``organized`` is right when a sure crumpled noul matches a false label, or
-    when the posterior reaches ``yes`` on a true label. Between those it is
-    unsure. ``count`` is scored only on organized probes, both on every probe
+    ``organized`` is right when the noul is at or below ``no`` on a false label,
+    or at or above ``yes`` on a true label. Between those it is unsure.
+    ``count`` is scored only on organized probes, both on every probe
     and on the ones the gate would accept, since an accepted wrong count is the
     error that sends the arm to the wrong space.
     """
@@ -375,7 +467,7 @@ class ProbeScore:
         if organized is not None:
             if reading.organized_q <= self.thresholds.no:
                 predicted = False
-            elif reading.organized_p >= self.thresholds.yes:
+            elif reading.organized_q >= self.thresholds.yes:
                 predicted = True
             else:
                 self.organized_unsure += 1
@@ -392,7 +484,8 @@ class ProbeScore:
         right = reading.count == expected
         self.count_right += right
         self.count_wrong += not right
-        if reading.count_p >= self.thresholds.count_min_p:
+        word = COUNT_KEYS[reading.count] if 0 <= reading.count < len(COUNT_KEYS) else ""
+        if count_is_accepted(reading.count, reading.count_p, reading.any_box_p, reading.probabilities, word, self.thresholds):
             self.accepted_right += right
             self.accepted_wrong += not right
 

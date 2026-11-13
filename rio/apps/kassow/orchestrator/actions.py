@@ -23,7 +23,7 @@ from rio.arm_resume import gripper_is_holding
 from rio.cfg.node import NodeCfg
 from rio.jev import JevCfg, JevClient, encode_jpeg
 
-from .machine import OPEN, ORGANIZE, CycleLog, GripperOpened, Keys, ReturnedNearHome, VlaJob
+from .machine import OPEN, ORGANIZE, CartonCounter, CycleLog, GripperOpened, Keys, ReturnedNearHome, VlaJob
 
 KEYBOARD_ADDR = "127.0.0.1:5582"
 
@@ -100,13 +100,24 @@ def vla_cfg(args: Args, job: VlaJob):
     return cfg
 
 
-def make_ask(args: Args, client: JevClient, camera, spaces: set[int], log: CycleLog) -> Callable[[], CrateReading]:
-    """``ask`` action: fresh frame, one full Jev request (view, inlay, count), photo and answer in the log."""
+def make_ask(
+    args: Args,
+    client: JevClient,
+    camera,
+    spaces: set[int],
+    log: CycleLog,
+    counter: CartonCounter | None = None,
+) -> Callable[[], CrateReading]:
+    """``ask`` action: fresh frame, one full Jev request (view, inlay, count), photo and answer in the log.
+
+    The carton counter is forwarded only while ``thresholds.count_prior`` is on.
+    """
 
     def ask() -> CrateReading:
         jpeg = encode_jpeg(fresh_frame(camera, args.max_frame_age_s))
         log.image_path().write_bytes(jpeg)
-        reply, reading = ask_crate(client, jpeg, available_spaces=spaces, thresholds=args.thresholds)
+        expected = counter.expected if counter is not None and args.thresholds.count_prior else None
+        reply, reading = ask_crate(client, jpeg, available_spaces=spaces, thresholds=args.thresholds, expected_count=expected)
         log.write("jev", model=reply.model, input_tokens=reply.input_tokens, response=reply.raw)
         if reply.image_seems_missing():
             logger.warning("input_tokens {} looks like a text-only request; was the image sent?", reply.input_tokens)
