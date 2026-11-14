@@ -13,8 +13,8 @@ One request asks four things about the overview photo:
 - ``box_count`` (choice ``zero`` … ``ten``): how many product cartons sit in the compartments?
 - ``any_box`` (noul): is there at least one carton? A cross-check on ``box_count``.
 
-The organized noul is used as the model returned it. Below 0.70 the rib is not
-clear enough and the arm straightens the inlay. At or above 0.70 it is standing
+The organized noul is used as the model returned it. Below 0.50 the rib is not
+clear enough and the arm straightens the inlay. At or above 0.50 it is standing
 and the count is read. A count of N means the next carton goes into space N+1.
 
 The count prior is off (``CrateThresholds.count_prior``). Turned on, it still
@@ -171,9 +171,11 @@ class CrateThresholds:
     """When an answer is trusted enough to drive the arm."""
 
     yes: float = 0.7
-    """A noul at or above this reads as yes."""
+    """A noul at or above this reads as yes for the view and for ``any_box``."""
     no: float = 0.3
     """A noul at or below this reads as no; between ``no`` and ``yes`` is unsure."""
+    organized_min: float = 0.5
+    """Organized noul at or above this is standing. Below it the arm straightens the rib."""
     count_min_p: float = 0.7
     """Minimum probability of the chosen count before the arm may act on it."""
     count_lead: float = 0.2
@@ -188,6 +190,8 @@ class CrateThresholds:
     def __post_init__(self) -> None:
         if not 0.0 <= self.no < self.yes <= 1.0:
             raise ValueError("thresholds need 0 <= no < yes <= 1")
+        if not self.no < self.organized_min <= 1.0:
+            raise ValueError("organized_min must be above no and at most 1")
         if not 0.0 < self.count_min_p <= 1.0:
             raise ValueError("count_min_p must be in (0, 1]")
         if not 0.0 <= self.count_lead <= 1.0:
@@ -304,11 +308,10 @@ def read_crate(
     """Turn the answers into a decision.
 
     A blocked view always holds. The count is read only when the organized noul
-    reaches ``yes``. Anything below that is straightened, including the band
-    between ``no`` and ``yes``. ``trust_inlay`` skips that rib check: the organize
-    VLA has already run, so the photo is read for the carton count. With
-    ``count_prior`` off, ``expected_count`` is ignored. With it on, a split below
-    ``count_min_p`` may follow that count.
+    reaches ``organized_min``. Anything below that is straightened. ``trust_inlay``
+    skips that rib check: the organize VLA has already run, so the photo is read
+    for the carton count. With ``count_prior`` off, ``expected_count`` is ignored.
+    With it on, a split below ``count_min_p`` may follow that count.
 
     Args:
         answers: The ``answers`` object of the response.
@@ -369,7 +372,7 @@ def read_crate(
         return reading("hold", "view blocked")
     if view_clear_p < limits.yes:
         return reading("hold", f"view unsure ({view_clear_p:.2f})")
-    if organized_q < limits.yes and not trust_inlay:
+    if organized_q < limits.organized_min and not trust_inlay:
         reason = (
             "inlay is not organized" if organized_q <= limits.no else f"inlay rib is not clearly upright ({organized_q:.2f})"
         )
