@@ -75,8 +75,20 @@ Nichts davon ist bisher am Roboter gelaufen; geprüft sind nur Tests ohne Hardwa
 - [ ] Alte Kalibrier-Samples (`poses.jsonl`, Ein-Tasten-Ablauf) werden nicht gelesen
 - [ ] `graph/*.json` ist nicht in `package-data` (nur relevant bei nicht-editierbarer Installation)
 
-## 8. Später
+## 8. Headset-Ansicht (Meta Quest), nur Anzeige
 
+- [ ] Auf der Station: `uv run python -m rio.apps.kassow.xr` (erster Lauf berechnet die Reichweite, danach Cache in `experiments/xr/`)
+- [ ] Desktop-Vorschau `http://127.0.0.1:8770` prüfen: Achsen, Posen, Teleop-Grenzen, Tischbereich, Reichweite
+- [ ] Quest per USB, Entwicklermodus an: `adb reverse tcp:8770 tcp:8770`, im Quest-Browser `http://localhost:8770`
+- [ ] Registrierung: 3–4 Posen weit auseinander wählen, Arm per `goto` hinfahren, TCP mit Controller-Spitze antippen, Trigger
+- [ ] RMS der Registrierung notieren (Ziel < 15 mm, grüner Punkt am Sockel): ___ mm
+- [ ] Prüfen, ob die Registrierung eine neue Sitzung übersteht (`bounded-floor`) oder neu nötig ist
+- [ ] Mit IT klären: Meta-Konto, Geräteverwaltung, Entwicklermodus erlaubt
+
+## 9. Später
+
+- [ ] Geplanten VLA-Chunk live einblenden (`XrPublisher` im Rollout)
+- [ ] HG-DAgger-Übernahme mit sichtbarer Policy-Bahn
 - [ ] MCP-Server als dünne Hülle um `describe`, `look`, `ask`, `check`, `run`
 - [ ] Feinkorrektur mit der Handgelenkkamera vor dem Greifen
 - [ ] Gerades Absenken (moveL) statt moveJ

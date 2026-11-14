@@ -11,6 +11,11 @@ Part 1 comes from this chat. Part 2 is reconstructed from the assistant's workin
 
 ### Added
 
+- Headset view (Meta Quest over WebXR), display only, nothing in it moves the arm:
+  - `rio/xr/`, robot-independent: `Layer` of `Points`, `Lines`, `Mesh` in the base frame; `XrHub` (latest layers, versions); `XrServer` on `127.0.0.1` with the page, `GET /scene`, server-sent `changes` events, stateless `POST /register` (Kabsch fit of touched points), and token-protected `POST /layers`; `XrPublisher` for other processes, non-blocking, newest layer per name wins, never through an HTTP proxy.
+  - `rio/xr/web/`: plain WebGL2 + WebXR page without third-party code. Desktop preview with orbit view; in the headset, registration by touching the TCP at three or more saved poses (trigger captures, grip undoes). Layer toggles and the registration are kept in the browser.
+  - `uv run python -m rio.apps.kassow.xr`: robot base axes, saved-pose TCPs, teleop limit shells, the calibrated table area, and the area reachable with the gripper pointing down (IK flood fill per height, cached in `experiments/xr/`). The headset connects with `adb reverse tcp:8770 tcp:8770`.
+  - `goto.solve_ik`: the IK acceptance rules of `move_tcp`, shared with the reach computation.
 - Graph as Policy can locate and grasp an object on the table:
   - `rio/apps/kassow/graph/locate.py`: `locate_questions` (Jev noul `visible` plus box `where`), `read_box` and `read_noul` with range and order checks.
   - `rio/apps/kassow/graph/table_map.py`: `TableMap` (homography from Jev image fractions to base `x, y`, grasp-height plane, mean grasp orientation, calibrated area, IK seeds). `label` asks Jev to box the object in each sample photo; `fit` refuses the map above 20 mm leave-one-out error or 10 mm grasp-height deviation.

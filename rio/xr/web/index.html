@@ -1,0 +1,51 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: 2026 RIO Developers -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rio XR</title>
+  <style>
+    body { margin: 0; font: 15px system-ui, sans-serif; background: #111; color: #eee; }
+    header { display: flex; gap: 12px; align-items: center; padding: 8px 12px; background: #222; }
+    h1 { font-size: 18px; margin: 0; }
+    h2 { font-size: 15px; margin: 12px 0 6px; }
+    main { display: flex; height: calc(100vh - 48px); }
+    canvas { flex: 1; min-width: 0; background: #1a1a1a; }
+    aside { width: 320px; padding: 0 12px; overflow-y: auto; background: #181818; }
+    button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid #555; background: #333; color: #eee; }
+    button:disabled { opacity: 0.4; }
+    button.chosen { background: #2f5d2f; }
+    label { display: block; margin: 4px 0; }
+    .anchors button { margin: 2px; }
+    .note { color: #f6c445; font-size: 13px; }
+    #status { color: #9ad; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>rio XR</h1>
+    <span id="status">connecting</span>
+    <button id="enter" disabled>Enter AR</button>
+  </header>
+  <main>
+    <canvas id="view"></canvas>
+    <aside>
+      <h2>Layers</h2>
+      <div id="layers"></div>
+      <h2>Registration</h2>
+      <p id="registration">not registered</p>
+      <p>Choose three or more poses in the order you will touch them, spread over the workspace.
+        Move the arm to each pose (goto), touch its TCP with the controller tip, and pull the trigger.
+        The grip button removes the last point.</p>
+      <div id="anchors" class="anchors"></div>
+      <p>Order: <span id="order">none</span></p>
+      <button id="clear-order">Clear order</button>
+      <button id="reset">Forget registration</button>
+      <p class="note">Display only, not a safety function. Keep the e-stop within reach.</p>
+    </aside>
+  </main>
+  <script type="module" src="/xr.js"></script>
+</body>
+</html>
