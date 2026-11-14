@@ -51,7 +51,7 @@ kassow = [
     "sshkeyboard",
     "bleak",
     "evdev; sys_platform == 'linux'",  # clicker (spare mouse as gripper/scale buttons)
-    "pin; sys_platform == 'linux'",
+    "pin==3.8.0; sys_platform == 'linux'",  # ABI of cmeel-urdfdom 4 (see override below)
     "cmeel-urdfdom>=4,<5; sys_platform == 'linux'",
     "cmeel-tinyxml2==10.0.0; sys_platform == 'linux'",
 ]

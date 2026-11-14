@@ -5,9 +5,11 @@ Nichts davon ist bisher am Roboter gelaufen; geprüft sind nur Tests ohne Hardwa
 
 ## 0. Code auf die Station bringen
 
-- [ ] Auf dem Entwicklungs-PC: `make check`, dann committen (alles ist noch uncommitted) und Branch `kassow-hand` pushen
-- [ ] Auf der Station: `git pull`, `uv sync --frozen --python 3.12 --group dev`
-- [ ] `make check` und `make test` auf der Station (Linux) grün
+- [x] Auf dem Entwicklungs-PC: `make check`, dann committen (alles ist noch uncommitted) und Branch `kassow-hand` pushen
+- [x] Auf der Station: `git pull`, `uv sync --frozen --python 3.12 --extra kassow --group pi --group dev`
+  - nicht nur `--group dev`: das entfernt `sshkeyboard`, RealSense, Pinocchio usw.
+  - `pin` auf 3.8.0 fixiert (4.1.0 braucht `cmeel-urdfdom>=6`, die Override hält <5)
+- [x] `make check` und `make test` auf der Station (Linux) grün (529 bestanden, 17 übersprungen)
 
 ## 1. Vorbereitung
 
