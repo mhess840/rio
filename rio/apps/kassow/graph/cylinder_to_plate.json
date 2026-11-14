@@ -1,0 +1,83 @@
+{
+  "task": "Pick up the blue cylinder and put it on the red plate.",
+  "start": "clear",
+  "max_steps": 12,
+  "nodes": {
+    "clear": {
+      "kind": "move_to",
+      "pose": "home_organize.json",
+      "ok": "find_cylinder",
+      "fail": "stuck"
+    },
+    "find_cylinder": {
+      "kind": "locate",
+      "object": "the blue cylinder",
+      "store": "cylinder",
+      "visible_threshold": 0.0,
+      "found": "find_plate",
+      "missing": "no_cylinder",
+      "fail": "no_answer",
+      "threshold": 0.4
+    },
+    "find_plate": {
+      "kind": "locate",
+      "object": "the round red plate",
+      "store": "plate",
+      "found": "grab",
+      "missing": "no_plate",
+      "fail": "no_answer",
+      "visible_threshold": 0.0,
+      "threshold": 0.4
+    },
+    "grab": {
+      "kind": "pick_at",
+      "target": "cylinder",
+      "approach_m": 0.15,
+      "z_offset_m": 0.02,
+      "ok": "put",
+      "fail": "missed"
+    },
+    "put": {
+      "kind": "place_at",
+      "target": "plate",
+      "approach_m": 0.15,
+      "z_offset_m": 0.03,
+      "ok": "park",
+      "fail": "not_placed"
+    },
+    "park": {
+      "kind": "move_to",
+      "pose": "home_organize.json",
+      "ok": "done",
+      "fail": "stuck"
+    },
+    "no_cylinder": {
+      "kind": "stop",
+      "reason": "no blue cylinder inside the calibrated area"
+    },
+    "no_plate": {
+      "kind": "stop",
+      "reason": "no plate inside the calibrated area"
+    },
+    "no_answer": {
+      "kind": "stop",
+      "reason": "Jev did not answer"
+    },
+    "missed": {
+      "kind": "stop",
+      "reason": "the cylinder is not in the gripper"
+    },
+    "not_placed": {
+      "kind": "stop",
+      "reason": "placing on the plate failed"
+    },
+    "stuck": {
+      "kind": "stop",
+      "reason": "the arm did not reach the home pose"
+    },
+    "done": {
+      "kind": "stop",
+      "reason": "the cylinder is on the plate"
+    }
+  }
+}

@@ -680,3 +680,10 @@ def test_describe_and_ask_print_json_without_a_graph(tmp_path, monkeypatch, caps
     printed = json.loads(capsys.readouterr().out)
     assert printed["image"] == str(image)
     assert printed["target"]["inside_area"] is True
+
+
+@pytest.mark.parametrize("name", ["pick_place.json", "cylinder_to_plate.json"])
+def test_the_packaged_target_graphs_check(name):
+    graph = load_graph(PICK_EXAMPLE_PATH.parent / name)
+    assert check_graph(graph) == []
+    assert graph.needs_table()
