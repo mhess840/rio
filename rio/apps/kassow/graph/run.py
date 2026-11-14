@@ -59,6 +59,8 @@ class Args:
     """GPU of the VLA residents."""
     single_slot: bool = False
     """Keep one VLA resident and reload the checkpoint on every experiment switch."""
+    gripper_open: float | None = None
+    """Jaw opening (0..1) for pick_at, place_at and gripper open. Unset: the ``open`` experiment's opening."""
     jev: JevCfg = field(default_factory=JevCfg)
     mw: str = "Thread"
     mp_method: str = "spawn"
@@ -226,7 +228,8 @@ def _live(args: Args, graph: Graph, table: TableMap | None) -> str:
         stack.enter_context(ServerManager(args.mw, list(servers.values())))
         stack.enter_context(env)
         keys = NodeKeys(stack.enter_context(clients["teleop_keyboard"]()))
-        skills = KassowSkills(env, home_joint_speed=args.home_joint_speed, table=table)
+        skills = KassowSkills(env, home_joint_speed=args.home_joint_speed, gripper_open=args.gripper_open, table=table)
+        logger.info("Gripper opens to {:.2f}", skills.gripper_open)
 
         def ask(node: str, questions: dict, note: str) -> dict:
             jpeg = encode_jpeg(fresh_frame(camera, 0.5))
@@ -255,6 +258,8 @@ def _live(args: Args, graph: Graph, table: TableMap | None) -> str:
 def cli() -> None:
     """Parse arguments and check or walk a graph."""
     args = tyro.cli(Args)
+    if args.gripper_open is not None and not 0.0 < args.gripper_open <= 1.0:
+        raise SystemExit(f"--gripper-open must be in (0, 1], got {args.gripper_open}")
     mp.set_start_method(args.mp_method, force=True)
     try:
         main(args)
