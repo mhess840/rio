@@ -61,8 +61,10 @@ def save_sample(env, eef_pose: np.ndarray, joint_q: np.ndarray, root: Path | Non
     folder.mkdir(parents=True, exist_ok=True)
     pending = pending_sample(folder)
     if pending is None:
-        folders = sample_folders(folder)
-        sample = folder / f"{(int(folders[-1].name) if folders else 0) + 1:03d}"
+        # Count every numbered folder, not only complete samples, so a leftover
+        # folder without pose.json (old one-key layout) is never reused.
+        numbers = [int(p.name) for p in folder.iterdir() if p.is_dir() and p.name.isdigit()]
+        sample = folder / f"{max(numbers, default=0) + 1:03d}"
         sample.mkdir()
         pose = np.asarray(eef_pose, dtype=float).reshape(-1)
         record = {

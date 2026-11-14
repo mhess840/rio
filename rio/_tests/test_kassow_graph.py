@@ -247,6 +247,25 @@ def test_a_sample_stores_the_tcp_first_and_the_photos_on_the_next_press(tmp_path
     assert save_sample(Env(), pose, np.zeros(7), root=tmp_path).name == "002"
 
 
+def test_calibration_skips_leftover_folders_without_a_pose(tmp_path):
+    from rio_hw import time
+
+    from rio.apps.kassow.graph.calibrate import CAMERA_KEYS, save_sample
+
+    class Camera:
+        def get_state(self):
+            return {"color": np.full((480, 640, 3), 80, dtype=np.uint8), "timestamp": time.now()}
+
+    class Env:
+        cameras = {key: Camera() for key, _name in CAMERA_KEYS}
+
+    # Old one-key layout: numbered folders with photos, the poses in poses.jsonl.
+    for name in ("001", "002", "003"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "poses.jsonl").write_text("{}\n")
+    assert save_sample(Env(), np.zeros(6), np.zeros(7), root=tmp_path).name == "004"
+
+
 def test_a_graph_file_without_a_task_is_rejected(tmp_path):
     path = tmp_path / "bad.json"
     path.write_text(json.dumps({"start": "a", "max_steps": 1, "nodes": {"a": {"kind": "stop"}}}))
