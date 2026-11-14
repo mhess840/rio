@@ -7,9 +7,7 @@ Kept outside ``rio.data`` so that building an environment does not import the re
 """
 
 import hashlib
-import json
 import platform
-import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -20,7 +18,6 @@ from pathlib import Path
 from loguru import logger
 
 LIBRARIES = ("numpy", "torch", "lerobot", "robodm", "transformers")
-_PINNED_COMMIT = re.compile(r"@\s*git\+\S+@([0-9a-fA-F]{40})\b")
 
 
 def _version(distribution: str) -> str | None:
@@ -39,7 +36,7 @@ def _git(folder: Path, *args: str) -> str | None:
 
 
 def package_source(module: str, distribution: str | None = None) -> dict | None:
-    """Version, location, and (for a git checkout) commit and dirty flag of one package.
+    """Version, location, and (for a git checkout) commit, branch, dirty flag, and lag behind upstream.
 
     Args:
         module: Import name, e.g. ``"rio_hw"``.
@@ -51,11 +48,16 @@ def package_source(module: str, distribution: str | None = None) -> dict | None:
     folder = Path(spec.origin).resolve().parent
     commit = _git(folder, "rev-parse", "HEAD")
     status = _git(folder, "status", "--porcelain", "--untracked-files=no") if commit else None
+    upstream = _git(folder, "rev-parse", "--abbrev-ref", "@{upstream}") if commit else None
+    behind = _git(folder, "rev-list", "--count", "HEAD..@{upstream}") if upstream else None
     return {
         "version": _version(distribution or module),
         "path": str(folder),
         "git_commit": commit,
         "git_dirty": None if status is None else bool(status),
+        "git_branch": _git(folder, "rev-parse", "--abbrev-ref", "HEAD") if commit else None,
+        "git_upstream": upstream,
+        "git_behind": int(behind) if behind and behind.isdigit() else None,
     }
 
 
@@ -72,70 +74,27 @@ def file_fingerprint(path: Path) -> dict | None:
     return {"path": str(path.resolve()), "size": stat.st_size, "mtime": stat.st_mtime, "sha256": digest.hexdigest()}
 
 
-def pinned_commit(distribution: str, dependency: str) -> str | None:
-    """Git commit ``distribution`` pins ``dependency`` to in its ``Requires-Dist`` (``dep @ git+URL@SHA``).
+def check_rio_hw() -> str | None:
+    """Warn when the local rio_hw checkout has uncommitted changes or is behind its upstream branch.
 
-    Args:
-        distribution: Installed distribution that declares the pin, e.g. ``"rio"``.
-        dependency: Name of the pinned dependency, e.g. ``"rio_hw"``.
-
-    Returns:
-        The 40-hex commit, or ``None`` when the distribution or the pin is not found.
-    """
-    try:
-        requirements = metadata.requires(distribution) or []
-    except metadata.PackageNotFoundError:
-        return None
-    wanted = dependency.replace("-", "_").lower()
-    for requirement in requirements:
-        name = re.split(r"[\s@\[;<>=!~]", requirement, maxsplit=1)[0]
-        match = _PINNED_COMMIT.search(requirement)
-        if name.replace("-", "_").lower() == wanted and match:
-            return match.group(1).lower()
-    return None
-
-
-def installed_commit(module: str, distribution: str | None = None) -> tuple[str | None, bool | None]:
-    """Commit and dirty flag of the installed package: its git checkout, else pip's ``direct_url.json``.
-
-    Args:
-        module: Import name, e.g. ``"rio_hw"``.
-        distribution: Distribution name when it differs from ``module``.
-    """
-    source = package_source(module, distribution)
-    if source is not None and source["git_commit"]:
-        return source["git_commit"].lower(), source["git_dirty"]
-    try:
-        direct_url = metadata.distribution(distribution or module).read_text("direct_url.json")
-    except metadata.PackageNotFoundError:
-        return None, None
-    if not direct_url:
-        return None, None
-    try:
-        commit = json.loads(direct_url).get("vcs_info", {}).get("commit_id")
-    except (ValueError, AttributeError):
-        return None, None
-    return (commit.lower() if isinstance(commit, str) else None), False
-
-
-def check_rio_hw_pin() -> str | None:
-    """Warn when the running rio_hw is not the commit RIO pins (or has local edits).
-
-    A station may run a deliberate local fix of rio_hw, so this warns instead of refusing.
+    RIO always runs the sibling ``../rio-hw`` checkout as it is, so the newest commit
+    of that branch is the intended version. ``behind`` uses the last ``git fetch``;
+    nothing is fetched here.
 
     Returns:
-        The warning text, or ``None`` when the commit matches or cannot be determined.
+        The warning text, or ``None`` when the checkout is clean and up to date or unknown.
     """
-    pin = pinned_commit("rio", "rio_hw")
-    commit, dirty = installed_commit("rio_hw")
-    if pin is None or commit is None:
+    source = package_source("rio_hw")
+    if source is None or not source["git_commit"]:
         return None
-    if commit != pin:
-        message = f"rio_hw is at commit {commit[:12]}, but RIO pins {pin[:12]}; behaviour may differ from the tested pair"
-    elif dirty:
-        message = f"rio_hw is at the pinned commit {pin[:12]} but has uncommitted changes"
-    else:
+    problems = []
+    if source.get("git_behind"):
+        problems.append(f"{source['git_behind']} commit(s) behind {source.get('git_upstream')} (git -C ../rio-hw pull)")
+    if source["git_dirty"]:
+        problems.append("uncommitted changes (recordings name a commit that does not match the code)")
+    if not problems:
         return None
+    message = f"rio_hw at {source['git_commit'][:12]} on {source.get('git_branch')}: " + "; ".join(problems)
     logger.warning(message)
     return message
 
@@ -154,7 +113,6 @@ def run_manifest(**extra) -> dict:
         "host": platform.node(),
         "rio": package_source("rio"),
         "rio_hw": package_source("rio_hw"),
-        "rio_hw_pin": pinned_commit("rio", "rio_hw"),
         "kord_bridge": None if bridge is None or bridge.origin is None else file_fingerprint(Path(bridge.origin)),
         "libraries": {name: _version(name) for name in LIBRARIES},
         **extra,

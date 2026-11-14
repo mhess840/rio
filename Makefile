@@ -7,6 +7,16 @@ format:
 type:
 	uv run ty check
 
+.PHONY: sync-station
+# Station environment: hardware extra + LeRobot/pi0.5 + dev tools. `--group dev` alone removes the hardware packages.
+sync-station:
+	uv sync --frozen --python 3.12 --extra kassow --group pi --group dev
+
+.PHONY: smoke-station
+# Load every station package and parse the Kassow URDF without touching hardware (catches ABI mismatches).
+smoke-station:
+	uv run --no-sync python -m rio._scripts.smoke_station
+
 .PHONY: check
 check:
 	uv run ruff check

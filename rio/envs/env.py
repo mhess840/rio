@@ -8,7 +8,7 @@ from loguru import logger
 from rio_hw import time
 
 from ..embodiments.base import BaseEmbodiment
-from ..manifest import check_rio_hw_pin
+from ..manifest import check_rio_hw
 from ..schema import Camera, Step
 from .factory import get_mbody_components, instantiate_station_cfg
 
@@ -151,7 +151,7 @@ class Env:
 
 
 def make_env(station_cfg, **kwargs):
-    check_rio_hw_pin()
+    check_rio_hw()
     servers, clients, camera_clients = instantiate_station_cfg(station_cfg, **kwargs)
     action_space = getattr(station_cfg, "action_space", "TASK_POS")
     urdf_path = getattr(station_cfg, "urdf_path", None)

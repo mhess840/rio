@@ -231,31 +231,68 @@ def test_run_manifest_identifies_the_code_that_ran():
     assert manifest["rio_hw"] is not None
     assert manifest["policy_path"] == "ckpts/pi05"
     assert "kord_bridge" in manifest
-    assert manifest["rio_hw_pin"] is not None and len(manifest["rio_hw_pin"]) == 40
+    assert "git_behind" in manifest["rio_hw"]
 
 
 @pytest.mark.parametrize(
-    ("installed", "dirty", "warned"),
-    [("a" * 40, False, None), ("b" * 40, False, "pins aaaaaaaaaaaa"), ("a" * 40, True, "uncommitted changes")],
+    ("dirty", "behind", "warned"),
+    [
+        (False, 0, None),
+        (False, None, None),
+        (False, 2, "2 commit(s) behind origin/kassow-hand"),
+        (True, 0, "uncommitted changes"),
+    ],
 )
-def test_rio_hw_pin_check_warns_on_another_commit_or_local_edits(monkeypatch, installed, dirty, warned):
+def test_rio_hw_check_warns_on_local_edits_or_a_stale_checkout(monkeypatch, dirty, behind, warned):
     from rio import manifest
 
-    monkeypatch.setattr(
-        manifest.metadata, "requires", lambda name: ["numpy>=1", f"rio_hw @ git+https://example.invalid/rio-hw.git@{'A' * 40}"]
-    )
-    monkeypatch.setattr(manifest, "package_source", lambda *args: {"git_commit": installed, "git_dirty": dirty})
-    assert manifest.pinned_commit("rio", "rio-hw") == "a" * 40
-    result = manifest.check_rio_hw_pin()
+    source = {
+        "git_commit": "a" * 40,
+        "git_dirty": dirty,
+        "git_branch": "kassow-hand",
+        "git_upstream": "origin/kassow-hand",
+        "git_behind": behind,
+    }
+    monkeypatch.setattr(manifest, "package_source", lambda *args: source)
+    result = manifest.check_rio_hw()
     assert result is None if warned is None else warned in result
 
 
-def test_rio_hw_pin_check_is_silent_when_the_commit_is_unknown(monkeypatch):
+def test_rio_hw_check_is_silent_without_a_git_checkout(monkeypatch):
     from rio import manifest
 
-    monkeypatch.setattr(manifest.metadata, "requires", lambda name: ["rio_hw>=0.1"])
-    assert manifest.pinned_commit("rio", "rio_hw") is None
-    assert manifest.check_rio_hw_pin() is None
+    monkeypatch.setattr(manifest, "package_source", lambda *args: {"git_commit": None, "git_dirty": None})
+    assert manifest.check_rio_hw() is None
+
+
+def test_package_source_counts_commits_behind_the_upstream(tmp_path):
+    import subprocess
+
+    from rio import manifest
+
+    def git(folder, *args):
+        subprocess.run(["git", "-C", str(folder), *args], check=True, capture_output=True)
+
+    upstream, clone = tmp_path / "upstream", tmp_path / "clone"
+    upstream.mkdir()
+    git(upstream, "init", "-q", "-b", "main")
+    git(upstream, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one")
+    subprocess.run(["git", "clone", "-q", str(upstream), str(clone)], check=True, capture_output=True)
+    git(upstream, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "two")
+    git(clone, "fetch", "-q")
+    (clone / "pkg").mkdir()
+    (clone / "pkg" / "__init__.py").write_text("")
+    import sys
+
+    sys.path.insert(0, str(clone))
+    try:
+        source = manifest.package_source("pkg")
+    finally:
+        sys.path.remove(str(clone))
+        sys.modules.pop("pkg", None)
+    assert source is not None
+    assert source["git_branch"] == "main" and source["git_upstream"] == "origin/main"
+    assert source["git_behind"] == 1
 
 
 def test_dummy_policy_output_shape():

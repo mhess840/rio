@@ -20,13 +20,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: rio
-      # uv resolves rio_hw from ../rio-hw; check out exactly the commit pinned in pyproject.toml.
+      # uv resolves rio_hw from ../rio-hw; check out the newest commit of the repo and branch named in pyproject.toml.
       - id: pin
-        run: echo "sha=$(grep -oP 'rio-hw\.git@\K[0-9a-f]{40}' pyproject.toml)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "repo=$(grep -oP 'github\.com/\K[^/]+/rio-hw(?=\.git@)' pyproject.toml)" >> "$GITHUB_OUTPUT"
+          echo "ref=$(grep -oP 'rio-hw\.git@\K[^"\s]+' pyproject.toml)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
-          repository: pschaldenbrand/rio-hw
-          ref: ${{ steps.pin.outputs.sha }}
+          repository: ${{ steps.pin.outputs.repo }}
+          ref: ${{ steps.pin.outputs.ref }}
           path: rio-hw
       - uses: astral-sh/setup-uv@v5
         with:
@@ -39,7 +41,8 @@ jobs:
       - run: make test
 
   # The default job skips everything that needs LeRobot/Torch (π₀.₅ mapping, conversion, DAgger merge,
-  # LeRobot formatter). This job installs the locked `pi` group so those tests run on every PR.
+  # LeRobot formatter). This job installs the station environment (`pi` group + `kassow` extra) so those
+  # tests run on every PR and a lockfile that cannot load on the station (e.g. pinocchio vs urdfdom) fails here.
   test-pi:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -53,11 +56,13 @@ jobs:
         with:
           path: rio
       - id: pin
-        run: echo "sha=$(grep -oP 'rio-hw\.git@\K[0-9a-f]{40}' pyproject.toml)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "repo=$(grep -oP 'github\.com/\K[^/]+/rio-hw(?=\.git@)' pyproject.toml)" >> "$GITHUB_OUTPUT"
+          echo "ref=$(grep -oP 'rio-hw\.git@\K[^"\s]+' pyproject.toml)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
-          repository: pschaldenbrand/rio-hw
-          ref: ${{ steps.pin.outputs.sha }}
+          repository: ${{ steps.pin.outputs.repo }}
+          ref: ${{ steps.pin.outputs.ref }}
           path: rio-hw
       - uses: astral-sh/setup-uv@v5
         with:
@@ -65,5 +70,6 @@ jobs:
           python-version: "3.12"
           enable-cache: true
           cache-dependency-glob: rio/uv.lock
-      - run: uv sync --group dev --group pi
+      - run: uv sync --group dev --group pi --extra kassow
+      - run: make smoke-station
       - run: make test-pi

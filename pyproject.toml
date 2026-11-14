@@ -23,7 +23,7 @@ requires-python = ">=3.10"
 
 dependencies = [
     "loguru>=0.7.3",
-    "rio_hw @ git+https://github.com/mhess840/rio-hw.git@a8add45bd9168b33c938c0a5597a4879e24cefdf",
+    "rio_hw @ git+https://github.com/mhess840/rio-hw.git@kassow-hand",  # newest commit; locally the editable ../rio-hw
     "attrs>=24",
     "cloudpickle>=3",
     "atomics>=1.0.3",
