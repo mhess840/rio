@@ -6,25 +6,30 @@ Nichts davon ist bisher am Roboter gelaufen; geprüft sind nur Tests ohne Hardwa
 ## 0. Code auf die Station bringen
 
 - [x] Auf dem Entwicklungs-PC: `make check`, dann committen (alles ist noch uncommitted) und Branch `kassow-hand` pushen
-- [x] Auf der Station: `git pull`, `uv sync --frozen --python 3.12 --extra kassow --group pi --group dev`
+- [x] Auf der Station: `git pull`, `make sync-station` (= `uv sync --frozen --python 3.12 --extra kassow --group pi --group dev`), dann `make smoke-station`
   - nicht nur `--group dev`: das entfernt `sshkeyboard`, RealSense, Pinocchio usw.
   - `pin` auf 3.8.0 fixiert (4.1.0 braucht `cmeel-urdfdom>=6`, die Override hält <5)
 - [x] `make check` und `make test` auf der Station (Linux) grün (529 bestanden, 17 übersprungen)
 
 ## 1. Vorbereitung
 
-- [ ] Jev-Backend festlegen: lokal (`scripts/openjev_serve.sh`, Fotos bleiben im Netz) oder gehostet (`TYPESAFE_API_KEY`, Fotos verlassen das Netz)
-- [ ] VS Code per Remote-SSH auf der Station öffnen, damit der Agent Kameras und Arm erreicht
+- [x] Jev-Backend festlegen: **gehostet** (Key in `~/.config/rio/typesafe.env`, Test ok mit jev-1.14.0). lokal (`scripts/openjev_serve.sh`, Fotos bleiben im Netz) oder gehostet (`TYPESAFE_API_KEY`, Fotos verlassen das Netz)
+- [x] ~~VS Code per Remote-SSH~~ entfällt: Claude Code läuft direkt auf der Station
 - [ ] Beim Start des Arms die Log-Zeile `FK vs measured TCP` prüfen: unter 5 mm
 
 ## 2. Tischkarte kalibrieren (für `locate`, `pick_at`, `place_at`, `move_above`)
 
+> Stand 2026-11-13, erster Versuch an der Station (15 Samples): **Karte nicht geschrieben.**
+> - Die orange Kiste im Bild verzieht Jevs Würfel-Box waagerecht um bis zu 0,3 Bildbreite. Ohne Kiste: < 0,015. Kiste ist jetzt weg.
+> - Auch mit exakten Pixeln (Farbsegmentierung) LOO 12,7 mm rms / 26,6 mm max: Höhe 236–253 mm, Yaw 48–87°, 006/007 am Bildrand.
+> - Neuer Plan: Hand-Auge-Kalibrierung mit ArUco am Greifer (Vorlage `experiments/graph/calibration/print/`), `locate` über Sehstrahl ∩ Ebene statt Homographie.
+
 - [ ] Samples aufnehmen: `uv run python -m rio.apps.kassow.graph.calibrate`
   - pro Sample: Würfel im geschlossenen Greifer auf den Tisch stellen, `k` (TCP); öffnen, Arm aus dem Bild, `k` (Fotos)
   - 9–15 Samples im Raster über die ganze Greiffläche inkl. Ecken, immer gleiche Höhe und Orientierung
-- [ ] Labeln: `uv run python -m rio.apps.kassow.graph.table_map label --target "the cube" --repeats 3 --jev.backend local`
+- [ ] Labeln: `uv run python -m rio.apps.kassow.graph.table_map --command label --target "the small red cube" --repeats 3`
   - `spread` klein? Samples mit `SKIP` neu aufnehmen
-- [ ] Fitten: `uv run python -m rio.apps.kassow.graph.table_map fit`
+- [ ] Fitten: `uv run python -m rio.apps.kassow.graph.table_map --command fit`
   - Ziel: Leave-one-out max < 10 mm (über 20 mm wird die Karte nicht geschrieben)
 - [ ] `uv run python -m rio.apps.kassow.graph --command describe` zeigt `"table_map": {"ready": true, ...}`
 
