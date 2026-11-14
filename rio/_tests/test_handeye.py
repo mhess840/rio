@@ -168,3 +168,33 @@ def test_handeye_round_trips_through_json(tmp_path):
     assert isinstance(loaded, HandEye) and isinstance(loaded.intrinsics, Intrinsics)
     assert np.allclose(loaded.transform, fit.transform)
     assert json.loads(path.read_text())["camera_serial"] == "262722073415"
+
+
+def test_table_map_from_handeye_maps_the_object_pixel_to_the_grasp_tcp(tmp_path):
+    from pathlib import Path
+
+    from rio.apps.kassow.graph.table_map import Sample as Grasp
+    from rio.apps.kassow.graph.table_map import TableMap, table_map_from_handeye
+
+    handeye = HandEye("x", INTR, BASE_FROM_CAMERA.tolist(), {"1": TCP}, {"1": [0.0, 0.0, 0.0]}, {})
+    handeye.stats = {"fitted": "t", "n_samples": 12, "loo_rms_mm": 0.5, "loo_max_mm": 0.7, "camera_xyz_m": [0, 0, 0]}
+    tool = 0.233
+    # Tool axis pointing down, tilted a little; the fingertips (object centre) 1 cm above the table.
+    down = Rotation.from_euler("x", 180, degrees=True)
+    grasps = []
+    for k, (x, y) in enumerate([(-0.55, 0.45), (-0.35, 0.45), (-0.35, 0.65), (-0.55, 0.65), (-0.45, 0.55)]):
+        rot = down * Rotation.from_euler("xy", [3 * (k % 2), -2 * (k % 3)], degrees=True)
+        tcp = np.array([x, y, 0.01]) - rot.apply([0.0, 0.0, tool])
+        grasps.append(Grasp(f"{k:03d}", Path(tmp_path), tcp, rot.as_rotvec(), np.zeros(7)))
+    table = table_map_from_handeye(handeye, grasps, tool_offset_m=tool)
+    assert abs(table.stats["object_z_m"] - 0.01) < 1e-9
+    mean = Rotation.from_rotvec(table.rotvec)
+    camera_from_base = np.linalg.inv(BASE_FROM_CAMERA)
+    for point in ([-0.50, 0.52, 0.01], [-0.40, 0.60, 0.01]):
+        cam = camera_from_base[:3, :3] @ np.asarray(point) + camera_from_base[:3, 3]
+        u, v = project(cam.reshape(1, 3), INTR)[0]
+        expected_tcp_xy = np.asarray(point[:2]) - mean.apply([0.0, 0.0, tool])[:2]
+        assert np.allclose(table.to_xy(u / INTR.width, v / INTR.height), expected_tcp_xy, atol=1e-6)
+    path = tmp_path / "table_map.json"
+    table.save(path)
+    assert TableMap.load(path).stats["source"] == "handeye"

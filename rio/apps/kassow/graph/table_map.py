@@ -11,8 +11,15 @@ the box centres and TCPs into the map and refuses it when leave-one-out errors
 are too large.
 
     uv run python -m rio.apps.kassow.graph.calibrate            # record samples
-    uv run python -m rio.apps.kassow.graph.table_map label --target "the red cube"
-    uv run python -m rio.apps.kassow.graph.table_map fit
+    uv run python -m rio.apps.kassow.graph.table_map --command label --target "the red cube"
+    uv run python -m rio.apps.kassow.graph.table_map --command fit
+
+With a hand-eye calibration of the camera (``graph.handeye``) the homography is
+computed instead of fitted: the ray through a pixel meets the plane of the grasped
+object, and the tool offset turns that point into the TCP. The samples then only
+give the grasp height, orientation and IK seeds; no Jev labels are needed.
+
+    uv run python -m rio.apps.kassow.graph.table_map --command handeye
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 import tyro
@@ -36,6 +43,9 @@ from rio.jev.client import JevCfg, JevClient, encode_jpeg
 from .check import BOX_YES, NOUL_YES
 from .locate import Box, locate_questions, read_box, read_noul
 
+if TYPE_CHECKING:
+    from .handeye import HandEye
+
 POSE_NAME = "pose.json"
 TABLE_MAP_NAME = "table_map.json"
 CAMERAS = ("overview", "jev")
@@ -44,6 +54,8 @@ MIN_FIT_SAMPLES = 6
 HULL_MARGIN_M = 0.02
 MAX_LOO_ERROR_M = 0.02
 MAX_Z_ERROR_M = 0.01
+# Reported TCP to the centre of an object held at the fingertips, along the tool axis (AG95, 2026-11-13).
+TOOL_OFFSET_M = 0.233
 ROT_SPREAD_WARN_DEG = 10.0
 
 
@@ -418,6 +430,74 @@ def fit_table_map(
     )
 
 
+def table_map_from_handeye(
+    handeye: HandEye,
+    samples: list[Sample],
+    *,
+    camera: str = "jev",
+    tool_offset_m: float = TOOL_OFFSET_M,
+    margin_m: float = HULL_MARGIN_M,
+    grid: int = 9,
+) -> TableMap:
+    """Map computed from the camera pose: pixel ray, object plane, then back along the tool to the TCP.
+
+    The samples are grasps of the object on the table. They give the grasp orientation
+    (mean), the TCP height (plane through the grasps), the height of the object centre
+    (``tool_offset_m`` along each grasp's tool axis), the calibrated area and the IK seeds.
+
+    Raises:
+        ValueError: Fewer than three samples.
+    """
+    if len(samples) < 3:
+        raise ValueError(f"{len(samples)} samples; the grasp plane needs at least 3")
+    xyz = np.array([s.xyz for s in samples], dtype=float)
+    rotations = Rotation.from_rotvec(np.array([s.rotvec for s in samples], dtype=float))
+    mean = rotations.mean()
+    tool = np.array([0.0, 0.0, tool_offset_m])
+    object_z = float(np.mean(xyz[:, 2] + rotations.apply(tool)[:, 2]))
+    tool_xy = mean.apply(tool)[:2]
+    width, height = handeye.intrinsics.width, handeye.intrinsics.height
+    fractions = np.array([[u, v] for u in np.linspace(0.02, 0.98, grid) for v in np.linspace(0.02, 0.98, grid)])
+    src, dst = [], []
+    for u, v in fractions:
+        hit = handeye.pixel_to_plane(u * width, v * height, object_z)
+        if hit is not None:
+            src.append((u, v))
+            dst.append(hit[:2] - tool_xy)
+    src_a, dst_a = np.asarray(src), np.asarray(dst)
+    homography = fit_homography(src_a, dst_a)
+    exact = float(np.max(np.linalg.norm(apply_homography(homography, src_a) - dst_a, axis=1)))
+    xy = xyz[:, :2]
+    plane, *_ = np.linalg.lstsq(_homogeneous(xy), xyz[:, 2], rcond=None)
+    z_err = np.abs(_homogeneous(xy) @ plane - xyz[:, 2])
+    rot_spread = float(np.max(cast(Rotation, mean.inv() * rotations).magnitude()))
+    stats = {
+        "fitted": datetime.now().isoformat(timespec="seconds"),
+        "source": "handeye",
+        "n": len(samples),
+        # Same key as a fitted map, so describe and run report it: the hand-eye error at the marker.
+        "loo_max_m": handeye.stats["loo_max_mm"] / 1000.0,
+        "tool_offset_m": tool_offset_m,
+        "object_z_m": object_z,
+        "homography_max_error_m": exact,
+        "z_max_error_m": float(np.max(z_err)),
+        "rot_spread_deg": math.degrees(rot_spread),
+        "handeye": {k: handeye.stats[k] for k in ("fitted", "n_samples", "loo_rms_mm", "loo_max_mm", "camera_xyz_m")},
+    }
+    return TableMap(
+        camera=camera,
+        serial=handeye.camera_serial,
+        homography=homography,
+        plane=np.asarray(plane, dtype=float),
+        rotvec=mean.as_rotvec(),
+        hull=convex_hull(xy),
+        seeds_xy=xy,
+        seeds_q=np.array([s.joint_q for s in samples], dtype=float),
+        margin_m=margin_m,
+        stats=stats,
+    )
+
+
 def map_problems(table: TableMap, *, max_error_m: float = MAX_LOO_ERROR_M, max_z_error_m: float = MAX_Z_ERROR_M) -> list[str]:
     """Reasons to refuse a fitted map. Empty when it may be written."""
     problems = []
@@ -435,7 +515,7 @@ def map_problems(table: TableMap, *, max_error_m: float = MAX_LOO_ERROR_M, max_z
 class Args:
     """Label the table samples with Jev, or fit the image-to-table map."""
 
-    command: Literal["label", "fit"] = "fit"
+    command: Literal["label", "fit", "handeye"] = "fit"
     root: Path | None = None
     """Sample folder. Unset: experiments/graph/calibration/table."""
     camera: Literal["jev", "overview"] = "jev"
@@ -451,6 +531,8 @@ class Args:
     """``fit`` refuses the map when a grasp height leaves the fitted plane by more."""
     margin_m: float = HULL_MARGIN_M
     """How far outside the calibrated area a target is still trusted."""
+    tool_offset_m: float = TOOL_OFFSET_M
+    """``handeye``: reported TCP to the centre of the grasped object, along the tool axis."""
     jev: JevCfg = field(default_factory=JevCfg)
 
 
@@ -473,6 +555,28 @@ def main(args: Args) -> Path:
                 f"conf={label['confidence']:.2f}  spread={label['spread']:.4f}  {'ok' if label['ok'] else 'SKIP'}"
             )
         return labels_path(root, args.camera)
+    if args.command == "handeye":
+        from .handeye import load_handeye, result_path
+
+        if args.camera != "jev":
+            raise SystemExit("handeye: only the Jev camera has a hand-eye calibration")
+        table = table_map_from_handeye(
+            load_handeye(result_path()),
+            load_samples(root),
+            camera=args.camera,
+            tool_offset_m=args.tool_offset_m,
+            margin_m=args.margin_m,
+        )
+        s = table.stats
+        print(
+            f"n={s['n']}  object z {s['object_z_m'] * 1000:.0f} mm  grasp plane max {s['z_max_error_m'] * 1000:.0f} mm  "
+            f"orientation spread {s['rot_spread_deg']:.1f} deg  "
+            f"homography exact to {s['homography_max_error_m'] * 1e6:.1f} um  hand-eye loo {s['handeye']['loo_rms_mm']:.1f} mm"
+        )
+        path = root / TABLE_MAP_NAME
+        table.save(path)
+        print(f"wrote {path}")
+        return path
     labels_file = labels_path(root, args.camera)
     if not labels_file.is_file():
         raise SystemExit(f"{labels_file} is missing; run label first")
