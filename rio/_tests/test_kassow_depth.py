@@ -195,3 +195,17 @@ def test_top_face_of_a_disc_has_no_yaw():
     image = paint(he, [{"x": -0.50, "y": 0.69, "h": 0.05, "r": 0.025, "round": True}])
     face = top_face_yaw(image, box_of(he, np.zeros((480, 640)), -0.50, 0.69, 0.03), he, TABLE_Z + 0.05)
     assert face is not None and face["yaw_deg"] is None
+
+
+def test_extend_area_tour_and_table_check():
+    from rio.apps.kassow.graph.extend_area import _check, _tour
+
+    points = [{"x": -0.5, "y": 0.5}, {"x": -0.21, "y": 0.35}, {"x": -0.3, "y": 0.4}]
+    assert [p["x"] for p in _tour(points, start=(-0.2, 0.342))] == [-0.21, -0.3, -0.5]
+    flat = np.zeros((100, 100))
+    assert _check(flat, 50, 50, 10, 0.0, 0.008)["status"] == "ok"
+    bump = flat.copy()
+    bump[45:55, 58:62] = 0.03
+    assert _check(bump, 50, 50, 10, 0.0, 0.008)["status"] == "obstacle"
+    low = flat - 0.02
+    assert _check(low, 50, 50, 10, 0.0, 0.008)["status"] == "not_table"

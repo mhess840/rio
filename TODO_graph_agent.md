@@ -102,8 +102,12 @@ andere Applikateure Aufgaben automatisieren.
 - [x] Bezugswinkel bestätigt (16.11., Lauf `20261116_145310`): Würfel bei 90° ≡ 0°, Handgelenk −31,1°, Bediener sah
   flache Anlage an zwei Flächen
 - [ ] Abstellen mit gedrehtem Handgelenk (`place_at` behält die Drehung) für eine Zielorientierung beim Ablegen
-- [ ] Kalibrierten Greifbereich erweitern: er deckt nur das untere Bilddrittel um den Teller ab
-  (`calibration/table/calibrated_area.jpg`); zwei Läufe endeten deshalb korrekt mit `nothing_to_do`
+- [ ] Kalibrierten Greifbereich erweitern (`graph/extend_area.py`): er deckt nur das untere Bilddrittel um den Teller
+  ab (`calibration/table/calibrated_area.jpg`); zwei Läufe endeten deshalb korrekt mit `nothing_to_do`
+  - [x] `plan` (16.11.): 32 neue Punkte (Tiefe: freier, ebener Tisch relativ zur gefitteten Tiefenebene; IK bei
+    15 cm, Greifhöhe, ±45°) → 0,075 → 0,172 m². Obere Bildhälfte mit dieser Greiforientierung nicht erreichbar
+  - [ ] `survey` (Arm fährt die Punkte 8 cm über Greifhöhe ab), dann `write`, dann Greiftest am Rand
+  - [ ] 12 Punkte nur ohne volle ±45° erreichbar: ortsabhängige Drehgrenze für `align_yaw` (Würfel: t, t±90 wählen)
 
 ## N. Tempo (Messung 16.11., `cube_to_plate`, ohne Planung, `--no-confirm`)
 
