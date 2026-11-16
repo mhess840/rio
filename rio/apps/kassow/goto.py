@@ -221,7 +221,7 @@ def move_tcp(
     *,
     home_joint_speed: float,
     seed_q: np.ndarray | None = None,
-    max_travel_rad: float | None = None,
+    max_travel_rad: float | np.ndarray | None = None,
     keep_out: list[tuple[np.ndarray, float]] | None = None,
 ) -> MoveStatus:
     """``moveJ`` so that the measured TCP lands on ``xyz`` with orientation ``rotvec``.
@@ -275,9 +275,19 @@ def move_tcp(
     if lower is not None and upper is not None and (np.any(q_goal < lower) or np.any(q_goal > upper)):
         logger.error("IK answer for {} leaves the joint limits", np.round(xyz, 3).tolist())
         return MoveStatus.MISSED
-    travel = float(np.max(np.abs(q_goal - q)))
-    if travel > (MAX_JOINT_TRAVEL_RAD if max_travel_rad is None else max_travel_rad):
-        logger.error("IK answer for {} turns a joint by {:.0f} deg", np.round(xyz, 3).tolist(), np.degrees(travel))
+    turns = np.abs(q_goal - q)
+    limit = np.broadcast_to(
+        np.asarray(MAX_JOINT_TRAVEL_RAD if max_travel_rad is None else max_travel_rad, dtype=float), turns.shape
+    )
+    if np.any(turns > limit):
+        joint = int(np.argmax(turns - limit))
+        logger.error(
+            "IK answer for {} turns joint {} by {:.0f} deg (limit {:.0f})",
+            np.round(xyz, 3).tolist(),
+            joint + 1,
+            np.degrees(turns[joint]),
+            np.degrees(limit[joint]),
+        )
         return MoveStatus.MISSED
     if keep_out:
         clash = path_clearance_problem(kin, q, q_goal, keep_out)

@@ -33,8 +33,9 @@ _ORGANIZE = "organize"
 # Gripper feedback arrives at about 2 Hz, so wait for at least one fresh reading.
 GRIPPER_SETTLE_S = 1.5
 LIFT_M = 0.10
-TARGET_MAX_TRAVEL_RAD = np.radians(100.0)
-"""Target moves (grasp, place, look) turn no joint further than this in one moveJ (2026-11-16: a 178 deg wrist flip)."""
+TARGET_MAX_TRAVEL_RAD = np.radians([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 135.0])
+"""Per-joint limit of one target moveJ (grasp, place, look). On 2026-11-16 the last joint flipped by 178 deg;
+the wrist (joint 7) may still turn up to 135 deg, e.g. from the park pose to a turned grasp."""
 CAMERA_CLEARANCE_M = 0.28
 """The arm's centre line stays this far from the Jev camera on a target move. On 2026-11-16 the arm touched
 the camera with its centre line 190 mm away (link thickness, camera housing and mount)."""
