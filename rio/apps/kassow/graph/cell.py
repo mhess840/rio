@@ -152,12 +152,12 @@ def cell_tools(
     def pick_at(target: Target, approach_m: float = APPROACH_M, z_offset_m: float = 0.0, align_yaw: bool = False) -> dict:
         turn = 0.0
         if align_yaw and target.yaw_deg is not None:
-            from .table_map import load_jaw_yaw, wrist_turn_deg
+            from .table_map import load_jaw_closing, load_jaw_yaw, wrist_turn_deg
 
             reference = (jaw_yaw or load_jaw_yaw)()
             if reference is None:
                 raise RuntimeError("align_yaw needs the jaw reference (depth_check --jaw-reference after one mean grasp)")
-            turn = wrist_turn_deg(target.yaw_deg, target.yaw_period_deg, reference)
+            turn = wrist_turn_deg(target.yaw_deg, target.yaw_period_deg, reference, load_jaw_closing())
         if turn:
             held = skills.pick_at(target, approach_m=approach_m, z_offset_m=z_offset_m, yaw_offset_deg=turn)
         else:
@@ -165,9 +165,36 @@ def cell_tools(
         _alarm(held)
         return {"exit": "held" if held is True else "missed", "wrist_turn_deg": round(turn, 1)}
 
-    def place_at(target: Target, approach_m: float = APPROACH_M, z_offset_m: float = PLACE_Z_OFFSET_M) -> dict:
-        _must(skills.place_at(target, approach_m=approach_m, z_offset_m=z_offset_m), f"place_at {target.name}")
-        return {}
+    def place_at(
+        target: Target,
+        approach_m: float = APPROACH_M,
+        z_offset_m: float = PLACE_Z_OFFSET_M,
+        align_to_deg: float | None = None,
+        outside_area: bool = False,
+    ) -> dict:
+        turn = 0.0
+        if align_to_deg is not None:
+            from .table_map import load_jaw_closing, load_jaw_yaw, wrist_turn_deg
+
+            reference = (jaw_yaw or load_jaw_yaw)()
+            turn = wrist_turn_deg(float(align_to_deg), 180.0, reference or 0.0, load_jaw_closing())
+        if turn or outside_area:
+            done = skills.place_at(
+                target, approach_m=approach_m, z_offset_m=z_offset_m, yaw_offset_deg=turn, outside_area=outside_area
+            )
+        else:
+            done = skills.place_at(target, approach_m=approach_m, z_offset_m=z_offset_m)
+        _must(done, f"place_at {target.name}")
+        return {"wrist_turn_deg": round(turn, 1)}
+
+    def point(x: float, y: float, name: str = "point") -> dict:
+        """A target at a table point the planner measured (object centre, base frame)."""
+        if table is None:
+            raise RuntimeError("table.point needs the table map")
+        from .table_map import Target
+
+        tcp = np.array([x, y]) - table.tool_xy()
+        return {"target": Target(name, float(tcp[0]), float(tcp[1]), 0.0, 0.0, 1.0)}
 
     def move_above(target: Target, height_m: float = HOVER_M) -> dict:
         _must(skills.move_above(target, height_m=height_m), f"move_above {target.name}")
@@ -284,6 +311,11 @@ def cell_tools(
                 measured = _measure(shot.depth_m, best.box, view, table, target, shot.jpeg)
                 if measured is not None and measured.get("yaw_deg") is not None:
                     target = replace(target, yaw_deg=measured["yaw_deg"], yaw_period_deg=measured["period_deg"])
+            else:
+                yaw, period, how = _image_yaw(shot.jpeg, best.box, view, TABLE_Z_M + height_m)
+                if yaw is not None:
+                    target = replace(target, yaw_deg=yaw, yaw_period_deg=period)
+                    measured = {"yaw_deg": round(yaw, 1), "period_deg": period, "yaw_source": how}
             w, h = best.size
             clipped = x1 <= CLIP_PX or y1 <= CLIP_PX or x2 >= w - 1 - CLIP_PX or y2 >= h - 1 - CLIP_PX
             seen = {
@@ -448,7 +480,17 @@ def cell_tools(
                     "target": target_param,
                     "approach_m": approach,
                     "z_offset_m": Param("float", False, f"height of what it is set on, {list(PLACE_Z_OFFSET_M_RANGE)}"),
+                    "align_to_deg": Param(
+                        "float",
+                        False,
+                        "base-frame yaw the held object's long axis should have (e.g. along a crate slot); "
+                        "the wrist turns, the jaws close across it",
+                    ),
+                    "outside_area": Param(
+                        "bool", False, "allow a target outside the calibrated grasp area (a measured compartment)"
+                    ),
                 },
+                outputs={"wrist_turn_deg": "float"},
                 tags=(MOTION,),
                 check=_ranges({"approach_m": APPROACH_M_RANGE, "z_offset_m": PLACE_Z_OFFSET_M_RANGE}),
             ),
@@ -535,6 +577,17 @@ def cell_tools(
                 exits=("found", "not_found", "outside_area"),
                 tags=(PERCEPTION,),
                 check=_check_sam,
+            ),
+            Tool(
+                "table.point",
+                point,
+                "a target at a table point measured while planning (object centre, base frame), e.g. a crate compartment",
+                inputs={
+                    "x": Param("float", doc="object centre x (base frame, m)"),
+                    "y": Param("float", doc="object centre y"),
+                    "name": Param("str", False, "label"),
+                },
+                outputs={"target": TARGET},
             ),
             Tool(
                 "kassow.search",
@@ -713,6 +766,20 @@ def _measure(
         yaw = face["yaw_deg"]
         out |= {"yaw_deg": None if yaw is None else round(yaw, 2), "period_deg": face["period_deg"], "yaw_source": "colour"}
     return out
+
+
+def _image_yaw(jpeg: bytes, box: tuple, view: HandEye, top_z: float) -> tuple[float | None, float, str]:
+    """Yaw from a photo without depth: colour top face first (cube), else the longest straight edges (dark box)."""
+    from .depth import edge_long_axis_yaw, top_face_yaw
+
+    image = _decode(jpeg)
+    if image is None:
+        return None, 180.0, ""
+    face = top_face_yaw(image, box, view, top_z)
+    if face is not None and face["yaw_deg"] is not None:
+        return float(face["yaw_deg"]), float(face["period_deg"]), "colour"
+    yaw = edge_long_axis_yaw(image, box, view, top_z)
+    return (yaw, 180.0, "edges") if yaw is not None else (None, 180.0, "")
 
 
 def _decode(jpeg: bytes | None) -> np.ndarray | None:

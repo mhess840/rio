@@ -135,7 +135,7 @@ class KassowSkills:
         return True
 
     def _table_point(
-        self, target: Target, height_m: float, bounds: tuple[float, float], skill: str
+        self, target: Target, height_m: float, bounds: tuple[float, float], skill: str, outside_area: bool = False
     ) -> tuple[np.ndarray, TableMap] | None:
         """``target`` at the calibrated grasp height plus ``height_m``, or None when refused."""
         table = self.table
@@ -145,7 +145,7 @@ class KassowSkills:
         if not bounds[0] <= height_m <= bounds[1]:
             logger.error("{} height {} m is outside {}", skill, height_m, bounds)
             return None
-        if not table.contains(target.x, target.y):
+        if not outside_area and not table.contains(target.x, target.y):
             logger.error("{}: {} at x={:.3f} y={:.3f} is outside the calibrated area", skill, target.name, target.x, target.y)
             return None
         return np.array([target.x, target.y, table.z_at(target.x, target.y) + height_m]), table
@@ -229,9 +229,20 @@ class KassowSkills:
             return lifted
         return holding is True and gripper_is_holding(self.env, close=self.gripper_close)
 
-    def place_at(self, target: Target, *, approach_m: float, z_offset_m: float) -> Outcome:
+    def place_at(
+        self,
+        target: Target,
+        *,
+        approach_m: float,
+        z_offset_m: float,
+        yaw_offset_deg: float = 0.0,
+        outside_area: bool = False,
+    ) -> Outcome:
         """``moveJ`` above ``target``, descend to the grasp height plus ``z_offset_m``, open, and lift.
 
+        ``yaw_offset_deg`` turns the wrist about base z from the mean grasp (to set an object
+        down along a slot). ``outside_area`` allows targets beyond the calibrated grasp area
+        (e.g. a crate compartment the planner measured); the IK checks still apply.
         Refuses before moving when the gripper holds nothing.
         """
         from rio.apps.kassow.graph.model import APPROACH_M_RANGE, PLACE_Z_OFFSET_M_RANGE
@@ -239,13 +250,19 @@ class KassowSkills:
         if not APPROACH_M_RANGE[0] <= approach_m <= APPROACH_M_RANGE[1]:
             logger.error("approach {} m is outside {}", approach_m, APPROACH_M_RANGE)
             return False
-        found = self._table_point(target, z_offset_m, PLACE_Z_OFFSET_M_RANGE, "place_at")
+        found = self._table_point(target, z_offset_m, PLACE_Z_OFFSET_M_RANGE, "place_at", outside_area)
         if found is None:
             return False
         if not gripper_is_holding(self.env, close=self.gripper_close):
             logger.error("place_at: the gripper holds nothing")
             return False
-        reached = self._down_and_up(*found, approach_m)
+        point, table = found
+        rotvec = None
+        if yaw_offset_deg:
+            x, y, rotvec = table.grasp_pose(target.x, target.y, yaw_offset_deg)
+            point = np.array([x, y, table.z_at(x, y) + z_offset_m])
+            logger.info("place_at {}: wrist turned {:+.1f} deg, TCP x={:.3f} y={:.3f}", target.name, yaw_offset_deg, x, y)
+        reached = self._down_and_up(point, table, approach_m, rotvec)
         if reached is not True:
             return reached
         if not self.place():
@@ -276,7 +293,17 @@ class DrySkills:
         term(f"[dry run] would pick {target.name} at x={target.x:.3f} y={target.y:.3f} (approach {approach_m:.2f} m{turn})")
         return True
 
-    def place_at(self, target: Target, *, approach_m: float, z_offset_m: float) -> Outcome:
+    def place_at(
+        self,
+        target: Target,
+        *,
+        approach_m: float,
+        z_offset_m: float,
+        yaw_offset_deg: float = 0.0,
+        outside_area: bool = False,
+    ) -> Outcome:
+        if yaw_offset_deg:
+            term(f"[dry run] wrist turned {yaw_offset_deg:+.1f} deg for placing")
         term(f"[dry run] would place at {target.name} x={target.x:.3f} y={target.y:.3f} (+{z_offset_m:.2f} m)")
         return True
 

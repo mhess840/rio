@@ -209,6 +209,42 @@ def top_face_yaw(
     }
 
 
+def edge_long_axis_yaw(image_bgr: np.ndarray, box: tuple[float, float, float, float], view: HandEye, z: float) -> float | None:
+    """Base-frame yaw (mod 180) of the longest straight edges inside a box, e.g. a dark box seen from above.
+
+    For objects whose colour does not stand out (a brown box on the dark table): Canny
+    edges, the longest Hough segments (at least 40 % of the box size), their
+    length-weighted mean direction, and two points along it projected onto ``z``.
+    Returns None when there are no long straight edges.
+    """
+    x1, y1, x2, y2 = (round(v) for v in box)
+    grey = cv2.GaussianBlur(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+    edges = cv2.Canny(grey, 40, 120)
+    mask = np.zeros_like(edges)
+    mask[max(0, y1) : y2, max(0, x1) : x2] = 1
+    span = max(x2 - x1, y2 - y1)
+    found = cv2.HoughLinesP(edges * mask, 1, np.pi / 360, 60, minLineLength=int(0.4 * span), maxLineGap=12)
+    if found is None:
+        return None
+    segments = sorted(
+        (tuple(int(v) for v in s.reshape(-1)[:4]) for s in found), key=lambda s: -math.hypot(s[2] - s[0], s[3] - s[1])
+    )[:6]
+    # mean of doubled angles: a direction mod 180 without wrap-around trouble
+    weights = [math.hypot(c - a, d - b) for a, b, c, d in segments]
+    doubled = [2.0 * math.atan2(d - b, c - a) for a, b, c, d in segments]
+    angle = 0.5 * math.atan2(
+        sum(w * math.sin(t) for w, t in zip(weights, doubled, strict=True)),
+        sum(w * math.cos(t) for w, t in zip(weights, doubled, strict=True)),
+    )
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    step = 0.25 * span
+    a = view.pixel_to_plane(cx - step * math.cos(angle), cy - step * math.sin(angle), z)
+    b = view.pixel_to_plane(cx + step * math.cos(angle), cy + step * math.sin(angle), z)
+    if a is None or b is None:
+        return None
+    return math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) % 180.0
+
+
 def fit_table_plane(depth_m: np.ndarray, handeye: HandEye, *, stride: int = 4, rounds: int = 4) -> dict:
     """Plane ``z = a x + b y + c`` through the table seen by the camera, robust to objects on it.
 

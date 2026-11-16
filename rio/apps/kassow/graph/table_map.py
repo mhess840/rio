@@ -87,30 +87,56 @@ def load_jaw_yaw(path: Path | None = None) -> float | None:
     return float(json.loads(file.read_text())["jaw_yaw_deg"])
 
 
+def load_jaw_closing(path: Path | None = None) -> float | None:
+    """Direction (deg, mod 180) in which the jaws close in the mean grasp; None before it was set."""
+    file = path or jaw_yaw_path()
+    if not file.is_file():
+        return None
+    value = json.loads(file.read_text()).get("closing_deg")
+    return None if value is None else float(value)
+
+
+def save_jaw_closing(closing_deg: float, source: str, path: Path | None = None) -> Path:
+    """Add the jaws' closing direction to the jaw reference file (keeps the face reference)."""
+    file = path or jaw_yaw_path()
+    data = json.loads(file.read_text()) if file.is_file() else {}
+    data |= {"closing_deg": round(closing_deg % 180.0, 2), "closing_source": source}
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(json.dumps(data, indent=2) + "\n")
+    return file
+
+
 def save_jaw_yaw(yaw_deg: float, source: str, path: Path | None = None) -> Path:
     """Store the jaw reference measured on a cube that the mean grasp just set down."""
     file = path or jaw_yaw_path()
     file.parent.mkdir(parents=True, exist_ok=True)
+    previous = json.loads(file.read_text()) if file.is_file() else {}
     payload = {
         "jaw_yaw_deg": round(yaw_deg % 90.0, 2),
         "measured": datetime.now().isoformat(timespec="seconds"),
         "source": source,
+        **{k: v for k, v in previous.items() if k.startswith("closing")},
     }
     file.write_text(json.dumps(payload, indent=2) + "\n")
     return file
 
 
-def wrist_turn_deg(object_yaw_deg: float, period_deg: float, jaw_yaw_deg: float) -> float:
+def wrist_turn_deg(object_yaw_deg: float, period_deg: float, jaw_yaw_deg: float, closing_deg: float | None = None) -> float:
     """Smallest wrist turn that squares the jaws to an object with this yaw and symmetry.
 
+    Square objects (period 90): faces parallel to the jaw faces, at most 45 deg. Elongated
+    objects (period 180, ``object_yaw_deg`` is the long axis): the jaws close across the
+    long axis, at most 90 deg; this needs ``closing_deg``.
+
     Raises:
-        ValueError: The object is not square (period 180): which side the jaws must
-            close on is not calibrated yet.
+        ValueError: An elongated object without a calibrated closing direction.
     """
-    if period_deg != 90.0:
-        raise ValueError("align_yaw supports square objects only; the jaws' closing direction is not calibrated")
-    turn = (object_yaw_deg - jaw_yaw_deg + 45.0) % 90.0 - 45.0
-    return max(-MAX_WRIST_TURN_DEG, min(MAX_WRIST_TURN_DEG, turn))
+    if period_deg == 90.0:
+        turn = (object_yaw_deg - jaw_yaw_deg + 45.0) % 90.0 - 45.0
+        return max(-MAX_WRIST_TURN_DEG, min(MAX_WRIST_TURN_DEG, turn))
+    if closing_deg is None:
+        raise ValueError("the jaws' closing direction is not calibrated (save_jaw_closing)")
+    return (object_yaw_deg + 90.0 - closing_deg + 90.0) % 180.0 - 90.0
 
 
 def labels_path(root: Path, camera: str) -> Path:

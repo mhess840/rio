@@ -27,6 +27,7 @@ class Arm:
     def __init__(self, **results) -> None:
         self.calls: list[str] = []
         self.turns: list[float] = []
+        self.place_turns: list[tuple[float, bool]] = []
         self.results = results
 
     def _do(self, name: str):
@@ -52,7 +53,8 @@ class Arm:
         self.turns.append(yaw_offset_deg)
         return self._do("pick_at")
 
-    def place_at(self, target, *, approach_m, z_offset_m):
+    def place_at(self, target, *, approach_m, z_offset_m, yaw_offset_deg=0.0, outside_area=False):
+        self.place_turns.append((yaw_offset_deg, outside_area))
         return self._do("place_at")
 
     def move_above(self, target, *, height_m):
@@ -261,7 +263,7 @@ def test_pick_at_align_yaw_turns_the_wrist_the_short_way():
     assert pick(target=round_one, align_yaw=True)["wrist_turn_deg"] == 0.0
     assert arm.turns == [-30.0, 0.0, 0.0]
     bar = Target("bar", -0.4, 0.6, 0.1, 0.03, 0.9, yaw_deg=20.0, yaw_period_deg=180.0)
-    with pytest.raises(ValueError, match="square objects only"):
+    with pytest.raises(ValueError, match="closing direction"):
         pick(target=bar, align_yaw=True)
     with pytest.raises(RuntimeError, match="jaw reference"):
         tools(jaw_yaw=lambda: None).get("kassow.pick_at").fn(target=cube, align_yaw=True)
@@ -364,3 +366,45 @@ def test_search_walks_views_until_the_wrist_camera_sees_the_object():
     missing = tools(Arm(), segment=lambda j, p: SamReply([], "", 0.0), views={"wrist": photo}, wrist=wrist)
     arm.tcp = np.r_[0.0, 0.0, 0.5, 0.0, 0.0, 0.0]
     assert missing.get("kassow.search").fn(prompts=["box"], x=-0.45, y=0.55, max_views=3)["exit"] == "not_found"
+
+
+def test_elongated_objects_are_grasped_and_placed_across_their_long_axis(monkeypatch):
+    from rio.apps.kassow.graph.table_map import Target
+
+    monkeypatch.setattr("rio.apps.kassow.graph.table_map.load_jaw_closing", lambda path=None: 30.0)
+    arm = Arm()
+    registry = tools(arm, jaw_yaw=lambda: 30.0)
+    bar = Target("bar", -0.4, 0.6, 0.15, 0.045, 0.9, yaw_deg=20.0, yaw_period_deg=180.0)
+    out = registry.get("kassow.pick_at").fn(target=bar, align_yaw=True)
+    assert out["wrist_turn_deg"] == pytest.approx(80.0)  # closing axis 30 -> 110, across the long axis 20
+    slot = registry.get("table.point").fn(x=-0.37, y=0.76, name="slot")["target"]
+    placed = registry.get("kassow.place_at").fn(target=slot, align_to_deg=31.0, outside_area=True)
+    assert placed["wrist_turn_deg"] == pytest.approx(-89.0)  # closing axis 30 -> 121, across the slot axis 31
+    assert arm.place_turns[-1] == (pytest.approx(-89.0), True)
+
+
+def test_edge_yaw_of_a_dark_box_from_above():
+    import cv2
+
+    from rio._tests.test_kassow_depth import camera
+    from rio.apps.kassow.graph.depth import edge_long_axis_yaw
+
+    he = camera()
+    image = np.full((480, 640, 3), 70, np.uint8)
+    inv = np.linalg.inv(he.transform)
+    intr = he.intrinsics
+
+    def px(x, y, z=0.1):
+        c = inv @ np.array([x, y, z, 1.0])
+        return [intr.fx * c[0] / c[2] + intr.cx, intr.fy * c[1] / c[2] + intr.cy]
+
+    yaw = np.radians(35.0)
+    a, n = np.array([np.cos(yaw), np.sin(yaw)]), np.array([-np.sin(yaw), np.cos(yaw)])
+    centre = np.array([-0.42, 0.60])
+    corners = [centre + sa * 0.08 * a + sn * 0.025 * n for sa, sn in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+    poly = np.int32([px(*c) for c in corners])
+    cv2.fillPoly(image, [poly], (15, 10, 35))  # dark box on the grey table, as on the cell
+    x1, y1 = poly.min(axis=0) - 10
+    x2, y2 = poly.max(axis=0) + 10
+    got = edge_long_axis_yaw(image, (x1, y1, x2, y2), he, 0.1)
+    assert got is not None and min(abs(got - 35.0), 180 - abs(got - 35.0)) < 3.0
