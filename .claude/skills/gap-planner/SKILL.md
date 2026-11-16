@@ -11,7 +11,9 @@ and run it on the arm with the operator's approval. The graph is the policy:
 it is the artifact that gets compared, improved and shown. The format and
 roles follow GaP (Goldberg et al., arXiv 2607.05369) — see `TODO_graph_agent.md`.
 
-Answer in the user's language. All commands run from the repository root with
+Answer in the user's language, but write everything the live view shows
+(`plan.jsonl`, `workflow.json` descriptions, `report.md`) in English: the
+audience is international. All commands run from the repository root with
 `uv run`; the entry point is `uv run python -m rio.apps.kassow.graph --command <cmd>`.
 
 ## Modes

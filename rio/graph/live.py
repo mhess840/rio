@@ -10,7 +10,7 @@ files and pushes every new line to the browser as Server-Sent Events, so it
 never slows the arm, and a past run replays the same way.
 
     uv run python -m rio.graph.live --root experiments/graph
-    # then open http://127.0.0.1:8766  (?plan=<task>&run=<folder> pins a plan or run)
+    # then open http://127.0.0.1:8766  (?plan=<task>&run=<folder> pins a plan or run, ?lang=de German)
 
 Standard library only and no CDN: the page works offline at the cell.
 """

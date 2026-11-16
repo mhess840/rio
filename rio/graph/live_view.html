@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -57,13 +57,13 @@
   #cam { flex: 1; display: flex; flex-direction: column; padding: 10px 14px; gap: 8px; min-height: 0; }
   #photo { position: relative; flex: 1; min-height: 0; background: #0a0f1a; border-radius: 8px; overflow: hidden;
     display: flex; align-items: center; justify-content: center; color: var(--dim); }
-  #photo img { max-width: 100%; max-height: 100%; display: block; }
-  #photo .frame { position: relative; display: inline-block; max-height: 100%; }
-  #photo .box { position: absolute; border: 3px solid var(--ok); border-radius: 4px; box-shadow: 0 0 0 2px rgba(0,0,0,.5); }
-  #photo .box.bad { border-color: var(--bad); }
-  #photo .box span { position: absolute; left: -3px; top: -28px; background: var(--ok); color: #04130c;
-    font-size: 14px; font-weight: 700; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
-  #photo .box.bad span { background: var(--bad); color: #fff; }
+  #photo svg { width: 100%; height: 100%; display: block; }
+  #photo .pbox { fill: none; stroke: var(--ok); stroke-width: 4; }
+  #photo .pbox.bad { stroke: var(--bad); }
+  #photo .plabel { fill: var(--ok); }
+  #photo .plabel.bad { fill: var(--bad); }
+  #photo .ptext { fill: #04130c; font-size: 20px; font-weight: 700; }
+  #photo .ptext.bad { fill: #fff; }
   #camtext { font-size: 17px; }
   #log { overflow-y: auto; padding: 8px 14px; font-size: 16px; flex: 1; }
   #log div { padding: 3px 0; border-bottom: 1px solid #1f2942; }
@@ -148,7 +148,7 @@ const T = {
         found: "found", latest: "latest run" },
 };
 const params = new URLSearchParams(location.search);
-let lang = params.get("lang") || "de";
+let lang = params.get("lang") || "en";  // the audience is international; ?lang=de for German
 const S = {
   view: params.get("view") || "auto",
   plan: { name: null, events: [], workflow: null, last: 0 },
@@ -429,17 +429,24 @@ function renderCamera() {
   const out = c.e.outputs || {}; const inp = (c.start && c.start.inputs) || {};
   const what = out.prompt || inp.object || (inp.question && inp.question.instructions) || (inp.prompts || []).join(" / ") || c.e.node;
   const bad = out.exit && out.exit !== "found" && out.exit !== "yes";
-  let boxHtml = "";
+  // Photo and box in one SVG in image pixels: it scales as a whole, so the box stays on the object.
+  const W = 640, H = 480;
+  let boxSvg = "";
   if (out.box) {
-    const b = out.box;
-    boxHtml = `<div class="box${bad ? " bad" : ""}" style="left:${b.left * 100}%;top:${b.top * 100}%;width:${(b.right - b.left) * 100}%;height:${(b.bottom - b.top) * 100}%"><span>${esc(short(what, 28))} ${Number(out.confidence ?? 0).toFixed(2)}</span></div>`;
+    const b = out.box; const x = b.left * W, y = b.top * H, w = (b.right - b.left) * W, h = (b.bottom - b.top) * H;
+    const label = `${short(what, 28)} ${Number(out.confidence ?? 0).toFixed(2)}`;
+    const ly = y > 34 ? y - 30 : y + h + 4; const lw = 12 * label.length + 12;
+    boxSvg = `<rect class="pbox${bad ? " bad" : ""}" x="${x}" y="${y}" width="${w}" height="${h}" rx="4"/>` +
+      `<rect class="plabel${bad ? " bad" : ""}" x="${x - 2}" y="${ly}" width="${lw}" height="28" rx="4"/>` +
+      `<text class="ptext${bad ? " bad" : ""}" x="${x + 4}" y="${ly + 21}">${esc(label)}</text>`;
   }
   const key = (c.photo || "dry") + JSON.stringify(out.box || {});
   if (ph.dataset.key !== key) {
     ph.dataset.key = key;
-    ph.innerHTML = c.photo
-      ? `<div class="frame"><img src="/file/${encodeURI(c.photo)}" alt="">${boxHtml}</div>`
-      : `<div class="frame" style="width:min(100%,520px);aspect-ratio:4/3;background:#141b2b;border-radius:6px"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">${esc(t("nophoto"))}</div>${boxHtml}</div>`;
+    const backdrop = c.photo
+      ? `<image href="/file/${encodeURI(c.photo)}" x="0" y="0" width="${W}" height="${H}"/>`
+      : `<rect width="${W}" height="${H}" fill="#141b2b"/><text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="#8d9bb8" font-size="26">${esc(t("nophoto"))}</text>`;
+    ph.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${backdrop}${boxSvg}</svg>`;
   }
   const tg = out.target;
   tx.innerHTML = `<b>${esc(c.e.node)}</b> · ${esc(what)} → <b style="color:${bad ? "var(--bad)" : "var(--ok)"}">${esc(out.exit || "")}</b>` +

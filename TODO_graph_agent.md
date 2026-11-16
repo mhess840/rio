@@ -225,10 +225,10 @@ baut und wie die Zelle ihn abläuft, verständlich auch für Zuschauer ohne Robo
 - [ ] **Checkpoints und Kennzahlen:** Ergebnis jeder Nachbedingung, Erfolgsrate aus dem Benchmark (Phase I)
 - [ ] **Vergleichsansicht:** autonom vs. kollaborativ vs. Handgraph nebeneinander (Phase J);
   Self-Learning-Iterationen als Diff zwischen Graph-Versionen (Phase H)
-- [x] Demo-tauglich: Vollbild, großer Text, Deutsch/Englisch umschaltbar, läuft ohne Internet
+- [x] Demo-tauglich: Vollbild, großer Text, Englisch als Standard (`?lang=de` Deutsch), läuft ohne Internet
   (keine CDN-Abhängigkeit an der Station)
 - [x] Start: `uv run python -m rio.apps.kassow.graph --command view` → http://127.0.0.1:8766
-  (`?run=<ordner>`, `?plan=<task>`, `?lang=en`; `--view-host 0.0.0.0` für einen zweiten Bildschirm)
+  (`?run=<ordner>`, `?plan=<task>`, `?lang=de`; `--view-host 0.0.0.0` für einen zweiten Bildschirm)
 - [x] Export eines Laufs als eigenständige HTML-Datei: `uv run python -m rio.graph.live --root experiments/graph --export lauf.html`
 - [x] Erster Einsatz an der Zelle: Planung + Live-Lauf (16.11.)
 - [ ] Prüfen, ob GaPs Trace-Browser (`gap viz`, FastAPI + React) für die Nachbetrachtung reicht und

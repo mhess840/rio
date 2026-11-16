@@ -12,7 +12,9 @@ Everything about one task lives in `experiments/graph/plans/<task>/`:
 `plan.jsonl` is how the planning becomes visible (live view, Phase M) and how
 graphs from different modes are compared (Phase J). Append with one `printf`/
 `echo` per event, or write the whole line with your file tool; every line is
-one JSON object with `t` (ISO time) and `event`:
+one JSON object with `t` (ISO time) and `event`. Write all text fields
+(`goal`, `why`, `question`, `note`, `cause`, `change`) in English, whatever
+language the chat uses: the live view is shown to an international audience.
 
 | event | fields |
 |---|---|
