@@ -270,6 +270,17 @@ baut und wie die Zelle ihn abläuft, verständlich auch für Zuschauer ohne Robo
 - [ ] Prüfen, ob GaPs Trace-Browser (`gap viz`, FastAPI + React) für die Nachbetrachtung reicht und
   unsere GUI sich auf die Live-Ansicht beschränken kann
 
+## O. Kisten-Aufgabe, erster autonomer Versuch (16.11.): Schachtel ins obere linke Fach, ohne VLA
+
+Nicht versucht, keine Bewegung (`experiments/graph/plans/box_into_crate/report.md`). Fehlende Fähigkeiten:
+
+- [ ] Handgelenkkamera kalibrieren (Eye-in-Hand), damit der Arm Objekte außerhalb des Jev-Bilds finden kann
+  (die Kiste verdeckt den Bereich davor)
+- [ ] Reichweite: hinteres linkes Fach (x=−0,83) erlaubt TCP 0,30–0,45 m, eine hochkant gehaltene 15-cm-Schachtel
+  braucht ≈ 0,60 m über dem 21–27-cm-Rand → Kiste näher (x ≥ −0,65), vorderes Fach, oder VLA
+- [ ] Schließrichtung der Backen kalibrieren (längliche Objekte quer greifen; `align_yaw` lehnt sie bisher ab)
+- [ ] Fächer der Kiste als Ziele: Jev-Box „top-left compartment“ oder Geometrie aus der Tiefe
+
 ## K. Später: Harness für Applikateure
 
 - [ ] Aufteilung wie GaP (`gap-core` / `gap` / `open-robot-skills`): Kern (Format, Validator, Walker,
