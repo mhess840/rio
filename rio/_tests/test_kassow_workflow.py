@@ -25,6 +25,7 @@ class Arm:
 
     def __init__(self, **results) -> None:
         self.calls: list[str] = []
+        self.turns: list[float] = []
         self.results = results
 
     def _do(self, name: str):
@@ -46,7 +47,8 @@ class Arm:
     def gripper(self, state):
         return self._do(f"gripper {state}")
 
-    def pick_at(self, target, *, approach_m, z_offset_m):
+    def pick_at(self, target, *, approach_m, z_offset_m, yaw_offset_deg=0.0):
+        self.turns.append(yaw_offset_deg)
         return self._do("pick_at")
 
     def place_at(self, target, *, approach_m, z_offset_m):
@@ -240,3 +242,40 @@ def test_sam_prompts_are_checked():
     assert check({"prompts": []})
     assert any("one noun phrase" in p for p in check({"prompts": ["cube and plate"]}))
     assert any("one noun phrase" in p for p in check({"prompts": ["cube, plate"]}))
+
+
+def test_pick_at_align_yaw_turns_the_wrist_the_short_way():
+    from rio.apps.kassow.graph.table_map import Target
+
+    arm = Arm()
+    pick = tools(arm, jaw_yaw=lambda: 10.0).get("kassow.pick_at").fn
+    cube = Target("cube", -0.4, 0.6, 0.037, 0.037, 0.9, yaw_deg=70.0, yaw_period_deg=90.0)
+    assert pick(target=cube, align_yaw=True)["wrist_turn_deg"] == -30.0
+    assert pick(target=cube)["wrist_turn_deg"] == 0.0
+    round_one = Target("cap", -0.4, 0.6, 0.05, 0.05, 0.9)
+    assert pick(target=round_one, align_yaw=True)["wrist_turn_deg"] == 0.0
+    assert arm.turns == [-30.0, 0.0, 0.0]
+    bar = Target("bar", -0.4, 0.6, 0.1, 0.03, 0.9, yaw_deg=20.0, yaw_period_deg=180.0)
+    with pytest.raises(ValueError, match="square objects only"):
+        pick(target=bar, align_yaw=True)
+    with pytest.raises(RuntimeError, match="jaw reference"):
+        tools(jaw_yaw=lambda: None).get("kassow.pick_at").fn(target=cube, align_yaw=True)
+
+
+def test_sam_locate_attaches_the_depth_yaw_to_the_target():
+    from rio._tests.test_kassow_depth import box_of, camera, render
+    from rio.apps.kassow.graph.cell import Shot
+
+    he = camera()
+    depth = render(he, [{"x": -0.40, "y": 0.60, "h": 0.037, "l": 0.037, "w": 0.037, "yaw": 25.0}])
+    box = box_of(he, depth, -0.40, 0.60, 0.03)
+
+    def segment(jpeg, prompt):
+        return SamReply([Instance(0, tuple(float(v) for v in box), (640, 480), 0.95)], "", 0.0)
+
+    registry = tools(photo=lambda node: Shot(b"jpeg", depth), segment=segment, handeye=he)
+    out = registry.get("sam.locate").fn(prompts=["red object"])
+    assert out["measured"]["period_deg"] == 90.0
+    yaw = out["target"].yaw_deg
+    assert yaw is not None and min(abs(yaw - 25.0), 90 - abs(yaw - 25.0)) < 3.0
+    assert out["target"].to_dict()["yaw_period_deg"] == 90.0

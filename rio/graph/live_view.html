@@ -407,7 +407,11 @@ function renderGraph() {
 function describeInputs(inputs) {
   if (!inputs) return "";
   const tg = inputs.target;
-  if (tg && typeof tg === "object") return `${tg.name || ""}  x=${Number(tg.x).toFixed(3)} y=${Number(tg.y).toFixed(3)}`;
+  if (tg && typeof tg === "object") {
+    const yaw = tg.yaw_deg != null ? ` yaw=${Number(tg.yaw_deg).toFixed(0)}°` : "";
+    const align = inputs.align_yaw ? " · align jaws" : "";
+    return `${tg.name || ""}  x=${Number(tg.x).toFixed(3)} y=${Number(tg.y).toFixed(3)}${yaw}${align}`;
+  }
   if (inputs.pose) return inputs.pose;
   if (inputs.experiment) return `${inputs.experiment} “${inputs.instruction || ""}”`;
   if (inputs.prompts) return inputs.prompts.join(" / ");

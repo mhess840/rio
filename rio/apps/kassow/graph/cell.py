@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -89,6 +89,7 @@ def cell_tools(
     photo: Photo | None = None,
     segment: Segment | None = None,
     handeye: HandEye | None = None,
+    jaw_yaw: Callable[[], float | None] | None = None,
     pose_exists: Callable[[str], bool] = pose_is_file,
 ) -> ToolRegistry:
     """Every tool of the cell, bound to live or dry-run parts.
@@ -102,6 +103,7 @@ def cell_tools(
         photo: Fresh Jev photo; ``sam.locate`` needs it.
         segment: SAM on one photo and one noun phrase; ``sam.locate`` needs it.
         handeye: Camera pose; with depth in the photo ``sam.locate`` measures height and yaw.
+        jaw_yaw: Jaw reference yaw for ``pick_at align_yaw`` (default: ``jaw_yaw.json`` next to the table map).
         pose_exists: Whether a home file exists (tests pass a stub).
     """
 
@@ -126,10 +128,21 @@ def cell_tools(
         _alarm(held)
         return {"exit": "held" if held is True else "empty"}
 
-    def pick_at(target: Target, approach_m: float = APPROACH_M, z_offset_m: float = 0.0) -> dict:
-        held = skills.pick_at(target, approach_m=approach_m, z_offset_m=z_offset_m)
+    def pick_at(target: Target, approach_m: float = APPROACH_M, z_offset_m: float = 0.0, align_yaw: bool = False) -> dict:
+        turn = 0.0
+        if align_yaw and target.yaw_deg is not None:
+            from .table_map import load_jaw_yaw, wrist_turn_deg
+
+            reference = (jaw_yaw or load_jaw_yaw)()
+            if reference is None:
+                raise RuntimeError("align_yaw needs the jaw reference (depth_check --jaw-reference after one mean grasp)")
+            turn = wrist_turn_deg(target.yaw_deg, target.yaw_period_deg, reference)
+        if turn:
+            held = skills.pick_at(target, approach_m=approach_m, z_offset_m=z_offset_m, yaw_offset_deg=turn)
+        else:
+            held = skills.pick_at(target, approach_m=approach_m, z_offset_m=z_offset_m)
         _alarm(held)
-        return {"exit": "held" if held is True else "missed"}
+        return {"exit": "held" if held is True else "missed", "wrist_turn_deg": round(turn, 1)}
 
     def place_at(target: Target, approach_m: float = APPROACH_M, z_offset_m: float = PLACE_Z_OFFSET_M) -> dict:
         _must(skills.place_at(target, approach_m=approach_m, z_offset_m=z_offset_m), f"place_at {target.name}")
@@ -182,6 +195,8 @@ def cell_tools(
                 measured = _measure(depth, best.box, handeye, table, target)
                 if use_depth and measured is not None:
                     target = _depth_target(measured, prompt, score)
+                if measured is not None and measured.get("yaw_deg") is not None:
+                    target = replace(target, yaw_deg=measured["yaw_deg"], yaw_period_deg=measured["period_deg"])
             seen = {
                 "measured": measured,
                 "source": "depth" if use_depth and measured is not None else "image",
@@ -255,8 +270,14 @@ def cell_tools(
                     "target": target_param,
                     "approach_m": approach,
                     "z_offset_m": Param("float", False, f"raise the grasp, {list(Z_OFFSET_M_RANGE)}"),
+                    "align_yaw": Param(
+                        "bool",
+                        False,
+                        "turn the wrist (at most 45 deg) to square the jaws to a square object's yaw from "
+                        "sam.locate depth; round objects grasp as usual; default false",
+                    ),
                 },
-                outputs={"exit": "str"},
+                outputs={"exit": "str", "wrist_turn_deg": "float"},
                 exits=("held", "missed"),
                 tags=(MOTION,),
                 check=_ranges({"approach_m": APPROACH_M_RANGE, "z_offset_m": Z_OFFSET_M_RANGE}),

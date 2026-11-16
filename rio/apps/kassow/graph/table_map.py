@@ -69,6 +69,50 @@ def table_map_path() -> Path:
     return calibration_dir() / TABLE_MAP_NAME
 
 
+JAW_YAW_NAME = "jaw_yaw.json"
+MAX_WRIST_TURN_DEG = 45.0
+"""``align_yaw`` turns the wrist at most this far (square objects: the shortest of four ways)."""
+
+
+def jaw_yaw_path() -> Path:
+    """Where the jaw reference yaw is kept, next to the table map."""
+    return calibration_dir() / JAW_YAW_NAME
+
+
+def load_jaw_yaw(path: Path | None = None) -> float | None:
+    """Yaw (deg, mod 90) of a cube's faces when the mean grasp holds it; None before it was measured."""
+    file = path or jaw_yaw_path()
+    if not file.is_file():
+        return None
+    return float(json.loads(file.read_text())["jaw_yaw_deg"])
+
+
+def save_jaw_yaw(yaw_deg: float, source: str, path: Path | None = None) -> Path:
+    """Store the jaw reference measured on a cube that the mean grasp just set down."""
+    file = path or jaw_yaw_path()
+    file.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "jaw_yaw_deg": round(yaw_deg % 90.0, 2),
+        "measured": datetime.now().isoformat(timespec="seconds"),
+        "source": source,
+    }
+    file.write_text(json.dumps(payload, indent=2) + "\n")
+    return file
+
+
+def wrist_turn_deg(object_yaw_deg: float, period_deg: float, jaw_yaw_deg: float) -> float:
+    """Smallest wrist turn that squares the jaws to an object with this yaw and symmetry.
+
+    Raises:
+        ValueError: The object is not square (period 180): which side the jaws must
+            close on is not calibrated yet.
+    """
+    if period_deg != 90.0:
+        raise ValueError("align_yaw supports square objects only; the jaws' closing direction is not calibrated")
+    turn = (object_yaw_deg - jaw_yaw_deg + 45.0) % 90.0 - 45.0
+    return max(-MAX_WRIST_TURN_DEG, min(MAX_WRIST_TURN_DEG, turn))
+
+
 def labels_path(root: Path, camera: str) -> Path:
     return root / f"labels_{camera}.json"
 
@@ -168,9 +212,13 @@ class Target:
     width_m: float
     depth_m: float
     confidence: float
+    yaw_deg: float | None = None
+    """Direction of the object's long side (any side for a square) about base z, from depth; None if round or unknown."""
+    yaw_period_deg: float = 180.0
+    """The yaw repeats after this: 90 for a square footprint, 180 otherwise."""
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "name": self.name,
             "x": round(self.x, 4),
             "y": round(self.y, 4),
@@ -178,6 +226,9 @@ class Target:
             "depth_m": round(self.depth_m, 4),
             "confidence": round(self.confidence, 3),
         }
+        if self.yaw_deg is not None:
+            out |= {"yaw_deg": round(self.yaw_deg, 1), "yaw_period_deg": self.yaw_period_deg}
+        return out
 
 
 @dataclass(frozen=True)
@@ -221,6 +272,25 @@ class TableMap:
     def seed_q(self, x: float, y: float) -> np.ndarray:
         index = int(np.argmin(np.linalg.norm(self.seeds_xy - np.array([x, y]), axis=1)))
         return self.seeds_q[index].copy()
+
+    def tool_xy(self, rotvec: np.ndarray | None = None) -> np.ndarray:
+        """Base-frame x, y from the TCP to the grasped object's centre for a grasp orientation (default: the mean)."""
+        offset = float(self.stats.get("tool_offset_m", 0.0) or 0.0)
+        rotation = Rotation.from_rotvec(self.rotvec if rotvec is None else rotvec)
+        return rotation.apply([0.0, 0.0, offset])[:2]
+
+    def grasp_pose(self, x: float, y: float, yaw_offset_deg: float = 0.0) -> tuple[float, float, np.ndarray]:
+        """TCP ``x, y`` and orientation that grasp the same object with the wrist turned by ``yaw_offset_deg``.
+
+        ``x, y`` is a TCP target for the mean orientation. The tool is tilted, so the
+        TCP-to-object offset turns with the wrist; the object centre stays where it is.
+        """
+        if yaw_offset_deg == 0.0:
+            return x, y, np.asarray(self.rotvec, dtype=float).copy()
+        turned = cast(Rotation, Rotation.from_euler("z", yaw_offset_deg, degrees=True) * Rotation.from_rotvec(self.rotvec))
+        obj = np.array([x, y]) + self.tool_xy()
+        tcp = obj - self.tool_xy(turned.as_rotvec())
+        return float(tcp[0]), float(tcp[1]), turned.as_rotvec()
 
     def target(self, box: Box, name: str) -> Target:
         """Centre and footprint of a Jev box on the table."""

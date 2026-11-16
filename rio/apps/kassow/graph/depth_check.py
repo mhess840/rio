@@ -9,6 +9,11 @@ and ``run --image`` can reuse them), fits the table plane, and with ``--sam``
 measures each prompt's best SAM instance in depth next to its image target.
 
     uv run python -m rio.apps.kassow.graph.depth_check --sam "orange plate|blue cap"
+
+Jaw reference for ``pick_at align_yaw``: let the mean grasp (``align_yaw`` false)
+pick a cube and set it down, then measure it; its faces now line up with the jaws:
+
+    uv run python -m rio.apps.kassow.graph.depth_check --sam "red object" --jaw-reference "red object"
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from .cell import _measure
 from .depth import fit_table_plane
 from .handeye import load_handeye
 from .locate import Box
-from .table_map import TableMap, table_map_path
+from .table_map import TableMap, save_jaw_yaw, table_map_path
 
 
 @dataclass
@@ -37,6 +42,8 @@ class Args:
 
     sam: str = ""
     """SAM noun phrases separated by ``|``; each best instance is measured in depth."""
+    jaw_reference: str = ""
+    """Prompt (one of ``--sam``) of a cube just set down by the mean grasp; its yaw becomes the jaw reference."""
     frames: int = 5
     """Depth frames combined (median per pixel) against sensor noise."""
     mw: str = "Thread"
@@ -77,7 +84,7 @@ def main(args: Args) -> dict:
         from rio.sam import SamClient
 
         client = SamClient()
-        objects = {}
+        objects: dict[str, dict | None] = {}
         for prompt in (p.strip() for p in args.sam.split("|") if p.strip()):
             best = client.segment(jpeg, prompt).best()
             if best is None:
@@ -90,6 +97,13 @@ def main(args: Args) -> dict:
                 "measured": _measure(depth_m, best.box, handeye, table, target),
             }
         report["objects"] = objects
+        if args.jaw_reference:
+            found = objects.get(args.jaw_reference) or {}
+            measured: dict = found.get("measured") or {}
+            if measured.get("yaw_deg") is None or measured.get("period_deg") != 90.0:
+                raise SystemExit(f"{args.jaw_reference!r}: no square footprint measured, jaw reference not saved")
+            path = save_jaw_yaw(float(measured["yaw_deg"]), source=str(folder))
+            report["jaw_reference"] = {"yaw_deg": measured["yaw_deg"], "path": str(path)}
     (folder / "depth_check.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
     return report

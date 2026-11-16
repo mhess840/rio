@@ -88,7 +88,12 @@ Full example that ran on the cell (v1 form) and dry-runs in v3:
   Keep `use_depth` false until it is checked on the cell. Absolute heights from
   depth are ≈ 18 mm off (2026-11-16); relative heights are fine.
 - **Grasp**: `kassow.pick_at` (exits `held`/`missed`). `z_offset_m` 0.02 and
-  `approach_m` 0.15 worked for the cylinder.
+  `approach_m` 0.15 worked for the cylinder. For a square object (cube) set
+  `"align_yaw": true`: the wrist turns at most 45° so the jaws close on two
+  faces; the yaw comes from `sam.locate`'s depth (the target carries
+  `yaw_deg`). It needs the jaw reference (`jaw_yaw.json`, measured once with
+  `depth_check --jaw-reference`); round objects grasp as usual, elongated ones
+  are refused. Not yet checked on the cell.
 - **Transport**: `kassow.place_at` (raises when nothing is held) → `placed`;
   `z_offset_m` is the height of what the object is set on (plate: 0.03).
 - **Check with Jev**: `jev.ask` with one question

@@ -84,8 +84,13 @@ andere Applikateure Aufgaben automatisieren.
 - [ ] `z_offset_m` für `place_at` aus der gemessenen Höhe des Ziels (Teller 24 mm) statt von Hand
 - [ ] SAM-Maske dekodieren (für Objekte in der Kiste): eigener Dekoder ist aufwendig (Range-Coder);
   Alternative Paket `meta-sam-parser` (reines Python, SAM License) — Entscheidung über die Abhängigkeit
-- [ ] `pick_at` greift entlang des Gierwinkels (bisher über die Diagonale): Gierwinkel liegt jetzt vor;
-  fehlt die Zuordnung Backenrichtung ↔ Werkzeugdrehung, an der Zelle prüfen
+- [x] `pick_at align_yaw` (Code): Gierwinkel aus der Tiefe am `Target`; Handgelenk dreht höchstens ±45°
+  (Quadrat, kürzester Weg); TCP wird verschoben, weil das Werkzeug schräg steht (Objektmitte bleibt);
+  IK offline an 4 Tischpunkten für −45…+45° erreichbar. Längliche Objekte abgelehnt (Schließrichtung fehlt)
+- [ ] Schritt 1: Gierwinkel am echten Würfel prüfen (0°, 20°, 45°, 70°, nur Kamera)
+- [ ] Schritt 2: Bezugswinkel der Backen: Würfel mit mittlerer Orientierung greifen und abstellen, dann
+  `depth_check --sam "red object" --jaw-reference "red object"` → `jaw_yaw.json`
+- [ ] Schritt 4: Würfel bei ≈ 30° und ≈ 45° mit `align_yaw` greifen, abstellen, Winkel nachmessen
 
 ## C. Graph-Format nach GaP v3
 

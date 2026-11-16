@@ -105,3 +105,42 @@ def test_table_plane_ignores_objects():
     plane = fit_table_plane(depth, he)
     assert plane["c"] + plane["a"] * -0.43 + plane["b"] * 0.54 == pytest.approx(TABLE_Z, abs=0.001)
     assert plane["tilt_deg"] < 0.1 and plane["rms_mm"] < 1.0
+
+
+def test_grasp_pose_keeps_the_object_centre_when_the_wrist_turns():
+    from scipy.spatial.transform import Rotation
+
+    from rio._tests.test_kassow_graph import _table
+    from rio.apps.kassow.graph.table_map import TableMap
+
+    base = _table()
+    tilted = Rotation.from_euler("xyz", [180.0, 15.0, 30.0], degrees=True).as_rotvec()
+    table = TableMap(**{**base.__dict__, "rotvec": tilted, "stats": {**base.stats, "tool_offset_m": 0.233}})
+    x, y, rotvec = table.grasp_pose(-0.40, 0.60, 0.0)
+    assert (x, y) == (-0.40, 0.60) and np.allclose(rotvec, tilted)
+    x, y, rotvec = table.grasp_pose(-0.40, 0.60, 30.0)
+    before = np.array([-0.40, 0.60]) + table.tool_xy()
+    after = np.array([x, y]) + table.tool_xy(rotvec)
+    assert np.allclose(before, after, atol=1e-9)
+    assert np.hypot(x + 0.40, y - 0.60) > 0.01  # the tilted tool moves the TCP
+    turned = Rotation.from_rotvec(rotvec) * Rotation.from_rotvec(tilted).inv()
+    assert turned.as_euler("xyz", degrees=True) == pytest.approx([0.0, 0.0, 30.0], abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("yaw", "jaw", "turn"),
+    [(10.0, 10.0, 0.0), (40.0, 10.0, 30.0), (70.0, 10.0, -30.0), (55.0, 10.0, -45.0), (5.0, 80.0, 15.0)],
+)
+def test_wrist_turn_takes_the_shortest_way(yaw, jaw, turn):
+    from rio.apps.kassow.graph.table_map import wrist_turn_deg
+
+    assert wrist_turn_deg(yaw, 90.0, jaw) == pytest.approx(turn)
+
+
+def test_jaw_yaw_round_trip(tmp_path):
+    from rio.apps.kassow.graph.table_map import load_jaw_yaw, save_jaw_yaw
+
+    path = tmp_path / "jaw_yaw.json"
+    assert load_jaw_yaw(path) is None
+    save_jaw_yaw(97.5, "look/x", path)
+    assert load_jaw_yaw(path) == pytest.approx(7.5)

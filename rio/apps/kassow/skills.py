@@ -150,19 +150,20 @@ class KassowSkills:
             return None
         return np.array([target.x, target.y, table.z_at(target.x, target.y) + height_m]), table
 
-    def _reach(self, goal: np.ndarray, table: TableMap, seed_q: np.ndarray | None) -> Outcome:
+    def _reach(self, goal: np.ndarray, table: TableMap, seed_q: np.ndarray | None, rotvec: np.ndarray | None = None) -> Outcome:
         from rio.apps.kassow import goto
 
-        status = goto.move_tcp(self.env, goal, table.rotvec, home_joint_speed=self.home_joint_speed, seed_q=seed_q)
+        orientation = table.rotvec if rotvec is None else rotvec
+        status = goto.move_tcp(self.env, goal, orientation, home_joint_speed=self.home_joint_speed, seed_q=seed_q)
         if status is goto.MoveStatus.ALARM:
             return self._alarm()
         return status is goto.MoveStatus.LANDED and self._tcp_near(goal)
 
-    def _down_and_up(self, point: np.ndarray, table: TableMap, approach_m: float) -> Outcome:
-        """``moveJ`` to ``approach_m`` above ``point``, then down onto it."""
+    def _down_and_up(self, point: np.ndarray, table: TableMap, approach_m: float, rotvec: np.ndarray | None = None) -> Outcome:
+        """``moveJ`` to ``approach_m`` above ``point``, then down onto it (orientation ``rotvec``, default the mean)."""
         above = point + np.array([0.0, 0.0, approach_m])
         for goal, seed_q in ((above, table.seed_q(point[0], point[1])), (point, None)):
-            reached = self._reach(goal, table, seed_q)
+            reached = self._reach(goal, table, seed_q, rotvec)
             if reached is not True:
                 return reached
         return True
@@ -184,12 +185,13 @@ class KassowSkills:
         point, table = found
         return self._reach(point, table, table.seed_q(target.x, target.y))
 
-    def pick_at(self, target: Target, *, approach_m: float, z_offset_m: float) -> Outcome:
+    def pick_at(self, target: Target, *, approach_m: float, z_offset_m: float, yaw_offset_deg: float = 0.0) -> Outcome:
         """Open, ``moveJ`` above ``target``, descend, close, and lift by ``approach_m``.
 
         Height, orientation, and the allowed area come from the table map; ``z_offset_m``
-        can only raise the calibrated grasp height. True only if the object is still
-        in the jaws after the lift.
+        can only raise the calibrated grasp height. ``yaw_offset_deg`` turns the wrist
+        about base z from the mean grasp (the TCP shifts so the object centre stays).
+        True only if the object is still in the jaws after the lift.
         """
         from rio.apps.kassow.graph.model import APPROACH_M_RANGE, Z_OFFSET_M_RANGE
 
@@ -199,9 +201,15 @@ class KassowSkills:
         found = self._table_point(target, z_offset_m, Z_OFFSET_M_RANGE, "pick_at")
         if found is None:
             return False
+        point, table = found
+        rotvec = None
+        if yaw_offset_deg:
+            x, y, rotvec = table.grasp_pose(target.x, target.y, yaw_offset_deg)
+            point = np.array([x, y, table.z_at(x, y) + z_offset_m])
+            logger.info("pick_at {}: wrist turned {:+.1f} deg, TCP x={:.3f} y={:.3f}", target.name, yaw_offset_deg, x, y)
         if not self.place():
             return False
-        reached = self._down_and_up(*found, approach_m)
+        reached = self._down_and_up(point, table, approach_m, rotvec)
         if reached is not True:
             return reached
         holding = self.pick()
@@ -252,8 +260,9 @@ class DrySkills:
         term("[dry run] would place")
         return True
 
-    def pick_at(self, target: Target, *, approach_m: float, z_offset_m: float) -> Outcome:
-        term(f"[dry run] would pick {target.name} at x={target.x:.3f} y={target.y:.3f} (approach {approach_m:.2f} m)")
+    def pick_at(self, target: Target, *, approach_m: float, z_offset_m: float, yaw_offset_deg: float = 0.0) -> Outcome:
+        turn = f", wrist {yaw_offset_deg:+.1f} deg" if yaw_offset_deg else ""
+        term(f"[dry run] would pick {target.name} at x={target.x:.3f} y={target.y:.3f} (approach {approach_m:.2f} m{turn})")
         return True
 
     def place_at(self, target: Target, *, approach_m: float, z_offset_m: float) -> Outcome:
