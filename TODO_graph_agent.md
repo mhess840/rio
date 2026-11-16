@@ -59,15 +59,21 @@ andere Applikateure Aufgaben automatisieren.
 
 ## C. Graph-Format nach GaP v3
 
-- [ ] Typisierte Ausgänge, Daten über `{"$ref": "knoten.feld"}` (z. B. `locate` → `target_obb` → `pick_at`)
-- [ ] `conditional_edges` mit `router_field` und Exit-Werten (`found` / `not_found` / `outside_area` …)
+- [x] Typisierte Ausgänge, Daten über `{"$ref": "knoten.feld"}` (z. B. `locate` → `target_obb` → `pick_at`)
+- [x] `conditional_edges` mit `router_field` und Exit-Werten (`found` / `not_found` / `outside_area` …)
   statt nur `ok`/`fail`
-- [ ] `subgraphs` mit `skill`, `inputs`, `outputs`, `exit.success_values`, `on_error`
-- [ ] `end`-Knoten mit `status` und `recovery` (Greifer öffnen, Parkpose)
-- [ ] Statischer Validator: Typen passen, jeder Exit-Wert hat ein Ziel, alles erreichbar, jedes
-  Fehler-Ende hat eine Recovery; ersetzt `check.py`
-- [ ] Bestehende Graphen migrieren (`cylinder_to_plate`, `pick_place`, `pick_cube`, `example`, `plans/*`)
-- [ ] Kern ohne Kassow-Importe halten (Format, Validator, Walker, Tracing), siehe Phase K
+- [x] `subgraphs` mit `skill`, `inputs`, `outputs`, `exit.success_values`, `on_error`
+- [x] `end`-Knoten mit `status` und `recovery` (Greifer öffnen, Parkpose)
+- [x] Statischer Validator: Typen passen, jeder Exit-Wert hat ein Ziel, alles erreichbar, jedes
+  Fehler-Ende hat eine Recovery (`rio/graph/validate.py`); `check.py` bleibt, bis alle Graphen migriert sind
+- [x] Kern `rio/graph/` (Loader, Validator, Executor, Tool-Registry, Event-Strom) + Kassow-Tools
+  (`graph/cell.py`, inkl. `operator.ask`, `jev.ask`, `vla.run`); `run` erkennt `"version": 3`;
+  `describe` liefert unter `v3` den Tool-Katalog
+- [x] `cylinder_to_plate` migriert (`graph/workflows/cylinder_to_plate.json`), Dry-Run grün
+- [ ] Live-Lauf des v3-`cylinder_to_plate` an der Zelle (Vergleich mit dem Lauf vom 13.11.)
+- [ ] Restliche Graphen migrieren (`pick_place`, `pick_cube`, `example`, `plans/*`), dann v1 (`walk.py`,
+  `check.py`) entfernen
+- [x] Kern ohne Kassow-Importe halten (Format, Validator, Walker, Tracing), siehe Phase K
 - [ ] Gerades Absenken (`moveL`) statt `moveJ` für `pick_at`/`place_at`
 
 ## D. Skill-Katalog im Agent-Skills-Format

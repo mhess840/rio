@@ -7,7 +7,7 @@ Nothing here knows a robot. A cell registers its tools in a ``ToolRegistry``
 and runs a workflow with ``Executor``; ``rio.apps.kassow.graph`` is one such cell.
 """
 
-from .executor import Executor, Result, Stopped, WorkflowInvalid
+from .executor import Executor, Result, Stopped, WorkflowInvalid, current_node
 from .tools import MOTION, OPERATOR, PERCEPTION, Param, Tool, ToolRegistry
 from .validate import Issue, errors, validate_workflow
 from .workflow import Workflow, WorkflowError, is_v3, load_workflow, parse_workflow
@@ -26,6 +26,7 @@ __all__ = [
     "Workflow",
     "WorkflowError",
     "WorkflowInvalid",
+    "current_node",
     "errors",
     "is_v3",
     "load_workflow",

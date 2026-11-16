@@ -24,6 +24,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,6 +35,15 @@ from .workflow import END, EXIT_KEY, START, Node, Scope, Subgraph, Workflow, res
 Confirm = Callable[[str, Tool, dict[str, Any]], bool]
 """``confirm(node_path, tool, inputs)``: True lets a motion tool run."""
 Event = dict[str, Any]
+_PATH: ContextVar[str] = ContextVar("graph_node_path", default="")
+
+
+def current_node() -> str:
+    """Path of the node whose tool is running, e.g. ``grasp/pick``; empty outside a run.
+
+    Tools use it to name photos and to look up scripted answers in a dry run.
+    """
+    return _PATH.get()
 
 
 class Stopped(Exception):
@@ -199,6 +209,7 @@ class Executor:
                 raise Stopped(f"operator declined {tool.name} at {path}")
         self._emit("tool_start", path, tool=tool.name, inputs=inputs)
         started = time.monotonic()
+        token = _PATH.set(path)
         try:
             out = tool.fn(**inputs)
         except Stopped:
@@ -206,6 +217,8 @@ class Executor:
         except Exception as error:
             self._emit("tool_error", path, tool=tool.name, error=f"{type(error).__name__}: {error}")
             raise
+        finally:
+            _PATH.reset(token)
         result = dict(out or {})
         self._emit("tool_end", path, tool=tool.name, outputs=result, elapsed_s=round(time.monotonic() - started, 3))
         return result

@@ -43,6 +43,8 @@ class Tool:
         outputs: Output field to type name.
         exits: Values of the ``exit`` output, when the tool reports one to route on.
         tags: ``motion``, ``perception``, ``operator`` and the like.
+        check: Checks the literal (non-``$ref``) inputs of one node before a run;
+            returns one message per problem, e.g. a pose file that does not exist.
     """
 
     name: str
@@ -52,6 +54,7 @@ class Tool:
     outputs: dict[str, str] = field(default_factory=dict)
     exits: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
+    check: Callable[[dict[str, Any]], list[str]] | None = None
 
     def describe(self) -> dict:
         """The catalog entry the planner reads."""

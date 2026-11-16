@@ -9,6 +9,8 @@ VLAs, and the table map are read from this station's files.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from rio.apps.kassow.experiments import EXPERIMENTS, PACKAGED_HOMES_DIR, homes_dir, load_state
 from rio.jev.client import IMAGE_KEY
 
@@ -29,6 +31,8 @@ from .model import (
 )
 from .table_map import TableMap, table_map_path
 from .vla import GRAPH_STATION, vla_usable
+
+V3_EXAMPLE_PATH = Path(__file__).resolve().parent / "workflows" / "cylinder_to_plate.json"
 
 OK_FAIL = ["ok", "fail"]
 
@@ -184,4 +188,34 @@ def describe() -> dict:
         },
         "table_map": table_status(),
         "operator": "on the cell every target move and VLA waits for space; q ends the walk, s ends and x aborts a VLA",
+        "v3": workflow_v3(),
+    }
+
+
+def workflow_v3() -> dict:
+    """The GaP v3 format: node types, rules, and the cell's tool catalog."""
+    from rio.apps.kassow.skills import DrySkills
+
+    from .cell import cell_tools
+
+    def no_jev(node: str, questions: dict, note: str) -> dict:
+        raise RuntimeError("describe does not ask Jev")
+
+    return {
+        "format": 'GaP v3 ("version": 3); see rio/graph/workflow.py and the example',
+        "example": str(V3_EXAMPLE_PATH),
+        "node_types": {
+            "top level": ["subgraph", "tool", "end"],
+            "inside a subgraph": ["tool", "noop"],
+            "refused": ["script", "router", "streaming"],
+        },
+        "rules": [
+            "data flows only through {'$ref': 'node.field'}; across subgraphs through declared inputs/outputs",
+            "route with conditional_edges on a tool's exit or a subgraph's exit; every exit needs a target",
+            "a tool that raises inside a subgraph takes its on_error exit; outside a subgraph it ends the run",
+            "end nodes: status success or failure; failure ends list recovery tool calls",
+            "motion tools wait for the operator (space); q stops without recovery",
+            "the arm runs one node at a time: no parallel fan-out",
+        ],
+        "tools": cell_tools(DrySkills(), no_jev).catalog(),
     }

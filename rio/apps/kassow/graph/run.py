@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import multiprocessing as mp
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -24,13 +26,14 @@ from rio.apps.kassow.experiments import experiments_root
 from rio.apps.kassow.hardware import JEV_SERIAL
 from rio.apps.kassow.skills import DrySkills
 from rio.apps.terminal import make_stdout_blocking, term
+from rio.graph import WorkflowError, WorkflowInvalid, is_v3
 from rio.jev import JevCfg, JevClient, encode_jpeg
 
 from .check import require_graph
 from .model import EXAMPLE_PATH, TARGET_KINDS, Graph, GraphError, load_graph
 from .table_map import TableMap, table_map_path
 from .vla import dry_run_vla
-from .walk import WalkLog, walk
+from .walk import Keys, Skills, WalkLog, walk
 
 
 @dataclass
@@ -73,6 +76,14 @@ def graph_path(args: Args) -> Path:
     return args.graph if args.graph is not None else EXAMPLE_PATH
 
 
+def is_v3_file(path: Path) -> bool:
+    """True when ``path`` is a GaP v3 workflow (``"version": 3``) rather than a v1 graph."""
+    try:
+        return is_v3(json.loads(path.read_text()))
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
 def scripted_answers(path: Path | None) -> dict[str, dict]:
     """Canned Jev answers for a dry run, keyed by node name."""
     if path is None:
@@ -109,7 +120,12 @@ def main(args: Args) -> str:
     if args.command in ("describe", "look", "ask"):
         print(json.dumps(observe(args), indent=2))
         return "ok"
-    graph = load_graph(graph_path(args))
+    path = graph_path(args)
+    if is_v3_file(path):
+        from .run_v3 import run_workflow
+
+        return run_workflow(args, path)
+    graph = load_graph(path)
     require_graph(graph)
     table = load_table(args, graph)
     _print_graph(graph)
@@ -200,6 +216,39 @@ def _keep_graph(root: Path, graph: Graph) -> None:
 
 
 def _live(args: Args, graph: Graph, table: TableMap | None) -> str:
+    root = experiments_root() / "graph" / f"{datetime.now():%Y%m%d_%H%M%S}"
+    log = WalkLog(root)
+    _keep_graph(root, graph)
+    logger.info("Graph run log: {}", root)
+    with live_cell(args, table, root) as cell:
+        confirm = cell.confirm if args.confirm else None
+        reason = walk(graph, cell.skills, cell.ask, log, keys=cell.keys, table=table, confirm=confirm, run_vla=cell.run_vla)
+    term(f"stopped: {reason}")
+    term(f"log: {root}")
+    return reason
+
+
+@dataclass
+class LiveCell:
+    """The started cell: arm skills, Jev on a fresh photo, keys, VLA runner and prompts."""
+
+    skills: Skills
+    ask: Callable[[str, dict, str], dict]
+    keys: Keys
+    run_vla: Callable[[str, str, float], object]
+    confirm: Callable[[str], bool]
+    choose: Callable[[str, list[str]], str | None]
+
+
+@contextmanager
+def live_cell(args: Args, table: TableMap | None, root: Path) -> Generator[LiveCell]:
+    """Start the arm, the Jev camera and the keyboard; stop them on exit.
+
+    Args:
+        args: Command line.
+        table: Table map for the target skills, or None.
+        root: Log folder; Jev photos are saved as ``<node>.jpg``.
+    """
     from contextlib import ExitStack
 
     from rio_hw import time
@@ -218,10 +267,6 @@ def _live(args: Args, graph: Graph, table: TableMap | None) -> str:
         station = station_cfg(OrchestratorArgs(mw=args.mw))
     except (FileNotFoundError, ValueError) as error:
         raise SystemExit(f"arm setup: {error}") from error
-    root = experiments_root() / "graph" / f"{datetime.now():%Y%m%d_%H%M%S}"
-    log = WalkLog(root)
-    _keep_graph(root, graph)
-    logger.info("Graph run log: {}", root)
     with ExitStack() as stack:
         camera = stack.enter_context(jev_camera_session(mw=args.mw))
         servers, clients, env = make_env(station)
@@ -233,7 +278,7 @@ def _live(args: Args, graph: Graph, table: TableMap | None) -> str:
 
         def ask(node: str, questions: dict, note: str) -> dict:
             jpeg = encode_jpeg(fresh_frame(camera, 0.5))
-            (root / f"{node}.jpg").write_bytes(jpeg)
+            (root / f"{node.replace('/', '__')}.jpg").write_bytes(jpeg)
             reply = client.ask(jpeg, questions, note)
             return reply.answers
 
@@ -247,12 +292,20 @@ def _live(args: Args, graph: Graph, table: TableMap | None) -> str:
                     return True
                 time.sleep(0.05)
 
-        confirm = space_or_q if args.confirm else None
+        def choose(question: str, answers: list[str]) -> str | None:
+            options = "    ".join(f"{i}: {answer}" for i, answer in enumerate(answers, start=1))
+            term(f"OPERATOR: {question}\n  {options}    q: stop")
+            while True:
+                pressed = keys.pressed()
+                if "q" in pressed:
+                    return None
+                for i, answer in enumerate(answers, start=1):
+                    if str(i) in pressed:
+                        return answer
+                time.sleep(0.05)
+
         run_vla = make_run_vla(env, keys, skills, root / "vla", device=args.device, single_slot=args.single_slot, mw=args.mw)
-        reason = walk(graph, skills, ask, log, keys=keys, table=table, confirm=confirm, run_vla=run_vla)
-    term(f"stopped: {reason}")
-    term(f"log: {root}")
-    return reason
+        yield LiveCell(skills, ask, keys, run_vla, space_or_q, choose)
 
 
 def cli() -> None:
@@ -263,5 +316,5 @@ def cli() -> None:
     mp.set_start_method(args.mp_method, force=True)
     try:
         main(args)
-    except GraphError as error:
+    except (GraphError, WorkflowError, WorkflowInvalid) as error:
         raise SystemExit(f"graph problem:\n{error}") from error

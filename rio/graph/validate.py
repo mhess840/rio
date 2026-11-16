@@ -72,6 +72,15 @@ def validate_workflow(workflow: Workflow, tools: ToolRegistry | None = None) -> 
             for i, call in enumerate(node.recovery):
                 if call.tool not in tools:
                     out.append(Issue(ERROR, "R", f"{where}.recovery[{i}]", f"unknown tool {call.tool!r}"))
+                    continue
+                tool = tools.get(call.tool)
+                missing = [key for key, p in tool.inputs.items() if p.required and key not in call.inputs]
+                unknown = [key for key in call.inputs if key not in tool.inputs]
+                messages = [f"{call.tool} needs input {key!r}" for key in missing]
+                messages += [f"{call.tool} has no input {key!r}" for key in unknown]
+                messages += tool.check(call.inputs) if tool.check is not None else []
+                for message in messages:
+                    out.append(Issue(ERROR, "R", f"{where}.recovery[{i}]", message))
     for sg in workflow.subgraphs.values():
         _check_subgraph(sg, out)
     if tools is not None:
@@ -206,6 +215,10 @@ def _check_tools(workflow: Workflow, scope: Scope, prefix: str, tools: ToolRegis
                     produced = _ref_type(workflow, scope, ref_parts(ref), tools)
                     if produced is not None and given[key] == ref and not types_match(produced, param.type):
                         out.append(Issue(ERROR, "R", where, f"input {key!r} wants {param.type}, {ref['$ref']!r} is {produced}"))
+        if tool.check is not None:
+            literals = {key: value for key, value in given.items() if not refs_in(value)}
+            for message in tool.check(literals):
+                out.append(Issue(ERROR, "R", where, message))
         cond = scope.conditional_edges.get(name)
         if cond is not None and cond.router_field is not None:
             if tool.outputs and cond.router_field not in tool.outputs:

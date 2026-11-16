@@ -1,0 +1,124 @@
+{
+  "version": 3,
+  "meta": {
+    "name": "cylinder_to_plate",
+    "description": "Pick up the blue cylinder and put it on the red plate. v3 form of cylinder_to_plate.json, which ran on the cell on 2026-11-13."
+  },
+  "nodes": {
+    "clear": {"type": "subgraph", "ref": "park_sg"},
+    "cylinder": {"type": "subgraph", "ref": "cylinder_sg"},
+    "plate": {"type": "subgraph", "ref": "plate_sg"},
+    "grasp": {"type": "subgraph", "ref": "grasp_sg"},
+    "transport": {"type": "subgraph", "ref": "transport_sg"},
+    "park": {"type": "subgraph", "ref": "park_sg"},
+    "done": {"type": "end", "status": "success"},
+    "nothing_to_do": {"type": "end", "status": "failure"},
+    "abort": {
+      "type": "end",
+      "status": "failure",
+      "recovery": [
+        {"tool": "gripper.open", "inputs": {}},
+        {"tool": "kassow.move_to", "inputs": {"pose": "home_organize.json"}}
+      ]
+    }
+  },
+  "edges": [["START", "clear"]],
+  "conditional_edges": {
+    "clear": {"router_field": "exit", "mapping": {"parked": "cylinder", "stuck": "abort"}},
+    "cylinder": {
+      "router_field": "exit",
+      "mapping": {"found": "plate", "not_found": "nothing_to_do", "outside_area": "nothing_to_do", "no_answer": "nothing_to_do"}
+    },
+    "plate": {
+      "router_field": "exit",
+      "mapping": {"found": "grasp", "not_found": "nothing_to_do", "outside_area": "nothing_to_do", "no_answer": "nothing_to_do"}
+    },
+    "grasp": {"router_field": "exit", "mapping": {"grasped": "transport", "missed": "abort", "failed": "abort"}},
+    "transport": {"router_field": "exit", "mapping": {"placed": "park", "failed": "abort"}},
+    "park": {"router_field": "exit", "mapping": {"parked": "done", "stuck": "abort"}}
+  },
+  "subgraphs": {
+    "park_sg": {
+      "skill": "parking",
+      "nodes": {
+        "move": {"type": "tool", "tool": "kassow.move_to", "inputs": {"pose": "home_organize.json"}},
+        "parked": {"type": "noop"}
+      },
+      "edges": [["START", "move"], ["move", "parked"], ["parked", "END"]],
+      "exit": {"router_field": null, "success_values": ["parked"]},
+      "on_error": "stuck"
+    },
+    "cylinder_sg": {
+      "skill": "perceiving-objects",
+      "outputs": {"cylinder": {"$ref": "find.target"}},
+      "nodes": {
+        "find": {
+          "type": "tool",
+          "tool": "jev.locate",
+          "inputs": {"object": "the blue cylinder", "threshold": 0.4, "visible_threshold": 0.0}
+        },
+        "found": {"type": "noop"},
+        "not_found": {"type": "noop"},
+        "outside_area": {"type": "noop"}
+      },
+      "edges": [["START", "find"], ["found", "END"], ["not_found", "END"], ["outside_area", "END"]],
+      "conditional_edges": {
+        "find": {"router_field": "exit", "mapping": {"found": "found", "not_found": "not_found", "outside_area": "outside_area"}}
+      },
+      "exit": {"router_field": null, "success_values": ["found", "not_found", "outside_area"]},
+      "on_error": "no_answer"
+    },
+    "plate_sg": {
+      "skill": "perceiving-objects",
+      "outputs": {"plate": {"$ref": "find.target"}},
+      "nodes": {
+        "find": {
+          "type": "tool",
+          "tool": "jev.locate",
+          "inputs": {"object": "the round red plate", "threshold": 0.4, "visible_threshold": 0.0}
+        },
+        "found": {"type": "noop"},
+        "not_found": {"type": "noop"},
+        "outside_area": {"type": "noop"}
+      },
+      "edges": [["START", "find"], ["found", "END"], ["not_found", "END"], ["outside_area", "END"]],
+      "conditional_edges": {
+        "find": {"router_field": "exit", "mapping": {"found": "found", "not_found": "not_found", "outside_area": "outside_area"}}
+      },
+      "exit": {"router_field": null, "success_values": ["found", "not_found", "outside_area"]},
+      "on_error": "no_answer"
+    },
+    "grasp_sg": {
+      "skill": "grasping-top-down",
+      "inputs": {"cylinder": "Target"},
+      "nodes": {
+        "pick": {
+          "type": "tool",
+          "tool": "kassow.pick_at",
+          "inputs": {"target": {"$ref": "in.cylinder"}, "approach_m": 0.15, "z_offset_m": 0.02}
+        },
+        "grasped": {"type": "noop"},
+        "missed": {"type": "noop"}
+      },
+      "edges": [["START", "pick"], ["grasped", "END"], ["missed", "END"]],
+      "conditional_edges": {"pick": {"router_field": "exit", "mapping": {"held": "grasped", "missed": "missed"}}},
+      "exit": {"router_field": null, "success_values": ["grasped", "missed"]},
+      "on_error": "failed"
+    },
+    "transport_sg": {
+      "skill": "placing-on-target",
+      "inputs": {"plate": "Target"},
+      "nodes": {
+        "place": {
+          "type": "tool",
+          "tool": "kassow.place_at",
+          "inputs": {"target": {"$ref": "in.plate"}, "approach_m": 0.15, "z_offset_m": 0.03}
+        },
+        "placed": {"type": "noop"}
+      },
+      "edges": [["START", "place"], ["place", "placed"], ["placed", "END"]],
+      "exit": {"router_field": null, "success_values": ["placed"]},
+      "on_error": "failed"
+    }
+  }
+}
