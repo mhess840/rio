@@ -12,7 +12,7 @@ an object is in the jaws), the same words the orchestrator already understands.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 import numpy as np
 from loguru import logger
@@ -36,6 +36,8 @@ LIFT_M = 0.10
 TARGET_MAX_TRAVEL_RAD = np.radians([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 135.0])
 """Per-joint limit of one target moveJ (grasp, place, look). On 2026-11-16 the last joint flipped by 178 deg;
 the wrist (joint 7) may still turn up to 135 deg, e.g. from the park pose to a turned grasp."""
+WRIST_STEP_DEG = 90.0
+"""Larger wrist turns before a target move are split into steps of at most this, turned in place."""
 CAMERA_CLEARANCE_M = 0.28
 """The arm's centre line stays this far from the Jev camera on a target move. On 2026-11-16 the arm touched
 the camera with its centre line 190 mm away (link thickness, camera housing and mount)."""
@@ -193,11 +195,37 @@ class KassowSkills:
         stays close to how the arm holds the object instead of a calibration sample.
         """
         above = point + np.array([0.0, 0.0, approach_m])
+        if rotvec is not None:
+            turned = self._turn_in_place(rotvec)
+            if turned is not True:
+                return turned
         first_seed = None if rotvec is not None else table.seed_q(point[0], point[1])
         for goal, seed_q in ((above, first_seed), (point, None)):
             reached = self._reach(goal, table, seed_q, rotvec)
             if reached is not True:
                 return reached
+        return True
+
+    def _turn_in_place(self, rotvec: np.ndarray, step_deg: float = WRIST_STEP_DEG) -> Outcome:
+        """Turn to ``rotvec`` at the current TCP position in steps of at most ``step_deg``, when the turn is larger.
+
+        A large wrist turn then happens where the arm already is (each step checked for joint travel and
+        camera clearance) instead of together with the move toward the target.
+        """
+        from scipy.spatial.transform import Rotation, Slerp
+
+        pose = self.tcp_pose()
+        start, goal = Rotation.from_rotvec(pose[3:6]), Rotation.from_rotvec(np.asarray(rotvec, dtype=float))
+        angle = float(np.degrees(cast(Rotation, start.inv() * goal).magnitude()))
+        if angle <= step_deg:
+            return True
+        steps = int(np.ceil(angle / step_deg))
+        slerp = Slerp([0.0, 1.0], Rotation.concatenate([start, goal]))
+        logger.info("Turning the wrist {:.0f} deg in place in {} steps", angle, steps)
+        for k in range(1, steps + 1):
+            done = self.move_tcp(pose[:3], slerp([k / steps]).as_rotvec()[0])
+            if done is not True:
+                return done
         return True
 
     def gripper(self, state: str) -> Outcome:
