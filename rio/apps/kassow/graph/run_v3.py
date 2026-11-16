@@ -231,12 +231,13 @@ def station_views(env: Any, root: Path) -> dict[str, Any]:
 
 
 def _dry_wrist(dry: Any) -> dict:
-    """Dry runs: a wrist camera posed where the dry arm was last told to look (scripted SAM answers)."""
+    """Dry runs: the fixed overview camera and a wrist camera posed where the dry arm was last told to look
+    (with scripted SAM answers)."""
     wrist = _wrist()
     if wrist is None:
         return {}
     from .cell import Shot
-    from .handeye import HandEye
+    from .handeye import HandEye, load_handeye
 
     def photo(node: str) -> Shot:
         pose = getattr(dry, "last_tcp", None)
@@ -246,7 +247,13 @@ def _dry_wrist(dry: Any) -> dict:
             b"", None, HandEye(wrist.camera_serial, wrist.intrinsics, wrist.base_from_camera(pose).tolist(), {}, {}, {})
         )
 
-    return {"views": {"wrist": photo}, "wrist": wrist}
+    views: dict[str, Any] = {"wrist": photo}
+    try:
+        overview = load_handeye(camera="overview")
+        views["overview"] = lambda node: Shot(b"", None, overview)
+    except (OSError, ValueError, KeyError):
+        pass
+    return {"views": views, "wrist": wrist}
 
 
 def _wrist() -> Any:

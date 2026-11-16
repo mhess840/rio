@@ -741,8 +741,7 @@ def _check_search(inputs: dict[str, Any]) -> list[str]:
     views = inputs.get("max_views")
     if views is not None and (not isinstance(views, int) or not 1 <= views <= 19):
         problems.append("max_views must be 1 to 19")
-    if "target" not in inputs and not ("x" in inputs and "y" in inputs):
-        problems.append("give a target ($ref of a coarse locate) or x and y")
+    # A target usually comes as a $ref, which this literal check does not see; search() reports a missing hint.
     return problems
 
 
