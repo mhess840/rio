@@ -175,3 +175,25 @@ def test_main_dry_runs_a_v3_file_and_logs_events(tmp_path, monkeypatch):
     events = [json.loads(line) for line in (run / "events.jsonl").read_text().splitlines()]
     assert events[0]["event"] == "run_start" and events[-1]["status"] == "success"
     assert json.loads((run / "workflow.json").read_text())["version"] == 3
+
+
+def test_loop_over_items_through_subgraphs():
+    raw = json.loads(CYLINDER.read_text())
+    raw["conditional_edges"]["cylinder"]["mapping"]["not_found"] = "park"
+    raw["conditional_edges"]["transport"]["mapping"]["placed"] = "cylinder"
+    seen = []
+
+    def ask(node, questions, note):
+        seen.append(node)
+        cylinders = sum(1 for n in seen if n == "cylinder/find")
+        if node == "cylinder/find" and cylinders > 2:
+            return _box_answers(0.4, 0.4, visible=0.0, confidence=0.1)
+        return _box_answers(0.4, 0.4)
+
+    arm = Arm()
+    registry = cell_tools(arm, ask, table=_table(), pose_exists=lambda name: True)
+    workflow = parse_workflow(raw)
+    assert errors(validate_workflow(workflow, registry)) == []
+    result = Executor(workflow, registry).run()
+    assert result.end == "done"
+    assert arm.calls.count("pick_at") == 2 and arm.calls.count("place_at") == 2

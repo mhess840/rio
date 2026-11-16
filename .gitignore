@@ -153,4 +153,6 @@ dmypy.json
 .vscode
 **/datasets
 results_data/
-.claude/
+# Local Claude Code state stays out; the project skills are shared.
+.claude/*
+!.claude/skills/

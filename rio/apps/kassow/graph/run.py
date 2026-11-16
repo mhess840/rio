@@ -315,6 +315,8 @@ def cli() -> None:
         raise SystemExit(f"--gripper-open must be in (0, 1], got {args.gripper_open}")
     mp.set_start_method(args.mp_method, force=True)
     try:
-        main(args)
+        status = main(args)
     except (GraphError, WorkflowError, WorkflowInvalid) as error:
         raise SystemExit(f"graph problem:\n{error}") from error
+    if status == "failed":
+        raise SystemExit(1)

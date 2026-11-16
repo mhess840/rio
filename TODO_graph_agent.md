@@ -112,16 +112,19 @@ GaP prüft Nachbedingungen nur in der Simulation; wir mit echten Sensoren. Modus
 Eine Datei, auf die der Bediener verweist („mach diese Aufgabe nach dem Planer“), und in der alles
 steht, was Claude als Planer/Orchestrator braucht. Ersetzt `.github/agents/robot.agent.md` (Copilot-Format).
 
-- [ ] `.claude/skills/gap-planner/SKILL.md` mit `references/` (Schema, Sicherheit, Modi, Beispiele);
-  der aktuelle Tool-/Skill-Katalog kommt live aus `describe`, nicht als Kopie in die Datei
+- [x] `.claude/skills/gap-planner/SKILL.md` mit `references/` (`workflow_v3`, `vla_or_graph`, `live_runs`,
+  `plan_log`); Katalog live aus `describe` (`v3.tools`); `.github/agents/robot.agent.md` verweist nur noch darauf
+- [x] Aufgabenordner `experiments/graph/plans/<task>/` mit `plan.jsonl` (Planungsereignisse für GUI und
+  Vergleich), Versionen `workflow.v<n>.json`, Dry-Run-Skripte, `report.md`
+- [ ] Erster Probelauf des Skills an der Zelle (nach der Demo): „Leg den Würfel auf den Teller“, autonom
 - [ ] Ablauf wie GaP: Coordinator (Aufgabe in Subgraphen zerlegen, Skills wählen) → Subgraph-Agent
   (nach `SKILL.md` füllen) → Checkpoint-Agent → Validator → höchstens 2 Fix-Runden
-- [ ] Modus **autonom**: nur Sensoren der Zelle; der Bediener gibt nur Bewegungen frei
-- [ ] Modus **kollaborativ**: der Bediener ist ein Sensor. Neuer Knoten `ask_operator` (getypte Frage
+- [x] Modus **autonom**: nur Sensoren der Zelle; der Bediener gibt nur Bewegungen frei
+- [x] Modus **kollaborativ**: der Bediener ist ein Sensor. Neuer Knoten `ask_operator` (getypte Frage
   wie bei Jev: `noul`, `choice`, `score`), im Graph sichtbar markiert. Diese Knoten zeigen später, wo
   ein Sensor oder Skill fehlt
-- [ ] Pro Teilaufgabe VLA oder Graph-Skill wählen bzw. ein VLA empfehlen (Phase L)
-- [ ] Regeln: kein Code unter `rio/` ändern, nur nach `experiments/graph/plans/` schreiben, `check` und
+- [x] Pro Teilaufgabe VLA oder Graph-Skill wählen bzw. ein VLA empfehlen (Phase L, `vla_or_graph.md`)
+- [x] Regeln: kein Code unter `rio/` ändern, nur nach `experiments/graph/plans/` schreiben, `check` und
   Dry-Run vor jedem Live-Lauf, keine erfundenen Knoten/Posen/Grenzen, höchstens zwei Neuplanungen
 - [ ] Tests: „Was liegt auf dem Tisch?“ (keine Bewegung) · „Räum die Kiste auf“ (VLA) ·
   „Leg den Würfel auf den Teller“ (locate + pick + place) · unmögliche Aufgabe (meldet, was fehlt)
@@ -152,7 +155,7 @@ für eine Teilaufgabe ein VLA neu zu trainieren. Im Paper fällt π0.5 bei varii
 ≈ 0,20, der Graph bleibt bei 0,93–0,97; VLAs lohnen sich also dort, wo Skripte schwer zu schreiben sind,
 nicht für reines Greifen und Ablegen.
 
-- [ ] Kriterien als `references/vla_or_graph.md` im Planer-Skill:
+- [x] Kriterien als `references/vla_or_graph.md` im Planer-Skill:
   - **Graph-Skills**, wenn das Objekt starr ist, sich gut wahrnehmen lässt (Maske, OBB) und die Bewegung
     sich als Anfahren, Greifen, Ablegen beschreiben lässt
   - **VLA**, wenn Kontakt und Feinbewegung entscheiden (Einsetzen ins Inlay, Nachschieben, Aufräumen in
