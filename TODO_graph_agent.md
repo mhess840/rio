@@ -99,8 +99,22 @@ andere Applikateure Aufgaben automatisieren.
 - [x] Aufgabe „roter Würfel auf roten Teller“ (16.11., `experiments/graph/20261116_144653`): success, Würfel mittig
   auf dem Teller; Handgelenk −1,5° (Würfel stand schon fast passend). Lauf ohne Zwischenfragen auf Wunsch des
   Bedieners (Not-Aus in der Hand), Freigaben automatisch nur für geplante Schritte mit Zielen im Tischbereich
-- [ ] Würfel bei ≈ 45° zu den Backen mit `align_yaw` (größte Drehung) und Abstellen mit gedrehtem Handgelenk
-  (`place_at` behält die Drehung), um den Bezugswinkel direkt zu bestätigen
+- [x] Bezugswinkel bestätigt (16.11., Lauf `20261116_145310`): Würfel bei 90° ≡ 0°, Handgelenk −31,1°, Bediener sah
+  flache Anlage an zwei Flächen
+- [ ] Abstellen mit gedrehtem Handgelenk (`place_at` behält die Drehung) für eine Zielorientierung beim Ablegen
+- [ ] Kalibrierten Greifbereich erweitern: er deckt nur das untere Bilddrittel um den Teller ab
+  (`calibration/table/calibrated_area.jpg`); zwei Läufe endeten deshalb korrekt mit `nothing_to_do`
+
+## N. Tempo (Messung 16.11., `cube_to_plate`, ohne Planung, `--no-confirm`)
+
+42,2 s vom Aufruf bis zum Ende: Start 6,8 s · Würfel/Teller finden 1,9 + 1,3 s · `pick_at` 14,2 s · `place_at` 10,2 s ·
+Parken 4,9 s · Ende 1,8 s · Executor 0,01 s. Rund 30 s sind Armbewegung bei 0,2 rad/s.
+
+- [ ] Gelenkgeschwindigkeit 0,2 → 0,5 rad/s für erprobte Graphen (≈ −6 s; kurze `moveJ` haben 2 s Mindestdauer)
+- [ ] Ein Foto für alle `sam.locate` eines Laufs, SAM-Abfragen parallel (≈ −1,5 s)
+- [ ] Anheben + Weiterfahren in einem `moveJ`; feste 0,5-s-Pausen und Greifer-Wartezeit kürzen (≈ −4–5 s)
+- [ ] Zelle dauerhaft verbunden halten (Arm, Greifer, Kamera), Graphen nur noch einreichen (≈ −8 s)
+- Ziel: ≈ 20 s für dieselbe Aufgabe
 
 ## C. Graph-Format nach GaP v3
 
