@@ -288,7 +288,10 @@ Nicht versucht, keine Bewegung (`experiments/graph/plans/box_into_crate/report.m
   (Handgelenkkamera schaut senkrecht von `height_m` auf einen Tischpunkt); Live-Läufe binden Overview und Handgelenk
   der Station ein. Test 16.11. (ohne Bewegung): Schachtel vor der Kiste per Overview „small box“ 0,92 bei
   (−0,377, 0,502), Jev (angeschnitten) 7 mm daneben, im Greifbereich
-- [ ] `kassow.look_at` + `camera=wrist` an der Zelle testen
+- [x] Skill `kassow.search` (Bedienerwunsch 16.11.): grober Hinweis (Ziel einer groben Lokalisierung oder x/y) →
+  Handgelenkkamera schaut auf den Hinweis, dann auf einen Ring (Radius 10 cm, bis 7 Blicke), stoppt beim ersten
+  SAM-Treffer und schärft mit einem Blick senkrecht darüber nach. Blickposen um typische Punkte offline erreichbar
+- [ ] `kassow.look_at` / `kassow.search` an der Zelle testen
 - [ ] Reichweite: hinteres linkes Fach (x=−0,83) erlaubt TCP 0,30–0,45 m, eine hochkant gehaltene 15-cm-Schachtel
   braucht ≈ 0,60 m über dem 21–27-cm-Rand → Kiste näher (x ≥ −0,65), vorderes Fach, oder VLA
 - [ ] Schließrichtung der Backen kalibrieren (längliche Objekte quer greifen; `align_yaw` lehnt sie bisher ab)

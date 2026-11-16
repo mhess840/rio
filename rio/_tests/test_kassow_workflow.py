@@ -58,6 +58,10 @@ class Arm:
     def move_above(self, target, *, height_m):
         return self._do("move_above")
 
+    def move_tcp(self, xyz, rotvec):
+        self.tcp = np.r_[xyz, rotvec]
+        return self._do("move_tcp")
+
 
 def jev(*_):
     return _box_answers(0.5, 0.5)
@@ -321,3 +325,42 @@ def test_wrist_view_pose_points_the_camera_at_the_spot():
     assert camera[2, 3] == pytest.approx(spot[2] + 0.3, abs=1e-6)
     hit = wrist.pixel_to_plane(np.r_[xyz, rotvec], 333, 245, spot[2])
     assert hit is not None and np.allclose(hit[:2], spot[:2], atol=1e-6)
+
+
+def test_search_walks_views_until_the_wrist_camera_sees_the_object():
+    from scipy.spatial.transform import Rotation
+
+    from rio.apps.kassow.graph.cell import TABLE_Z_M, Shot
+    from rio.apps.kassow.graph.handeye import HandEye, Intrinsics
+    from rio.apps.kassow.graph.wristeye import WristEye
+
+    mount = np.eye(4)
+    mount[:3, :3] = Rotation.from_euler("y", 8.0, degrees=True).as_matrix()
+    mount[:3, 3] = [-0.078, 0.034, 0.028]
+    intr = Intrinsics(640, 480, 606, 606, 320, 240)
+    wrist = WristEye("0", intr, mount.tolist(), 3, np.eye(4).tolist())
+    # 0.25 m from the hint toward the second ring point: out of the first view, in a later one
+    obj = np.array([-0.45 + 0.25 * 0.5, 0.55 + 0.25 * np.sqrt(3) / 2, TABLE_Z_M + 0.02])
+    arm = Arm()
+
+    def photo(node):
+        pose = wrist.base_from_camera(arm.tcp)
+        return Shot(b"jpeg", None, HandEye("0", intr, pose.tolist(), {}, {}, {}))
+
+    def segment(jpeg, prompt):
+        pose = wrist.base_from_camera(arm.tcp)
+        c = np.linalg.inv(pose) @ np.r_[obj, 1.0]
+        u, v = intr.fx * c[0] / c[2] + intr.cx, intr.fy * c[1] / c[2] + intr.cy
+        if c[2] <= 0 or not (20 < u < 620 and 20 < v < 460):
+            return SamReply([], "", 0.0)
+        return SamReply([Instance(0, (u - 15, v - 15, u + 15, v + 15), (640, 480), 0.93)], "", 0.0)
+
+    registry = tools(arm, segment=segment, views={"wrist": photo}, wrist=wrist)
+    out = registry.get("kassow.search").fn(prompts=["box"], x=-0.45, y=0.55, radius_m=0.2, max_views=7)
+    assert out["exit"] in ("found", "outside_area")
+    assert np.allclose(out["object_xyz"][:2], obj[:2], atol=0.002)
+    assert 1 < len(out["views"]) <= 7
+    assert arm.calls.count("move_tcp") == len(out["views"]) + 1  # plus the sharpening look
+    missing = tools(Arm(), segment=lambda j, p: SamReply([], "", 0.0), views={"wrist": photo}, wrist=wrist)
+    arm.tcp = np.r_[0.0, 0.0, 0.5, 0.0, 0.0, 0.0]
+    assert missing.get("kassow.search").fn(prompts=["box"], x=-0.45, y=0.55, max_views=3)["exit"] == "not_found"

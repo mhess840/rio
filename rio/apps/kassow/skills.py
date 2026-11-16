@@ -282,6 +282,7 @@ class DrySkills:
 
     def move_tcp(self, xyz: np.ndarray, rotvec: np.ndarray) -> Outcome:
         term(f"[dry run] would moveJ the TCP to x={xyz[0]:.3f} y={xyz[1]:.3f} z={xyz[2]:.3f}")
+        self.last_tcp = np.concatenate([np.asarray(xyz, dtype=float), np.asarray(rotvec, dtype=float)])
         return True
 
     def move_above(self, target: Target, *, height_m: float) -> Outcome:

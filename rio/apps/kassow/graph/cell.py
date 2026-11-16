@@ -77,6 +77,8 @@ TABLE_Z_M = -0.020
 """Table surface in the base frame: wrist-calibration marker plane (-0.021) and Jev depth (-0.025), 2026-11-16."""
 OBJECT_HEIGHT_M = 0.04
 LOOK_HEIGHT_M = 0.30
+SEARCH_RADIUS_M = 0.10
+SEARCH_VIEWS = 7
 CAMERAS = ("jev", "overview", "wrist")
 OPERATOR_MAX_ANSWERS = 9
 """The operator answers with one key, 1 to 9."""
@@ -248,6 +250,11 @@ def cell_tools(
         shot = take(current_node())
         if not isinstance(shot, Shot) or shot.view is None:
             raise RuntimeError(f"camera {camera!r} gave no calibrated view")
+        return _find_in_shot(shot, camera, prompts, threshold, height_m)
+
+    def _find_in_shot(shot: Shot, camera: str, prompts: list[str], threshold: float, height_m: float) -> dict:
+        """The first prompt whose best instance reaches ``threshold``, located through the shot's camera pose."""
+        assert table is not None and segment is not None and shot.view is not None
         view = shot.view
         tried: dict[str, float] = {}
         for prompt in prompts:
@@ -297,6 +304,55 @@ def cell_tools(
             "tried": tried,
             "camera": camera,
         }
+
+    def search(
+        prompts: list[str],
+        target: Target | None = None,
+        x: float | None = None,
+        y: float | None = None,
+        radius_m: float = SEARCH_RADIUS_M,
+        height_m: float = LOOK_HEIGHT_M,
+        object_height_m: float = OBJECT_HEIGHT_M,
+        max_views: int = SEARCH_VIEWS,
+        threshold: float = SAM_YES,
+    ) -> dict:
+        """Look around a rough hint with the wrist camera until SAM finds the object, then look again from straight above."""
+        if wrist is None or table is None:
+            raise RuntimeError("kassow.search needs the wrist calibration and the table map")
+        take = (views or {}).get("wrist")
+        if take is None:
+            raise RuntimeError("kassow.search needs the wrist camera")
+        if target is not None:
+            hint = np.array([target.x, target.y]) + table.tool_xy()  # TCP target → object point
+        elif x is not None and y is not None:
+            hint = np.array([x, y])
+        else:
+            raise RuntimeError("kassow.search needs a target or x and y")
+        looked: list[dict] = []
+        found: dict | None = None
+        for spot in search_spots(hint, radius_m, max_views):
+            try:
+                look_at(float(spot[0]), float(spot[1]), height_m)
+            except RuntimeError as error:
+                looked.append({"x": round(float(spot[0]), 3), "y": round(float(spot[1]), 3), "skipped": str(error)})
+                continue
+            result = _find_in_shot(_calibrated(take(current_node()), "wrist"), "wrist", prompts, threshold, object_height_m)
+            looked.append({"x": round(float(spot[0]), 3), "y": round(float(spot[1]), 3), "tried": result.get("tried")})
+            if result["exit"] != "not_found":
+                found = result
+                break
+        if found is None:
+            return {"exit": "not_found", "detail": f"{len(looked)} views around {hint.round(3).tolist()}", "views": looked}
+        centre = np.asarray(found["object_xyz"][:2])
+        try:  # sharpen: look again from straight above the object
+            look_at(float(centre[0]), float(centre[1]), height_m)
+            shot = _calibrated(take(current_node()), "wrist")
+            again = _find_in_shot(shot, "wrist", [found["prompt"]], threshold * 0.8, object_height_m)
+            if again["exit"] != "not_found":
+                found = again
+        except RuntimeError as error:
+            looked.append({"x": round(float(centre[0]), 3), "y": round(float(centre[1]), 3), "skipped": str(error)})
+        return {**found, "views": looked}
 
     def look_at(x: float, y: float, height_m: float = LOOK_HEIGHT_M) -> dict:
         """Move so the wrist camera looks straight at table point ``x, y`` from ``height_m`` above it."""
@@ -472,6 +528,39 @@ def cell_tools(
                 check=_check_sam,
             ),
             Tool(
+                "kassow.search",
+                search,
+                "search with the wrist camera around a rough hint (a target from a coarse sam.locate, or x/y): look at "
+                "the hint, then at a ring around it, stop at the first SAM hit and look again from straight above it",
+                inputs={
+                    "prompts": Param("list", doc="noun phrases as for sam.locate"),
+                    "target": Param(TARGET, False, "hint: target output of a coarse sam.locate (e.g. camera overview)"),
+                    "x": Param("float", False, "hint: table point x (base frame) when there is no target"),
+                    "y": Param("float", False, "hint: table point y"),
+                    "radius_m": Param("float", False, f"ring radius, default {SEARCH_RADIUS_M}"),
+                    "height_m": Param("float", False, f"camera height above the table, default {LOOK_HEIGHT_M}"),
+                    "object_height_m": Param("float", False, f"object height, default {OBJECT_HEIGHT_M}"),
+                    "max_views": Param("int", False, f"views at most (centre + ring), default {SEARCH_VIEWS}"),
+                    "threshold": Param("float", False, f"SAM score, default {SAM_YES}"),
+                },
+                outputs={
+                    "exit": "str",
+                    "target": TARGET,
+                    "detail": "str",
+                    "prompt": "str",
+                    "confidence": "float",
+                    "box": "dict",
+                    "object_xyz": "list",
+                    "camera": "str",
+                    "views": "list",
+                    "tried": "dict",
+                    "measured": "dict",
+                },
+                exits=("found", "not_found", "outside_area"),
+                tags=(MOTION, PERCEPTION),
+                check=_check_search,
+            ),
+            Tool(
                 "kassow.look_at",
                 look_at,
                 "move the arm so the wrist camera looks at a table point from above; then sam.locate camera=wrist",
@@ -628,6 +717,33 @@ def _depth_target(measured: dict, name: str, score: float) -> Target:
     from .table_map import Target
 
     return Target(name, measured["tcp_x"], measured["tcp_y"], measured["length_m"], measured["width_m"], score)
+
+
+def _calibrated(shot: bytes | Shot, camera: str) -> Shot:
+    if not isinstance(shot, Shot) or shot.view is None:
+        raise RuntimeError(f"camera {camera!r} gave no calibrated view")
+    return shot
+
+
+def search_spots(hint: np.ndarray, radius_m: float, max_views: int) -> list[np.ndarray]:
+    """The hint, then six points on a ring around it, then a second ring, in a short walk."""
+    spots = [np.asarray(hint, dtype=float)]
+    for ring, count in ((1, 6), (2, 12)):
+        for k in range(count):
+            angle = 2 * np.pi * k / count
+            spots.append(hint + ring * radius_m * np.array([np.cos(angle), np.sin(angle)]))
+    return spots[: max(1, max_views)]
+
+
+def _check_search(inputs: dict[str, Any]) -> list[str]:
+    problems = _check_sam({k: v for k, v in inputs.items() if k in ("prompts", "threshold")})
+    problems += _ranges({"radius_m": (0.02, 0.3), "height_m": (0.15, 0.6), "object_height_m": (0.005, 0.4)})(inputs)
+    views = inputs.get("max_views")
+    if views is not None and (not isinstance(views, int) or not 1 <= views <= 19):
+        problems.append("max_views must be 1 to 19")
+    if "target" not in inputs and not ("x" in inputs and "y" in inputs):
+        problems.append("give a target ($ref of a coarse locate) or x and y")
+    return problems
 
 
 def _check_sam(inputs: dict[str, Any]) -> list[str]:

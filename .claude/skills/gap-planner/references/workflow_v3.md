@@ -93,6 +93,13 @@ Full example that ran on the cell (v1 form) and dry-runs in v3:
   For a close look: `kassow.look_at {"x": .., "y": ..}` (a motion, needs
   approval) then `sam.locate {"camera": "wrist", ...}`. All three cameras are
   calibrated in the base frame (agree within 1-4 mm on a table marker).
+- **Search**: when you only roughly know where something is (partly visible,
+  an overview estimate, a region), use `kassow.search {"prompts": [...],
+  "target": {"$ref": "find.target"}}` or `{"x": .., "y": ..}`: the wrist
+  camera looks at the hint and a ring around it until SAM finds the object,
+  then looks again from straight above; output `target` as for `sam.locate`.
+  It is a motion tool (one approval covers all its views). Route a coarse
+  `sam.locate` exit `found`/`outside_area` into the search for a precise target.
 - **Grasp**: `kassow.pick_at` (exits `held`/`missed`). `z_offset_m` 0.02 and
   `approach_m` 0.15 worked for the cylinder. For a square object (cube) set
   `"align_yaw": true`: the wrist turns at most 45° so the jaws close on two

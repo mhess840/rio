@@ -57,13 +57,15 @@ def run_workflow(args: Args, path: Path) -> str:
     (root / "workflow.json").write_text(path.read_text())
     if args.dry_run:
         canned = scripted_answers(args.script)
+        dry = DrySkills()
         tools = cell_tools(
-            DrySkills(),
+            dry,
             _scripted_jev(canned),
             table=table,
             run_vla=dry_run_vla,
             ask_operator=_scripted_operator(canned),
             **_dry_perception(args, canned),
+            **_dry_wrist(dry),
         )
         result = execute(workflow, tools, root)
     else:
@@ -123,7 +125,11 @@ def execute(workflow: Workflow, tools: ToolRegistry, root: Path, **kwargs: Any) 
 def uses_table(workflow: Workflow) -> bool:
     """True when a node locates an object (the table map is then required)."""
     scopes = [workflow, *workflow.subgraphs.values()]
-    return any(node.tool in ("jev.locate", "sam.locate") for scope in scopes for node in scope.nodes.values())
+    return any(
+        node.tool in ("jev.locate", "sam.locate", "kassow.search", "kassow.look_at")
+        for scope in scopes
+        for node in scope.nodes.values()
+    )
 
 
 def jsonable(value: Any) -> Any:
@@ -222,6 +228,25 @@ def station_views(env: Any, root: Path) -> dict[str, Any]:
 
         views["wrist"] = wrist_photo
     return views
+
+
+def _dry_wrist(dry: Any) -> dict:
+    """Dry runs: a wrist camera posed where the dry arm was last told to look (scripted SAM answers)."""
+    wrist = _wrist()
+    if wrist is None:
+        return {}
+    from .cell import Shot
+    from .handeye import HandEye
+
+    def photo(node: str) -> Shot:
+        pose = getattr(dry, "last_tcp", None)
+        if pose is None:
+            raise RuntimeError("dry run: the wrist camera has not been moved to a view yet")
+        return Shot(
+            b"", None, HandEye(wrist.camera_serial, wrist.intrinsics, wrist.base_from_camera(pose).tolist(), {}, {}, {})
+        )
+
+    return {"views": {"wrist": photo}, "wrist": wrist}
 
 
 def _wrist() -> Any:
