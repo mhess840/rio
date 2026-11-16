@@ -305,6 +305,18 @@ Nicht versucht, keine Bewegung (`experiments/graph/plans/box_into_crate/report.m
 - [ ] Schließrichtung der Backen kalibrieren (längliche Objekte quer greifen; `align_yaw` lehnt sie bisher ab)
 - [ ] Fächer der Kiste als Ziele: Jev-Box „top-left compartment“ oder Geometrie aus der Tiefe
 
+## P. Kisten-Aufgabe, autonom, aufgezeichnet (16.11.): Schachtel in ein Fach
+
+- [x] Erfolgreich bis auf die Prüfung (`experiments/graph/plans/box_into_crate_rec/report.md`, Lauf
+  `20261116_175248`, 72 s): Schachtel liegt angelehnt im Fach; Jev-Check 0,59 < 0,6 (Frage „standing“ zu streng)
+- [x] Vorher: Kontakt mit der Jev-Kamera (Bediener Not-Aus). Seitdem Keep-out 0,28 m um die Kamera (Mittellinie
+  aller Glieder + Greifer) auf dem ganzen Gelenkpfad, Gelenkweg ≤ 100° (Handgelenk ≤ 135°), Handgelenk beim
+  Ablegen nahe der Greifdrehung, `prefer_turn_deg`, `kassow.carry_to`, gezielte Handgelenk-Blicke, `yaw_from`
+- [ ] Decke unter der Kamera hängt stark von der Handgelenkrichtung ab (0,45 vs. 0,71 m): als Planerwerkzeug
+  bereitstellen (Machbarkeitskarte Fächer × Decke × Wandhöhe), statt sie von Hand zu rechnen
+- [ ] Suchblick schneidet die Schachtel noch ab (Gierwinkel aus Kanten trotzdem richtig, 42,8°)
+- [ ] Jev-Kamera höher setzen oder Kiste nicht direkt darunter: größter Engpass für hohe Teile
+
 ## K. Später: Harness für Applikateure
 
 - [ ] Aufteilung wie GaP (`gap-core` / `gap` / `open-robot-skills`): Kern (Format, Validator, Walker,
