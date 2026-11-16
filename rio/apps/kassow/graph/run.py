@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import tyro
 from loguru import logger
 
@@ -30,6 +31,7 @@ from rio.apps.terminal import make_stdout_blocking, term
 from rio.graph import WorkflowError, WorkflowInvalid, is_v3
 from rio.jev import JevCfg, JevClient, encode_jpeg
 
+from .cell import Shot
 from .check import require_graph
 from .model import EXAMPLE_PATH, TARGET_KINDS, Graph, GraphError, load_graph
 from .table_map import TableMap, table_map_path
@@ -73,6 +75,9 @@ class Args:
     mp_method: str = "spawn"
     home_joint_speed: float = 0.51
     """Fastest joint speed of a home moveJ, rad/s."""
+    jev_depth: bool = True
+    """Live runs: stream depth from the Jev camera so ``sam.locate`` measures height and yaw.
+    ``--no-jev-depth`` if colour plus depth does not fit the camera's USB link."""
     view_host: str = "127.0.0.1"
     """``view``: interface of the live page; 0.0.0.0 shows it on another screen."""
     view_port: int = 8766
@@ -280,8 +285,8 @@ class LiveCell:
     run_vla: Callable[[str, str, float], object]
     confirm: Callable[[str], bool]
     choose: Callable[[str, list[str]], str | None]
-    photo: Callable[[str], bytes]
-    """A fresh Jev photo, saved as ``<node>.jpg`` in the run folder."""
+    photo: Callable[[str], Shot]
+    """A fresh Jev frame, saved as ``<node>.jpg`` (and ``<node>.depth.npz``, millimetres) in the run folder."""
 
 
 @contextmanager
@@ -298,7 +303,7 @@ def live_cell(args: Args, table: TableMap | None, root: Path) -> Generator[LiveC
     from rio_hw import time
     from rio_hw.middleware import ServerManager
 
-    from rio.apps.kassow.jev_ask import fresh_frame, jev_camera_session
+    from rio.apps.kassow.jev_ask import fresh_rgbd, jev_camera_session
     from rio.apps.kassow.orchestrator.actions import Args as OrchestratorArgs
     from rio.apps.kassow.orchestrator.actions import NodeKeys, station_cfg
     from rio.apps.kassow.skills import KassowSkills
@@ -312,7 +317,7 @@ def live_cell(args: Args, table: TableMap | None, root: Path) -> Generator[LiveC
     except (FileNotFoundError, ValueError) as error:
         raise SystemExit(f"arm setup: {error}") from error
     with ExitStack() as stack:
-        camera = stack.enter_context(jev_camera_session(mw=args.mw))
+        camera = stack.enter_context(jev_camera_session(mw=args.mw, depth=args.jev_depth))
         servers, clients, env = make_env(station)
         stack.enter_context(ServerManager(args.mw, list(servers.values())))
         stack.enter_context(env)
@@ -320,13 +325,17 @@ def live_cell(args: Args, table: TableMap | None, root: Path) -> Generator[LiveC
         skills = KassowSkills(env, home_joint_speed=args.home_joint_speed, gripper_open=args.gripper_open, table=table)
         logger.info("Gripper opens to {:.2f}", skills.gripper_open)
 
-        def photo(node: str) -> bytes:
-            jpeg = encode_jpeg(fresh_frame(camera, 0.5))
-            (root / f"{node.replace('/', '__')}.jpg").write_bytes(jpeg)
-            return jpeg
+        def photo(node: str) -> Shot:
+            color, depth = fresh_rgbd(camera, 0.5)
+            jpeg = encode_jpeg(color)
+            stem = root / node.replace("/", "__")
+            stem.with_suffix(".jpg").write_bytes(jpeg)
+            if depth is not None:
+                np.savez_compressed(stem.with_suffix(".depth.npz"), depth_mm=np.round(depth * 1000).astype(np.uint16))
+            return Shot(jpeg, depth)
 
         def ask(node: str, questions: dict, note: str) -> dict:
-            return client.ask(photo(node), questions, note).answers
+            return client.ask(photo(node).jpeg, questions, note).answers
 
         def space_or_q(message: str) -> bool:
             term(f"{message}\n  space: go    q: stop")

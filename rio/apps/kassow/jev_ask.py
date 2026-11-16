@@ -52,9 +52,15 @@ def probes_root() -> Path:
 
 
 @contextmanager
-def jev_camera_session(serial: str = JEV_SERIAL, mw: str = "Thread") -> Generator:
-    """Run only the Jev RealSense node and yield its client once exposure has settled."""
-    servers, clients = make_cameras(mw, {JEV_CAMERA: jev_camera(serial)})
+def jev_camera_session(serial: str = JEV_SERIAL, mw: str = "Thread", *, depth: bool = False) -> Generator:
+    """Run only the Jev RealSense node and yield its client once exposure has settled.
+
+    Args:
+        serial: Camera serial.
+        mw: Middleware.
+        depth: Also stream depth aligned to colour (``fresh_rgbd``).
+    """
+    servers, clients = make_cameras(mw, {JEV_CAMERA: jev_camera(serial, depth=depth)})
     with ServerManager(mw, list(servers.values())), clients[JEV_CAMERA]() as camera:
         fresh_frame(camera, max_age_s=1.0)
         time.sleep(CAMERA_WARMUP_S)
@@ -78,6 +84,32 @@ def fresh_frame(camera, max_age_s: float, timeout_s: float = FIRST_FRAME_TIMEOUT
             age = time.now() - float(stamp)
             if -0.01 <= age <= max_age_s and np.asarray(color).any():
                 return np.asarray(color)
+        time.sleep(0.05)
+    raise RuntimeError(f"No fresh Jev camera frame within {timeout_s:.0f}s (last age {age:.2f}s)")
+
+
+def fresh_rgbd(camera, max_age_s: float, timeout_s: float = FIRST_FRAME_TIMEOUT_S) -> tuple[np.ndarray, np.ndarray | None]:
+    """Newest RGB frame and its aligned depth in metres (None when the camera streams no depth).
+
+    Colour and depth come from the same state, so they belong to one frameset.
+
+    Raises:
+        RuntimeError: If no fresh frame arrives within ``timeout_s``.
+    """
+    deadline = time.now() + timeout_s
+    age = float("nan")
+    while time.now() < deadline:
+        state = camera.get_state()
+        color = state.get("color")
+        stamp = state.get("camera_receive_timestamp") or state.get("timestamp")
+        if color is not None and stamp:
+            age = time.now() - float(stamp)
+            if -0.01 <= age <= max_age_s and np.asarray(color).any():
+                raw, units = state.get("depth"), float(state.get("depth_units") or 0.0)
+                depth = None
+                if raw is not None and units > 0 and np.asarray(raw).any():
+                    depth = np.asarray(raw, dtype=np.float32) * units
+                return np.asarray(color), depth
         time.sleep(0.05)
     raise RuntimeError(f"No fresh Jev camera frame within {timeout_s:.0f}s (last age {age:.2f}s)")
 

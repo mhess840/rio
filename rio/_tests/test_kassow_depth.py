@@ -1,0 +1,107 @@
+# SPDX-FileCopyrightText: 2026 RIO Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Depth geometry on a ray-cast table scene. No camera."""
+
+import math
+
+import numpy as np
+import pytest
+
+from rio.apps.kassow.graph.depth import fit_table_plane, measure
+from rio.apps.kassow.graph.handeye import HandEye, Intrinsics
+
+pytestmark = pytest.mark.unit
+
+TABLE_Z = -0.007
+
+
+def camera() -> HandEye:
+    """Camera 0.86 m above the table, looking straight down, slightly rolled."""
+    intr = Intrinsics(640, 480, 605.7, 604.6, 320.5, 248.5)
+    roll = math.radians(8.0)
+    down = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
+    rz = np.array([[math.cos(roll), -math.sin(roll), 0.0], [math.sin(roll), math.cos(roll), 0.0], [0.0, 0.0, 1.0]])
+    transform = np.eye(4)
+    transform[:3, :3] = rz @ down
+    transform[:3, 3] = [-0.43, 0.54, 0.86]
+    return HandEye("0", intr, transform.tolist(), {}, {}, {})
+
+
+def render(handeye: HandEye, objects: list[dict]) -> np.ndarray:
+    """Depth (camera z) of a flat table with boxes and cylinders on it (top faces only)."""
+    intr, transform = handeye.intrinsics, handeye.transform
+    vs, us = np.mgrid[0:480, 0:640]
+    rays = np.stack([(us - intr.cx) / intr.fx, (vs - intr.cy) / intr.fy, np.ones_like(us, dtype=float)], axis=-1)
+    world = rays @ transform[:3, :3].T
+    origin = transform[:3, 3]
+    best = (TABLE_Z - origin[2]) / world[..., 2]
+    for obj in objects:
+        s = (TABLE_Z + obj["h"] - origin[2]) / world[..., 2]
+        hit = origin[:2] + s[..., None] * world[..., :2] - np.array([obj["x"], obj["y"]])
+        if obj.get("round"):
+            inside = np.hypot(hit[..., 0], hit[..., 1]) <= obj["r"]
+        else:
+            c, d = math.cos(math.radians(obj["yaw"])), math.sin(math.radians(obj["yaw"]))
+            along, across = hit[..., 0] * c + hit[..., 1] * d, -hit[..., 0] * d + hit[..., 1] * c
+            inside = (np.abs(along) <= obj["l"] / 2) & (np.abs(across) <= obj["w"] / 2)
+        best = np.where(inside, np.minimum(best, s), best)
+    return best.astype(np.float32)
+
+
+def box_of(handeye: HandEye, depth: np.ndarray, x: float, y: float, half: float) -> tuple[int, int, int, int]:
+    """Pixel box around a base-frame square, from the rendered depth (like a SAM box)."""
+    intr, transform = handeye.intrinsics, handeye.transform
+    inv = np.linalg.inv(transform)
+    corners = []
+    for dx in (-half, half):
+        for dy in (-half, half):
+            p = inv @ np.array([x + dx, y + dy, TABLE_Z, 1.0])
+            corners.append((intr.fx * p[0] / p[2] + intr.cx, intr.fy * p[1] / p[2] + intr.cy))
+    c = np.array(corners)
+    return int(c[:, 0].min()), int(c[:, 1].min()), int(c[:, 0].max()), int(c[:, 1].max())
+
+
+def test_cube_centre_height_and_yaw():
+    he = camera()
+    depth = render(he, [{"x": -0.40, "y": 0.60, "h": 0.037, "l": 0.037, "w": 0.037, "yaw": 30.0}])
+    m = measure(depth, box_of(he, depth, -0.40, 0.60, 0.03), he)
+    assert m is not None
+    assert m.table_z == pytest.approx(TABLE_Z, abs=0.001)
+    assert m.height_m == pytest.approx(0.037, abs=0.002)
+    assert (m.x, m.y) == (pytest.approx(-0.40, abs=0.002), pytest.approx(0.60, abs=0.002))
+    assert m.period_deg == 90.0
+    assert m.yaw_deg is not None and min(abs(m.yaw_deg - 30.0), 90 - abs(m.yaw_deg - 30.0)) < 3.0
+
+
+def test_bar_yaw_has_period_180():
+    he = camera()
+    depth = render(he, [{"x": -0.45, "y": 0.50, "h": 0.03, "l": 0.10, "w": 0.03, "yaw": 120.0}])
+    m = measure(depth, box_of(he, depth, -0.45, 0.50, 0.07), he)
+    assert m is not None and m.period_deg == 180.0
+    assert m.length_m == pytest.approx(0.10, abs=0.005)
+    assert m.yaw_deg == pytest.approx(120.0, abs=3.0)
+
+
+def test_cylinder_is_round_without_yaw():
+    he = camera()
+    depth = render(he, [{"x": -0.50, "y": 0.69, "h": 0.05, "r": 0.02, "round": True}])
+    m = measure(depth, box_of(he, depth, -0.50, 0.69, 0.03), he)
+    assert m is not None and m.yaw_deg is None
+    assert m.height_m == pytest.approx(0.05, abs=0.002)
+
+
+def test_flat_or_empty_box_gives_none():
+    he = camera()
+    depth = render(he, [])
+    assert measure(depth, box_of(he, depth, -0.45, 0.55, 0.03), he) is None
+    holes = np.zeros_like(depth)
+    assert measure(holes, (300, 200, 340, 240), he) is None
+
+
+def test_table_plane_ignores_objects():
+    he = camera()
+    depth = render(he, [{"x": -0.40, "y": 0.60, "h": 0.04, "l": 0.15, "w": 0.15, "yaw": 0.0}])
+    plane = fit_table_plane(depth, he)
+    assert plane["c"] + plane["a"] * -0.43 + plane["b"] * 0.54 == pytest.approx(TABLE_Z, abs=0.001)
+    assert plane["tilt_deg"] < 0.1 and plane["rms_mm"] < 1.0

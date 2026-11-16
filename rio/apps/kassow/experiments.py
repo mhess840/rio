@@ -218,7 +218,7 @@ EXPERIMENTS = {
 }
 
 
-def jev_camera(serial: str | None = None, addr: str = JEV_CAMERA_ADDR) -> Camera:
+def jev_camera(serial: str | None = None, addr: str = JEV_CAMERA_ADDR, *, depth: bool = False) -> Camera:
     """RealSense node spec for the Jev camera, 640x480 color at 6 fps.
 
     6 fps is a mode the D435i actually offers. One still photo for Jev does not
@@ -228,13 +228,14 @@ def jev_camera(serial: str | None = None, addr: str = JEV_CAMERA_ADDR) -> Camera
     Args:
         serial: Override ``JEV_SERIAL``.
         addr: Node address; must differ from the policy cameras (5130, 5131).
+        depth: Also stream depth aligned to colour (graph runs; ``depth`` and ``depth_units`` in the state).
     """
     return Camera(
         addr=addr,
         cam_type="Realsense",
         serial=str(serial or JEV_SERIAL),
         model="D400",
-        enable_depth=False,
+        enable_depth=depth,
         hardware_reset=False,
         freq=6,
         resolution=(480, 640),

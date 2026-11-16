@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from rio.graph import MOTION, OPERATOR, PERCEPTION, Param, Tool, ToolRegistry, current_node
 
@@ -38,6 +41,7 @@ from .model import (
 if TYPE_CHECKING:
     from rio.sam import SamReply
 
+    from .handeye import HandEye
     from .table_map import TableMap, Target
     from .walk import Skills
 
@@ -46,8 +50,18 @@ Ask = Callable[[str, dict, str], dict]
 AskOperator = Callable[[str, str, list[str]], str]
 """``ask_operator(node_path, question, answers)`` returns one of ``answers``."""
 RunVla = Callable[[str, str, float], object]
-Photo = Callable[[str], bytes]
-"""``photo(node_path)`` takes a fresh Jev photo (JPEG) and keeps it with the run."""
+
+
+@dataclass(frozen=True)
+class Shot:
+    """One Jev frame: the JPEG and, when the camera streams it, depth in metres aligned to it."""
+
+    jpeg: bytes
+    depth_m: np.ndarray | None = None
+
+
+Photo = Callable[[str], "bytes | Shot"]
+"""``photo(node_path)`` takes a fresh Jev photo and keeps it with the run."""
 Segment = Callable[[bytes, str], "SamReply"]
 """``segment(jpeg, noun_phrase)`` asks SAM for every instance."""
 
@@ -74,6 +88,7 @@ def cell_tools(
     ask_operator: AskOperator | None = None,
     photo: Photo | None = None,
     segment: Segment | None = None,
+    handeye: HandEye | None = None,
     pose_exists: Callable[[str], bool] = pose_is_file,
 ) -> ToolRegistry:
     """Every tool of the cell, bound to live or dry-run parts.
@@ -86,6 +101,7 @@ def cell_tools(
         ask_operator: Asks the human at the cell; ``operator.ask`` needs it.
         photo: Fresh Jev photo; ``sam.locate`` needs it.
         segment: SAM on one photo and one noun phrase; ``sam.locate`` needs it.
+        handeye: Camera pose; with depth in the photo ``sam.locate`` measures height and yaw.
         pose_exists: Whether a home file exists (tests pass a stub).
     """
 
@@ -144,12 +160,13 @@ def cell_tools(
             return {"exit": "outside_area", "target": target, "detail": detail, **seen}
         return {"exit": "found", "target": target, "detail": json.dumps(target.to_dict()), **seen}
 
-    def sam_locate(prompts: list[str], threshold: float = SAM_YES) -> dict:
+    def sam_locate(prompts: list[str], threshold: float = SAM_YES, use_depth: bool = False) -> dict:
         if table is None:
             raise RuntimeError("sam.locate needs a table map")
         if photo is None or segment is None:
             raise RuntimeError("sam.locate needs the Jev camera and SAM")
-        jpeg = photo(current_node())
+        shot = photo(current_node())
+        jpeg, depth = (shot.jpeg, shot.depth_m) if isinstance(shot, Shot) else (shot, None)
         tried: dict[str, float] = {}
         for prompt in prompts:
             reply = segment(jpeg, prompt)
@@ -160,7 +177,14 @@ def cell_tools(
                 continue
             left, top, right, bottom = best.fractions()
             target = table.target(Box(left, top, right, bottom, score), prompt)
+            measured = None
+            if depth is not None and handeye is not None:
+                measured = _measure(depth, best.box, handeye, table, target)
+                if use_depth and measured is not None:
+                    target = _depth_target(measured, prompt, score)
             seen = {
+                "measured": measured,
+                "source": "depth" if use_depth and measured is not None else "image",
                 "prompt": prompt,
                 "confidence": score,
                 "box": {"left": left, "top": top, "right": right, "bottom": bottom},
@@ -301,6 +325,12 @@ def cell_tools(
                         "['orange plate', 'plate']; test them with --command ask --sam first",
                     ),
                     "threshold": Param("float", False, f"SAM score, default {SAM_YES}"),
+                    "use_depth": Param(
+                        "bool",
+                        False,
+                        "take the target from depth (top-surface centre) instead of the image box; "
+                        "default false until checked on the cell",
+                    ),
                 },
                 outputs={
                     "exit": "str",
@@ -311,6 +341,8 @@ def cell_tools(
                     "box": "dict",
                     "count": "int",
                     "tried": "dict",
+                    "measured": "dict",
+                    "source": "str",
                 },
                 exits=("found", "not_found", "outside_area"),
                 tags=(PERCEPTION,),
@@ -391,6 +423,36 @@ def _check_locate(inputs: dict[str, Any]) -> list[str]:
     if what is not None and (not isinstance(what, str) or not what.strip() or len(what) > OBJECT_MAX_CHARS or "`" in what):
         problems.append(f"object must be text of at most {OBJECT_MAX_CHARS} characters without backticks")
     return problems
+
+
+def _tool_xy(table: TableMap) -> np.ndarray:
+    """Base-frame offset from the TCP to the grasped object's centre in x, y (mean grasp)."""
+    from scipy.spatial.transform import Rotation
+
+    offset = float(table.stats.get("tool_offset_m", 0.0) or 0.0)
+    return Rotation.from_rotvec(table.rotvec).apply([0.0, 0.0, offset])[:2]
+
+
+def _measure(depth: np.ndarray, box: tuple, handeye: HandEye, table: TableMap, target: Target) -> dict | None:
+    """Depth measurement of the object in ``box``, with its TCP target and distance to the image target."""
+    from .depth import measure
+
+    m = measure(depth, box, handeye)
+    if m is None:
+        return None
+    tcp = np.array([m.x, m.y]) - _tool_xy(table)
+    return {
+        **m.to_dict(),
+        "tcp_x": round(float(tcp[0]), 4),
+        "tcp_y": round(float(tcp[1]), 4),
+        "d_image_mm": round(float(np.hypot(tcp[0] - target.x, tcp[1] - target.y)) * 1000, 1),
+    }
+
+
+def _depth_target(measured: dict, name: str, score: float) -> Target:
+    from .table_map import Target
+
+    return Target(name, measured["tcp_x"], measured["tcp_y"], measured["length_m"], measured["width_m"], score)
 
 
 def _check_sam(inputs: dict[str, Any]) -> list[str]:

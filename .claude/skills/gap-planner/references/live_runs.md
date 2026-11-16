@@ -8,6 +8,7 @@ $G --command describe
 $G --command look                                   # photos: experiments/graph/look/<time>/
 $G --command ask --image <look>/jev.jpg --sam "orange plate|plate"   # SAM: score, box, x/y, inside_area
 $G --command ask --locate "the red cube" --image <look>/jev.jpg       # Jev
+uv run python -m rio.apps.kassow.graph.depth_check --sam "orange plate|blue cap"   # colour + depth photo, heights
 $G --command check --graph experiments/graph/plans/<task>/workflow.json
 $G --command run   --graph <file> --image <look>/jev.jpg               # dry run, real SAM on the photo
 $G --command run   --graph <file> --script <dry_script.json>          # dry run, scripted answers

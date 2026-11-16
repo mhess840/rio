@@ -82,6 +82,11 @@ Full example that ran on the cell (v1 form) and dry-runs in v3:
   plate "orange plate", cylinder "blue cap"/"blue object", cube "red object";
   "red plate", "red cube", "blue cylinder" found nothing. Park the arm first.
   `jev.locate` still exists (Jev box, less repeatable: ≈10 mm vs < 1 mm).
+  With depth (live runs, or `run --image` next to a `jev.depth.npz`) the output
+  `measured` gives the object's height above the table, footprint and yaw
+  (None for round objects); use the height e.g. for `place_at.z_offset_m`.
+  Keep `use_depth` false until it is checked on the cell. Absolute heights from
+  depth are ≈ 18 mm off (2026-11-16); relative heights are fine.
 - **Grasp**: `kassow.pick_at` (exits `held`/`missed`). `z_offset_m` 0.02 and
   `approach_m` 0.15 worked for the cylinder.
 - **Transport**: `kassow.place_at` (raises when nothing is held) → `placed`;

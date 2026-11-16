@@ -65,13 +65,25 @@ andere Applikateure Aufgaben automatisieren.
 - [x] `--command ask --sam "a|b"` für den Look-Schritt; `--command run --image <jev.jpg>` = Dry-Run mit echtem SAM
 - [x] `cylinder_to_plate` (v3) lokalisiert mit `sam.locate`; Dry-Run mit echtem SAM auf dem Foto vom 13.11. grün
 - [ ] Live-Lauf mit `sam.locate` an der Zelle
-- [ ] Maske dekodieren (für Tiefe/OBB)
-- [ ] Tiefe an der Jev-Kamera aktivieren (`jev_camera()`: `enable_depth=False`, D435i an USB 2 mit 6 fps);
-  prüfen, ob Farbe + Tiefe über USB 2 laufen, sonst USB-3-Port. Tiefe auf Farbe ausrichten
-- [ ] Gegenprobe: gemessene Tischebene aus der Tiefe gegen die kalibrierte Ebene
-- [ ] `locate` neu: SAM-Maske (Fallback: Box) + Tiefe → OBB mit Mitte, Höhe und **Gierwinkel**
-  (Punkte über der Tischebene, Rechteck in der Ebene). Jev bleibt für Fragen und Semantik
-- [ ] `pick_at` greift entlang des Gierwinkels (bisher über die Diagonale)
+- [x] Tiefe an der Jev-Kamera: `jev_camera(depth=True)`, auf Farbe ausgerichtet (rio-hw unverändert); läuft
+  über USB 2 mit 6 fps (99,8 % gültige Pixel). Live-Läufe streamen sie (`--no-jev-depth` schaltet ab) und
+  speichern `<node>.depth.npz` (mm) neben dem Foto
+- [x] Gegenprobe (`graph/depth_check.py`, 16.11., ohne Arm): Tischebene aus der Tiefe 1,7° geneigt, 3,4 mm rms,
+  und ≈ 18 mm tiefer als aus der Kalibrierung erwartet (Würfelmitte 11,4 mm − halbe Kante ≈ −7 mm; Tiefe
+  −25 mm). **Absolute Höhen aus der Tiefe nicht verwenden**; relative Höhen (Objekt über lokalem Tisch)
+  und x/y stimmen: Zylinder Tiefe vs. Bild 1,3 mm, Höhe 49 mm
+- [x] `graph/depth.py`: SAM-Box + Tiefe → Punkte über dem lokalen Tisch → Mitte der Oberseite, Höhe,
+  Grundfläche, **Gierwinkel** (rund → keiner, Quadrat → Periode 90°). Getestet auf ray-gecasteter Szene
+- [x] `sam.locate` misst mit Tiefe mit (`measured`: Höhe, Gierwinkel, TCP-Ziel, Abstand zum Bildziel);
+  `use_depth: true` nimmt das Ziel aus der Tiefe (Standard aus, bis an der Zelle geprüft).
+  `run --image <jev.jpg>` nutzt eine daneben liegende `jev.depth.npz`
+- [ ] Ursache der 18 mm / 1,7° klären: Tiefen-Offset der D435i oder Neigung der Hand-Auge-Pose
+  (z. B. ArUco-Marker flach auf den Tisch legen und Tiefe gegen Markerecken vergleichen)
+- [ ] `z_offset_m` für `place_at` aus der gemessenen Höhe des Ziels (Teller 24 mm) statt von Hand
+- [ ] SAM-Maske dekodieren (für Objekte in der Kiste): eigener Dekoder ist aufwendig (Range-Coder);
+  Alternative Paket `meta-sam-parser` (reines Python, SAM License) — Entscheidung über die Abhängigkeit
+- [ ] `pick_at` greift entlang des Gierwinkels (bisher über die Diagonale): Gierwinkel liegt jetzt vor;
+  fehlt die Zuordnung Backenrichtung ↔ Werkzeugdrehung, an der Zelle prüfen
 
 ## C. Graph-Format nach GaP v3
 

@@ -87,6 +87,7 @@ def run_workflow(args: Args, path: Path) -> str:
                 ask_operator=ask_operator,
                 photo=cell.photo,
                 segment=SamClient().segment,
+                handeye=_handeye(),
             )
 
             def confirm(node: str, tool: Tool, inputs: dict[str, Any]) -> bool:
@@ -161,11 +162,29 @@ def _dry_perception(args: Args, canned: dict) -> dict:
     """``--image``: real SAM on that saved Jev photo (no arm moves); else the scripted answers."""
     if args.image is None:
         return {"photo": lambda node: b"", "segment": scripted_sam(canned)}
+    import numpy as np
+
     from rio.sam import SamClient
 
+    from .cell import Shot
+
     jpeg = args.image.read_bytes()
-    term(f"[dry run] sam.locate uses SAM on {args.image}")
-    return {"photo": lambda node: jpeg, "segment": SamClient().segment}
+    depth_file = args.image.with_suffix(".depth.npz")
+    depth = np.load(depth_file)["depth_mm"].astype(np.float32) / 1000.0 if depth_file.is_file() else None
+    term(f"[dry run] sam.locate uses SAM on {args.image}" + (" with its depth" if depth is not None else ""))
+    shot = Shot(jpeg, depth)
+    return {"photo": lambda node: shot, "segment": SamClient().segment, "handeye": _handeye() if depth is not None else None}
+
+
+def _handeye() -> Any:
+    """The Jev camera's hand-eye calibration, or None (``sam.locate`` then skips depth)."""
+    from .handeye import load_handeye
+
+    try:
+        return load_handeye()
+    except (OSError, ValueError, KeyError) as error:
+        term(f"no hand-eye calibration, depth is not measured: {error}")
+        return None
 
 
 def scripted_sam(canned: dict) -> Any:
