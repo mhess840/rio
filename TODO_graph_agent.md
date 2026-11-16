@@ -108,7 +108,8 @@ andere Applikateure Aufgaben automatisieren.
     15 cm, Greifhöhe, ±45°) → 0,075 → 0,172 m². Obere Bildhälfte mit dieser Greiforientierung nicht erreichbar
   - [x] `survey` (16.11.): 32/32 Punkte erreicht, TCP-Fehler ≤ 1,2 mm; `write`: 47 IK-Seeds, alte Karte gesichert
     (`table_map.20261116_150318.json`), Bild `calibration/table/calibrated_area.jpg`
-  - [ ] Greiftest am neuen Rand
+  - [x] Greiftest am neuen Rand (16.11., `20261116_150420`): Würfel bei x=−0,699 (7 cm außerhalb des alten Bereichs),
+    Handgelenk +44,0°, `held`, success in 45 s
   - [ ] 12 Punkte nur ohne volle ±45° erreichbar: ortsabhängige Drehgrenze für `align_yaw` (Würfel: t, t±90 wählen)
 
 ## N. Tempo (Messung 16.11., `cube_to_plate`, ohne Planung, `--no-confirm`)
