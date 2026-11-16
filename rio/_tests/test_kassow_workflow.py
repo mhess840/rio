@@ -414,3 +414,13 @@ def test_edge_yaw_of_a_dark_box_from_above():
     x2, y2 = poly.max(axis=0) + 10
     got = edge_long_axis_yaw(image, (x1, y1, x2, y2), he, 0.1)
     assert got is not None and min(abs(got - 35.0), 180 - abs(got - 35.0)) < 3.0
+
+
+def test_pick_at_prefers_the_equivalent_turn_near_the_planned_one(monkeypatch):
+    from rio.apps.kassow.graph.table_map import Target
+
+    monkeypatch.setattr("rio.apps.kassow.graph.table_map.load_jaw_closing", lambda path=None: 31.07)
+    pick = tools(Arm(), jaw_yaw=lambda: 31.07).get("kassow.pick_at").fn
+    box = Target("box", -0.25, 0.52, 0.15, 0.045, 0.9, yaw_deg=43.5, yaw_period_deg=180.0)
+    assert pick(target=box, align_yaw=True)["wrist_turn_deg"] == pytest.approx(-77.6, abs=0.1)
+    assert pick(target=box, align_yaw=True, prefer_turn_deg=89.0)["wrist_turn_deg"] == pytest.approx(102.4, abs=0.1)

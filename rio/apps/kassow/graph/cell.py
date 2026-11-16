@@ -158,6 +158,7 @@ def cell_tools(
         z_offset_m: float = 0.0,
         align_yaw: bool = False,
         outside_area: bool = False,
+        prefer_turn_deg: float | None = None,
     ) -> dict:
         turn = 0.0
         if align_yaw and target.yaw_deg is not None:
@@ -167,6 +168,9 @@ def cell_tools(
             if reference is None:
                 raise RuntimeError("align_yaw needs the jaw reference (depth_check --jaw-reference after one mean grasp)")
             turn = wrist_turn_deg(target.yaw_deg, target.yaw_period_deg, reference, load_jaw_closing())
+            if prefer_turn_deg is not None and target.yaw_period_deg == 180.0:
+                # Parallel jaws: t and t +/- 180 grasp alike; take the one nearest the planned turn.
+                turn = min((turn - 180.0, turn, turn + 180.0), key=lambda t: abs(t - prefer_turn_deg))
         if turn or outside_area:
             held = skills.pick_at(
                 target, approach_m=approach_m, z_offset_m=z_offset_m, yaw_offset_deg=turn, outside_area=outside_area
@@ -482,6 +486,12 @@ def cell_tools(
                     ),
                     "outside_area": Param(
                         "bool", False, "allow a target just outside the calibrated grasp area (IK still checked)"
+                    ),
+                    "prefer_turn_deg": Param(
+                        "float",
+                        False,
+                        "for elongated objects: of the equivalent turns t and t +/- 180 take the one nearest this "
+                        "(e.g. the turn planned for placing, so the wrist need not flip in between)",
                     ),
                 },
                 outputs={"exit": "str", "wrist_turn_deg": "float"},
