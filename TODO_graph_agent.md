@@ -293,7 +293,13 @@ Nicht versucht, keine Bewegung (`experiments/graph/plans/box_into_crate/report.m
   SAM-Treffer und schärft mit einem Blick senkrecht darüber nach. Blickposen um typische Punkte offline erreichbar
 - [x] Rollen festgelegt (16.11.): **SAM findet, Jev urteilt** — Jev für Prüfungen, Zustände, Auswahl, Beschreibungen
   („oberes linkes Fach“) und Sicherheitsfragen; nicht mehr zum Lokalisieren. Planer-Referenz `perception.md`
-- [ ] `kassow.look_at` / `kassow.search` an der Zelle testen
+- [x] Live-Test Suche (16.11., `search_box_live`): Overview grob „small box“ 0,95 → `kassow.search` → Schachtel vor der
+  Kiste. 1. Lauf: Kamera 30 cm über Tisch = 15 cm über der hochkant stehenden Schachtel → erster Blick leer, Treffer am
+  Bildrand abgeschnitten (2 cm verschoben). Fix: Kamera ≥ Objekthöhe + 25 cm, `clipped`-Markierung. 2. Lauf: Treffer
+  im 1. Blick (0,88), nicht abgeschnitten, 6 mm von der Overview-Schätzung; 28 s gesamt, Suche 10 s
+- [ ] Greifer-Start prüfen: im 2. Suchlauf `SerialTimeoutException: Write timeout` beim Setup des AG95 (Greifer nicht
+  bereit, Lauf ohne Greifer lief durch). Bei Wiederholung Kabel/Port/Strom prüfen; `live_cell` sollte vor Läufen mit
+  Greifer-Tools abbrechen, wenn „AG gripper ready“ fehlt
 - [ ] Reichweite: hinteres linkes Fach (x=−0,83) erlaubt TCP 0,30–0,45 m, eine hochkant gehaltene 15-cm-Schachtel
   braucht ≈ 0,60 m über dem 21–27-cm-Rand → Kiste näher (x ≥ −0,65), vorderes Fach, oder VLA
 - [ ] Schließrichtung der Backen kalibrieren (längliche Objekte quer greifen; `align_yaw` lehnt sie bisher ab)
