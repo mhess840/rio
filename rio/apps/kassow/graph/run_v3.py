@@ -88,6 +88,8 @@ def run_workflow(args: Args, path: Path) -> str:
                 photo=cell.photo,
                 segment=SamClient().segment,
                 handeye=_handeye(),
+                views=station_views(cell.env, root),
+                wrist=_wrist(),
             )
 
             def confirm(node: str, tool: Tool, inputs: dict[str, Any]) -> bool:
@@ -174,6 +176,61 @@ def _dry_perception(args: Args, canned: dict) -> dict:
     term(f"[dry run] sam.locate uses SAM on {args.image}" + (" with its depth" if depth is not None else ""))
     shot = Shot(jpeg, depth)
     return {"photo": lambda node: shot, "segment": SamClient().segment, "handeye": _handeye() if depth is not None else None}
+
+
+def station_views(env: Any, root: Path) -> dict[str, Any]:
+    """Photo functions of the overview and wrist cameras the station already streams, with their poses.
+
+    The overview calibration is fixed; the wrist camera's pose is the TCP pose of the photo times its
+    mount, so a wrist photo is taken only once the arm stands still (the executor runs one node at a time).
+    """
+    from rio.apps.kassow.jev_ask import fresh_frame
+    from rio.jev import encode_jpeg
+
+    from .cell import Shot
+    from .handeye import HandEye, load_handeye
+
+    views: dict[str, Any] = {}
+    try:
+        overview = load_handeye(camera="overview")
+    except (OSError, ValueError, KeyError):
+        overview = None
+    wrist = _wrist()
+
+    def keep(node: str, camera: str, jpeg: bytes) -> None:
+        (root / f"{node.replace('/', '__')}.{camera}.jpg").write_bytes(jpeg)
+
+    if overview is not None and "camera_2" in env.cameras:
+
+        def overview_photo(node: str) -> Shot:
+            jpeg = encode_jpeg(fresh_frame(env.cameras["camera_2"], 0.5))
+            keep(node, "overview", jpeg)
+            return Shot(jpeg, None, overview)
+
+        views["overview"] = overview_photo
+    if wrist is not None and "camera_1" in env.cameras:
+
+        def wrist_photo(node: str) -> Shot:
+            from rio_hw import time
+
+            time.sleep(0.3)  # let the arm settle after the last move
+            jpeg = encode_jpeg(fresh_frame(env.cameras["camera_1"], 0.3))
+            eef = env.robot.arm.get_state()["eef_pose"]
+            pose = wrist.base_from_camera(eef)
+            keep(node, "wrist", jpeg)
+            return Shot(jpeg, None, HandEye(wrist.camera_serial, wrist.intrinsics, pose.tolist(), {}, {}, {}))
+
+        views["wrist"] = wrist_photo
+    return views
+
+
+def _wrist() -> Any:
+    from .wristeye import load_wristeye
+
+    try:
+        return load_wristeye()
+    except (OSError, ValueError, KeyError):
+        return None
 
 
 def _handeye() -> Any:

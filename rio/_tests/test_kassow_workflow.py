@@ -7,6 +7,7 @@ import copy
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from rio._tests.test_kassow_graph import _box_answers, _table
@@ -279,3 +280,44 @@ def test_sam_locate_attaches_the_depth_yaw_to_the_target():
     yaw = out["target"].yaw_deg
     assert yaw is not None and min(abs(yaw - 25.0), 90 - abs(yaw - 25.0)) < 3.0
     assert out["target"].to_dict()["yaw_period_deg"] == 90.0
+
+
+def test_sam_locate_in_another_camera_uses_its_pose():
+    from rio._tests.test_kassow_depth import TABLE_Z, box_of, camera
+    from rio.apps.kassow.graph.cell import TABLE_Z_M, Shot
+
+    he = camera()  # any calibrated view; looks down from 0.86 m
+    obj = np.array([-0.42, 0.62])
+    box = box_of(he, np.zeros((480, 640)), obj[0], obj[1], 0.02)
+    # box_of projects at TABLE_Z of the depth tests; shift the object plane to match cell.TABLE_Z_M + h/2
+    height = 2 * (TABLE_Z - TABLE_Z_M)
+
+    def segment(jpeg, prompt):
+        return SamReply([Instance(0, tuple(float(v) for v in box), (640, 480), 0.95)], "", 0.0)
+
+    registry = tools(segment=segment, views={"overview": lambda node: Shot(b"jpeg", None, he)})
+    out = registry.get("sam.locate").fn(prompts=["cube"], camera="overview", height_m=height)
+    assert out["camera"] == "overview"
+    assert np.allclose(out["object_xyz"][:2], obj, atol=0.003)
+    with pytest.raises(RuntimeError, match="not connected"):
+        registry.get("sam.locate").fn(prompts=["cube"], camera="wrist")
+
+
+def test_wrist_view_pose_points_the_camera_at_the_spot():
+    from scipy.spatial.transform import Rotation
+
+    from rio.apps.kassow.graph.cell import wrist_view_pose
+    from rio.apps.kassow.graph.handeye import Intrinsics
+    from rio.apps.kassow.graph.wristeye import WristEye, pose_matrix
+
+    mount = np.eye(4)
+    mount[:3, :3] = Rotation.from_euler("y", 8.0, degrees=True).as_matrix()
+    mount[:3, 3] = [-0.078, 0.034, 0.028]
+    wrist = WristEye("0", Intrinsics(640, 480, 606, 606, 333, 245), mount.tolist(), 3, np.eye(4).tolist())
+    down = Rotation.from_euler("x", 180.0, degrees=True).as_rotvec()
+    spot = np.array([-0.4, 0.6, -0.02])
+    xyz, rotvec = wrist_view_pose(wrist, down, spot, 0.3)
+    camera = pose_matrix(np.r_[xyz, rotvec]) @ mount
+    assert camera[2, 3] == pytest.approx(spot[2] + 0.3, abs=1e-6)
+    hit = wrist.pixel_to_plane(np.r_[xyz, rotvec], 333, 245, spot[2])
+    assert hit is not None and np.allclose(hit[:2], spot[:2], atol=1e-6)

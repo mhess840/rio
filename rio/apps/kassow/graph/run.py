@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import tyro
@@ -287,6 +287,8 @@ class LiveCell:
     choose: Callable[[str, list[str]], str | None]
     photo: Callable[[str], Shot]
     """A fresh Jev frame, saved as ``<node>.jpg`` (and ``<node>.depth.npz``, millimetres) in the run folder."""
+    env: Any = None
+    """The started environment (arm, gripper, the station's wrist and overview cameras)."""
 
 
 @contextmanager
@@ -360,7 +362,7 @@ def live_cell(args: Args, table: TableMap | None, root: Path) -> Generator[LiveC
                 time.sleep(0.05)
 
         run_vla = make_run_vla(env, keys, skills, root / "vla", device=args.device, single_slot=args.single_slot, mw=args.mw)
-        yield LiveCell(skills, ask, keys, run_vla, space_or_q, choose, photo)
+        yield LiveCell(skills, ask, keys, run_vla, space_or_q, choose, photo, env)
 
 
 def cli() -> None:

@@ -87,6 +87,12 @@ Full example that ran on the cell (v1 form) and dry-runs in v3:
   (None for round objects); use the height e.g. for `place_at.z_offset_m`.
   Keep `use_depth` false until it is checked on the cell. Absolute heights from
   depth are ≈ 18 mm off (2026-11-16); relative heights are fine.
+- **Other cameras**: objects the Jev camera cannot see (in front of the crate,
+  occluded) → `sam.locate {"camera": "overview", "height_m": <object height>}`;
+  the overview looks from the front at an angle, so give the object's height.
+  For a close look: `kassow.look_at {"x": .., "y": ..}` (a motion, needs
+  approval) then `sam.locate {"camera": "wrist", ...}`. All three cameras are
+  calibrated in the base frame (agree within 1-4 mm on a table marker).
 - **Grasp**: `kassow.pick_at` (exits `held`/`missed`). `z_offset_m` 0.02 and
   `approach_m` 0.15 worked for the cylinder. For a square object (cube) set
   `"align_yaw": true`: the wrist turns at most 45° so the jaws close on two

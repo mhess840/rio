@@ -284,7 +284,11 @@ Nicht versucht, keine Bewegung (`experiments/graph/plans/box_into_crate/report.m
   den letzten Joint, damit Marker 1 zur Kamera zeigt; Startpose behält die Orientierung. 15/18 Posen, 0,41 px,
   Leave-one-out 0,6 mm rms / 1,2 mm max, `calibration/handeye/overview.json`. Gegenprobe Tisch-Marker Overview ↔
   Handgelenk: 3,7 mm
-- [ ] `sam.locate` mit der Handgelenkkamera: Arm fährt eine Blickpose an, Foto, SAM, `pixel_to_plane`
+- [x] `sam.locate camera=overview|wrist` (Strahl durch SAM-Box ∩ Ebene in Objektmitte, `height_m`), `kassow.look_at x y`
+  (Handgelenkkamera schaut senkrecht von `height_m` auf einen Tischpunkt); Live-Läufe binden Overview und Handgelenk
+  der Station ein. Test 16.11. (ohne Bewegung): Schachtel vor der Kiste per Overview „small box“ 0,92 bei
+  (−0,377, 0,502), Jev (angeschnitten) 7 mm daneben, im Greifbereich
+- [ ] `kassow.look_at` + `camera=wrist` an der Zelle testen
 - [ ] Reichweite: hinteres linkes Fach (x=−0,83) erlaubt TCP 0,30–0,45 m, eine hochkant gehaltene 15-cm-Schachtel
   braucht ≈ 0,60 m über dem 21–27-cm-Rand → Kiste näher (x ≥ −0,65), vorderes Fach, oder VLA
 - [ ] Schließrichtung der Backen kalibrieren (längliche Objekte quer greifen; `align_yaw` lehnt sie bisher ab)

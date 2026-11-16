@@ -175,6 +175,17 @@ class KassowSkills:
             return False
         return self._command_gripper(self.gripper_open if state == "open" else self.gripper_close)
 
+    def move_tcp(self, xyz: np.ndarray, rotvec: np.ndarray) -> Outcome:
+        """``moveJ`` so the TCP lands at ``xyz`` with ``rotvec`` (IK-checked; e.g. a wrist-camera view pose)."""
+        from rio.apps.kassow import goto
+
+        status = goto.move_tcp(
+            self.env, np.asarray(xyz, dtype=float), np.asarray(rotvec, dtype=float), home_joint_speed=self.home_joint_speed
+        )
+        if status is goto.MoveStatus.ALARM:
+            return self._alarm()
+        return status is goto.MoveStatus.LANDED and self._tcp_near(np.asarray(xyz, dtype=float))
+
     def move_above(self, target: Target, *, height_m: float) -> Outcome:
         """``moveJ`` to ``height_m`` above the calibrated grasp height at ``target``."""
         from rio.apps.kassow.graph.model import HOVER_M_RANGE
@@ -267,6 +278,10 @@ class DrySkills:
 
     def place_at(self, target: Target, *, approach_m: float, z_offset_m: float) -> Outcome:
         term(f"[dry run] would place at {target.name} x={target.x:.3f} y={target.y:.3f} (+{z_offset_m:.2f} m)")
+        return True
+
+    def move_tcp(self, xyz: np.ndarray, rotvec: np.ndarray) -> Outcome:
+        term(f"[dry run] would moveJ the TCP to x={xyz[0]:.3f} y={xyz[1]:.3f} z={xyz[2]:.3f}")
         return True
 
     def move_above(self, target: Target, *, height_m: float) -> Outcome:

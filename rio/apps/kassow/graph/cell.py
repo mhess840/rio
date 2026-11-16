@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from .handeye import HandEye
     from .table_map import TableMap, Target
     from .walk import Skills
+    from .wristeye import WristEye
 
 Ask = Callable[[str, dict, str], dict]
 """``ask(node_path, questions, note)`` returns Jev's ``answers`` object."""
@@ -54,10 +55,15 @@ RunVla = Callable[[str, str, float], object]
 
 @dataclass(frozen=True)
 class Shot:
-    """One Jev frame: the JPEG and, when the camera streams it, depth in metres aligned to it."""
+    """One camera frame: the JPEG, depth in metres aligned to it if streamed, and the camera pose at capture.
+
+    ``view`` is a calibrated camera in the base frame (``HandEye``): the fixed Jev or overview
+    calibration, or the wrist camera at the TCP pose of the photo. None means the Jev calibration.
+    """
 
     jpeg: bytes
     depth_m: np.ndarray | None = None
+    view: HandEye | None = None
 
 
 Photo = Callable[[str], "bytes | Shot"]
@@ -67,6 +73,11 @@ Segment = Callable[[bytes, str], "SamReply"]
 
 TARGET = "Target"
 LIFT_M = 0.1
+TABLE_Z_M = -0.020
+"""Table surface in the base frame: wrist-calibration marker plane (-0.021) and Jev depth (-0.025), 2026-11-16."""
+OBJECT_HEIGHT_M = 0.04
+LOOK_HEIGHT_M = 0.30
+CAMERAS = ("jev", "overview", "wrist")
 OPERATOR_MAX_ANSWERS = 9
 """The operator answers with one key, 1 to 9."""
 SAM_YES = 0.8
@@ -90,6 +101,8 @@ def cell_tools(
     segment: Segment | None = None,
     handeye: HandEye | None = None,
     jaw_yaw: Callable[[], float | None] | None = None,
+    views: dict[str, Photo] | None = None,
+    wrist: WristEye | None = None,
     pose_exists: Callable[[str], bool] = pose_is_file,
 ) -> ToolRegistry:
     """Every tool of the cell, bound to live or dry-run parts.
@@ -104,6 +117,9 @@ def cell_tools(
         segment: SAM on one photo and one noun phrase; ``sam.locate`` needs it.
         handeye: Camera pose; with depth in the photo ``sam.locate`` measures height and yaw.
         jaw_yaw: Jaw reference yaw for ``pick_at align_yaw`` (default: ``jaw_yaw.json`` next to the table map).
+        views: More cameras for ``sam.locate camera=...``: ``overview`` and ``wrist`` photo functions whose
+            shots carry their camera pose (``Shot.view``).
+        wrist: Wrist-camera calibration; ``kassow.look_at`` needs it.
         pose_exists: Whether a home file exists (tests pass a stub).
     """
 
@@ -173,11 +189,21 @@ def cell_tools(
             return {"exit": "outside_area", "target": target, "detail": detail, **seen}
         return {"exit": "found", "target": target, "detail": json.dumps(target.to_dict()), **seen}
 
-    def sam_locate(prompts: list[str], threshold: float = SAM_YES, use_depth: bool = False) -> dict:
+    def sam_locate(
+        prompts: list[str],
+        threshold: float = SAM_YES,
+        use_depth: bool = False,
+        camera: str = "jev",
+        height_m: float = OBJECT_HEIGHT_M,
+    ) -> dict:
         if table is None:
             raise RuntimeError("sam.locate needs a table map")
-        if photo is None or segment is None:
-            raise RuntimeError("sam.locate needs the Jev camera and SAM")
+        if segment is None:
+            raise RuntimeError("sam.locate needs SAM")
+        if camera != "jev":
+            return _locate_in_view(camera, prompts, threshold, height_m)
+        if photo is None:
+            raise RuntimeError("sam.locate needs the Jev camera")
         shot = photo(current_node())
         jpeg, depth = (shot.jpeg, shot.depth_m) if isinstance(shot, Shot) else (shot, None)
         tried: dict[str, float] = {}
@@ -212,6 +238,73 @@ def cell_tools(
                 return {"exit": "outside_area", "detail": detail, **seen}
             return {"exit": "found", "detail": json.dumps(target.to_dict()), **seen}
         return {"exit": "not_found", "detail": f"no prompt reached {threshold}: {tried}", "tried": tried}
+
+    def _locate_in_view(camera: str, prompts: list[str], threshold: float, height_m: float) -> dict:
+        """SAM in a non-Jev camera: the box centre's ray meets the plane at the object's mid-height."""
+        assert table is not None and segment is not None
+        take = (views or {}).get(camera)
+        if take is None:
+            raise RuntimeError(f"sam.locate camera {camera!r} is not connected")
+        shot = take(current_node())
+        if not isinstance(shot, Shot) or shot.view is None:
+            raise RuntimeError(f"camera {camera!r} gave no calibrated view")
+        view = shot.view
+        tried: dict[str, float] = {}
+        for prompt in prompts:
+            reply = segment(shot.jpeg, prompt)
+            best = reply.best()
+            score = float(best.score or 0.0) if best is not None else 0.0
+            tried[prompt] = round(score, 3)
+            if best is None or score < threshold:
+                continue
+            x1, y1, x2, y2 = best.box
+            z = TABLE_Z_M + height_m / 2.0
+            centre = view.pixel_to_plane((x1 + x2) / 2.0, (y1 + y2) / 2.0, z)
+            left = view.pixel_to_plane(x1, (y1 + y2) / 2.0, z)
+            right = view.pixel_to_plane(x2, (y1 + y2) / 2.0, z)
+            if centre is None:
+                continue
+            tcp = centre[:2] - table.tool_xy()
+            width = float(np.linalg.norm(right[:2] - left[:2])) if left is not None and right is not None else 0.0
+            from .table_map import Target
+
+            target = Target(prompt, float(tcp[0]), float(tcp[1]), width, width, score)
+            measured = None
+            if shot.depth_m is not None:
+                measured = _measure(shot.depth_m, best.box, view, table, target, shot.jpeg)
+                if measured is not None and measured.get("yaw_deg") is not None:
+                    target = replace(target, yaw_deg=measured["yaw_deg"], yaw_period_deg=measured["period_deg"])
+            w, h = best.size
+            seen = {
+                "camera": camera,
+                "object_xyz": [round(float(v), 4) for v in centre],
+                "measured": measured,
+                "source": "image",
+                "prompt": prompt,
+                "confidence": score,
+                "box": {"left": x1 / w, "top": y1 / h, "right": (x2 + 1) / w, "bottom": (y2 + 1) / h},
+                "count": sum(1 for i in reply.instances if (i.score or 0.0) >= threshold),
+                "tried": tried,
+                "target": target,
+            }
+            if not table.contains(target.x, target.y):
+                detail = f"{prompt} ({camera}): x={target.x:.3f} y={target.y:.3f} is outside the calibrated area"
+                return {"exit": "outside_area", "detail": detail, **seen}
+            return {"exit": "found", "detail": json.dumps(target.to_dict()), **seen}
+        return {
+            "exit": "not_found",
+            "detail": f"{camera}: no prompt reached {threshold}: {tried}",
+            "tried": tried,
+            "camera": camera,
+        }
+
+    def look_at(x: float, y: float, height_m: float = LOOK_HEIGHT_M) -> dict:
+        """Move so the wrist camera looks straight at table point ``x, y`` from ``height_m`` above it."""
+        if wrist is None or table is None:
+            raise RuntimeError("kassow.look_at needs the wrist calibration and the table map")
+        xyz, rotvec = wrist_view_pose(wrist, table.rotvec, np.array([x, y, TABLE_Z_M]), height_m)
+        _must(skills.move_tcp(xyz, rotvec), f"look_at x={x:.3f} y={y:.3f}")
+        return {"tcp": [round(float(v), 4) for v in xyz]}
 
     def jev_ask(question: dict, threshold: float | None = None, note: str = "") -> dict:
         answers = ask(current_node(), {"q": question}, note)
@@ -352,6 +445,13 @@ def cell_tools(
                         "take the target from depth (top-surface centre) instead of the image box; "
                         "default false until checked on the cell",
                     ),
+                    "camera": Param(
+                        "str",
+                        False,
+                        "jev (default, top-down), overview (fixed, from the front: sees what Jev misses) or "
+                        "wrist (after kassow.look_at)",
+                    ),
+                    "height_m": Param("float", False, f"object height for overview/wrist, default {OBJECT_HEIGHT_M}"),
                 },
                 outputs={
                     "exit": "str",
@@ -364,10 +464,25 @@ def cell_tools(
                     "tried": "dict",
                     "measured": "dict",
                     "source": "str",
+                    "camera": "str",
+                    "object_xyz": "list",
                 },
                 exits=("found", "not_found", "outside_area"),
                 tags=(PERCEPTION,),
                 check=_check_sam,
+            ),
+            Tool(
+                "kassow.look_at",
+                look_at,
+                "move the arm so the wrist camera looks at a table point from above; then sam.locate camera=wrist",
+                inputs={
+                    "x": Param("float", doc="table point, base frame (m)"),
+                    "y": Param("float", doc="table point, base frame (m)"),
+                    "height_m": Param("float", False, f"camera height above the table, default {LOOK_HEIGHT_M}"),
+                },
+                outputs={"tcp": "list"},
+                tags=(MOTION,),
+                check=_ranges({"height_m": (0.15, 0.6)}),
             ),
             Tool(
                 "jev.ask",
@@ -446,6 +561,21 @@ def _check_locate(inputs: dict[str, Any]) -> list[str]:
     return problems
 
 
+def wrist_view_pose(wrist: WristEye, rotvec: np.ndarray, point: np.ndarray, height_m: float) -> tuple[np.ndarray, np.ndarray]:
+    """TCP pose (grasp orientation ``rotvec``) that puts the wrist camera's optical axis through ``point``
+    with the camera ``height_m`` above it."""
+    from scipy.spatial.transform import Rotation
+
+    rotation = Rotation.from_rotvec(rotvec).as_matrix()
+    mount = np.asarray(wrist.tcp_from_camera, dtype=float)
+    axis = rotation @ mount[:3, :3] @ np.array([0.0, 0.0, 1.0])
+    if axis[2] > -0.5:
+        raise RuntimeError("the wrist camera does not look down in the grasp orientation")
+    distance = height_m / -axis[2]
+    camera = np.asarray(point, dtype=float) - distance * axis
+    return camera - rotation @ mount[:3, 3], np.asarray(rotvec, dtype=float)
+
+
 def _tool_xy(table: TableMap) -> np.ndarray:
     """Base-frame offset from the TCP to the grasped object's centre in x, y (mean grasp)."""
     from scipy.spatial.transform import Rotation
@@ -501,7 +631,9 @@ def _depth_target(measured: dict, name: str, score: float) -> Target:
 
 
 def _check_sam(inputs: dict[str, Any]) -> list[str]:
-    problems = _ranges({"threshold": (0.0, 1.0)})(inputs)
+    problems = _ranges({"threshold": (0.0, 1.0), "height_m": (0.005, 0.4)})(inputs)
+    if "camera" in inputs and inputs["camera"] not in CAMERAS:
+        problems.append(f"camera must be one of {list(CAMERAS)}")
     prompts = inputs.get("prompts")
     if prompts is None:
         return problems
