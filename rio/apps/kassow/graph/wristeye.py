@@ -56,7 +56,9 @@ CAMERA_KEY = "camera_wrist"
 FRAMES_PER_POSE = 3
 MIN_SAMPLES = 8
 MAX_RMS_PX = 2.0
-MAX_SPREAD_MM = 6.0
+MAX_LOO_RMS_MM = 3.0
+MAX_LOO_MAX_MM = 6.0
+"""Leave-one-out: fit without one view, predict where the marker appears in it, as distance on the marker plane."""
 
 
 def wrist_camera() -> Camera:
@@ -219,7 +221,9 @@ def _residuals(params: np.ndarray, samples: list[Sample], points: np.ndarray, in
     return np.concatenate(out)
 
 
-def fit_wristeye(samples: list[Sample], intr: Intrinsics, *, marker: int, camera_serial: str) -> WristEye:
+def fit_wristeye(
+    samples: list[Sample], intr: Intrinsics, *, marker: int, camera_serial: str, size_m: float | None = None, loo: bool = True
+) -> WristEye:
     """Camera mount and marker pose from the samples.
 
     Raises:
@@ -227,11 +231,12 @@ def fit_wristeye(samples: list[Sample], intr: Intrinsics, *, marker: int, camera
     """
     if len(samples) < MIN_SAMPLES:
         raise ValueError(f"{len(samples)} samples; at least {MIN_SAMPLES} are needed")
-    if marker not in MARKER_SIZES_M:
+    if size_m is None and marker not in MARKER_SIZES_M:
         raise ValueError(f"marker {marker} has no known size; known: {sorted(MARKER_SIZES_M)}")
-    points = marker_points(MARKER_SIZES_M[marker])
+    size = float(size_m or MARKER_SIZES_M[marker])
+    points = marker_points(size)
     base_from_tcp = [pose_matrix(s.tcp) for s in samples]
-    camera_from_marker = [_pnp(np.asarray(s.corners), MARKER_SIZES_M[marker], intr) for s in samples]
+    camera_from_marker = [_pnp(np.asarray(s.corners), size, intr) for s in samples]
     start = solve_ax_xb(base_from_tcp, camera_from_marker)
     guesses = [b @ start @ c for b, c in zip(base_from_tcp, camera_from_marker, strict=True)]
     marker_guess = guesses[0].copy()
@@ -246,9 +251,20 @@ def fit_wristeye(samples: list[Sample], intr: Intrinsics, *, marker: int, camera
     for b, c in zip(base_from_tcp, camera_from_marker, strict=True):
         centres.append((b @ tcp_from_camera @ c)[:3, 3])
     spread = np.linalg.norm(np.asarray(centres) - base_from_marker[:3, 3], axis=1) * 1000.0
+    loo_mm = []
+    if loo:
+        for i, held_out in enumerate(samples):
+            refit = least_squares(_residuals, solution.x, args=(samples[:i] + samples[i + 1 :], points, intr), method="lm")
+            error = _residuals(refit.x, [held_out], points, intr).reshape(-1, 2)
+            camera = pose_matrix(held_out.tcp) @ _matrix(refit.x[:6])
+            distance = float(np.linalg.norm(_matrix(refit.x[6:])[:3, 3] - camera[:3, 3]))
+            loo_mm.append(float(np.sqrt(np.mean(np.sum(error**2, axis=1)))) * distance / intr.fx * 1000.0)
     stats = {
         "fitted": datetime.now().isoformat(timespec="seconds"),
         "n_samples": len(samples),
+        "marker_size_m": size,
+        "loo_rms_mm": float(np.sqrt(np.mean(np.square(loo_mm)))) if loo_mm else None,
+        "loo_max_mm": float(np.max(loo_mm)) if loo_mm else None,
         "rms_px": float(np.sqrt(np.mean(residual**2))),
         "per_sample_px": {s.name: round(float(p), 2) for s, p in zip(samples, per_sample, strict=True)},
         "marker_spread_rms_mm": float(np.sqrt(np.mean(spread**2))),
@@ -264,8 +280,12 @@ def fit_problems(fit: WristEye) -> list[str]:
     s, problems = fit.stats, []
     if s["rms_px"] > MAX_RMS_PX:
         problems.append(f"reprojection rms {s['rms_px']:.2f} px > {MAX_RMS_PX}")
-    if s["marker_spread_max_mm"] > MAX_SPREAD_MM:
-        problems.append(f"marker spread max {s['marker_spread_max_mm']:.1f} mm > {MAX_SPREAD_MM}")
+    if s.get("loo_rms_mm") is None:
+        problems.append("no leave-one-out check")
+    elif s["loo_rms_mm"] > MAX_LOO_RMS_MM or s["loo_max_mm"] > MAX_LOO_MAX_MM:
+        problems.append(
+            f"leave-one-out {s['loo_rms_mm']:.1f} mm rms / {s['loo_max_mm']:.1f} mm max > {MAX_LOO_RMS_MM} / {MAX_LOO_MAX_MM}"
+        )
     if np.linalg.norm(s["camera_offset_mm"]) > 250:
         problems.append(f"camera {np.linalg.norm(s['camera_offset_mm']):.0f} mm from the TCP")
     return problems
@@ -283,6 +303,8 @@ class Args(GotoArgs):
     """Check the marker and every pose without moving."""
     marker: int | None = None
     """ArUco id on the table; unset: the largest known id the wrist camera sees."""
+    marker_size_m: float | None = None
+    """Measured side of the printed marker (black square); unset: the nominal size of its id."""
     session: str | None = None
     """``fit``: session folder to fit again."""
     cameras: dict[str, Camera] = field(default_factory=lambda: {CAMERA_KEY: wrist_camera()})
@@ -384,19 +406,22 @@ def run(args: Args) -> WristEye | None:
             logger.info("Returning to the start pose")
             goto_home(env, {"joint_q": q0, "eef_pose": anchor}, home_joint_speed=args.home_joint_speed, set_gripper=False)
         logger.info("Session {}", folder)
-        return fit_and_store(samples, intr, marker)
+        return fit_and_store(samples, intr, marker, args.marker_size_m)
 
 
-def fit_and_store(samples: list[Sample], intr: Intrinsics, marker: int) -> WristEye | None:
+def fit_and_store(samples: list[Sample], intr: Intrinsics, marker: int, size_m: float | None = None) -> WristEye | None:
     if len(samples) < MIN_SAMPLES:
         logger.error("{} samples are too few to fit", len(samples))
         return None
-    fit = fit_wristeye(samples, intr, marker=marker, camera_serial=WRIST_SERIAL)
+    fit = fit_wristeye(samples, intr, marker=marker, camera_serial=WRIST_SERIAL, size_m=size_m)
     s = fit.stats
     logger.info(
-        "samples {} | rms {:.2f} px | marker spread rms {:.1f} mm, max {:.1f} mm | camera offset {} mm, axis {} | marker at {}",
+        "samples {} | rms {:.2f} px | leave-one-out {:.1f} mm rms, {:.1f} mm max | single-view marker spread rms {:.1f} mm, "
+        "max {:.1f} mm | camera offset {} mm, axis {} | marker at {}",
         s["n_samples"],
         s["rms_px"],
+        s["loo_rms_mm"],
+        s["loo_max_mm"],
         s["marker_spread_rms_mm"],
         s["marker_spread_max_mm"],
         s["camera_offset_mm"],
@@ -419,7 +444,7 @@ def main(args: Args) -> WristEye | None:
         folder = Path(args.session)
         meta = json.loads((folder / "session.json").read_text())
         samples = [Sample(**json.loads(line)) for line in (folder / "samples.jsonl").read_text().splitlines() if line.strip()]
-        return fit_and_store(samples, Intrinsics(**meta["intrinsics"]), int(meta["marker"]))
+        return fit_and_store(samples, Intrinsics(**meta["intrinsics"]), int(meta["marker"]), args.marker_size_m)
     return run(args)
 
 

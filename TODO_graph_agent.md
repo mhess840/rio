@@ -274,8 +274,12 @@ baut und wie die Zelle ihn abläuft, verständlich auch für Zuschauer ohne Robo
 
 Nicht versucht, keine Bewegung (`experiments/graph/plans/box_into_crate/report.md`). Fehlende Fähigkeiten:
 
-- [ ] Handgelenkkamera kalibrieren (Eye-in-Hand), damit der Arm Objekte außerhalb des Jev-Bilds finden kann
-  (die Kiste verdeckt den Bereich davor)
+- [x] Handgelenkkamera kalibriert (Eye-in-Hand, `graph/wristeye.py`, 16.11.): ArUco 3 auf dem Tisch, 11 von 18 Posen,
+  Reprojektion 0,87 px, Leave-one-out 1,4 mm rms / 2,2 mm max; Kamera 78/34/28 mm vom TCP, Achse 8° zur Werkzeugachse.
+  `calibration/handeye/wrist.json`
+- [ ] Markerebene liegt 14 mm tiefer als der Tisch aus der Jev-/Greifkalibrierung (−0,021 vs. ≈ −0,007 m); Jev-Tiefe
+  sagt −0,025. Druckmaßstab des Markers nachmessen (`--marker-size-m`) oder Tischhöhe unabhängig bestimmen
+- [ ] `sam.locate` mit der Handgelenkkamera: Arm fährt eine Blickpose an, Foto, SAM, `pixel_to_plane`
 - [ ] Reichweite: hinteres linkes Fach (x=−0,83) erlaubt TCP 0,30–0,45 m, eine hochkant gehaltene 15-cm-Schachtel
   braucht ≈ 0,60 m über dem 21–27-cm-Rand → Kiste näher (x ≥ −0,65), vorderes Fach, oder VLA
 - [ ] Schließrichtung der Backen kalibrieren (längliche Objekte quer greifen; `align_yaw` lehnt sie bisher ab)
