@@ -5,7 +5,8 @@
 
 ``describe`` prints what a graph may use, ``look`` saves one photo per camera,
 ``ask`` puts Jev questions (or ``--locate``) to a photo, ``check`` validates a
-graph, ``run`` walks it. ``describe``, ``look``, and ``ask`` print JSON.
+graph, ``run`` walks it, ``view`` serves the live page (``rio.graph.live``).
+``describe``, ``look``, and ``ask`` print JSON.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ from .walk import Keys, Skills, WalkLog, walk
 class Args:
     """Plan and walk a Graph-as-Policy file. Dry-run is the default."""
 
-    command: Literal["describe", "look", "ask", "check", "run"] = "check"
+    command: Literal["describe", "look", "ask", "check", "run", "view"] = "check"
     """``describe``/``look``/``ask`` help to plan, ``check`` reads a graph, ``run`` walks it."""
     graph: Path | None = None
     """Graph JSON. Unset: the shipped example."""
@@ -69,6 +70,10 @@ class Args:
     mp_method: str = "spawn"
     home_joint_speed: float = 0.51
     """Fastest joint speed of a home moveJ, rad/s."""
+    view_host: str = "127.0.0.1"
+    """``view``: interface of the live page; 0.0.0.0 shows it on another screen."""
+    view_port: int = 8766
+    """``view``: port of the live page."""
 
 
 def graph_path(args: Args) -> Path:
@@ -117,6 +122,11 @@ def load_table(args: Args, graph: Graph | None = None) -> TableMap | None:
 def main(args: Args) -> str:
     """Plan, check, or walk. Returns the stop reason of a run, else ``ok``."""
     make_stdout_blocking()
+    if args.command == "view":
+        from rio.graph.live import serve
+
+        serve(experiments_root() / "graph", args.view_host, args.view_port)
+        return "ok"
     if args.command in ("describe", "look", "ask"):
         print(json.dumps(observe(args), indent=2))
         return "ok"

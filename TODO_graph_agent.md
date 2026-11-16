@@ -43,7 +43,7 @@ andere Applikateure Aufgaben automatisieren.
 - [x] Arbeit im Worktree `../rio-graph-handeye` (eigene `.venv`, `experiments` als Symlink auf `../rio/experiments`);
   der Haupt-Checkout bleibt auf `kassow-hand` für Demos. `../rio-hw` teilen sich beide: dort nichts ändern
 - [ ] Beim Start des Arms die Log-Zeile `FK vs measured TCP` prüfen: unter 5 mm
-- [ ] `graph/*.json` in `package-data` aufnehmen (nur bei nicht-editierbarer Installation relevant)
+- [x] `graph/*.json`, `graph/workflows/*.json` und `live_view.html` in `package-data`
 
 ## B. Wahrnehmung (SAM 3.1 + Tiefe)
 
@@ -176,25 +176,29 @@ nicht für reines Greifen und Ablegen.
 Für Vorführungen: eine Seite im Browser, auf der man in Echtzeit sieht, wie der Planer den Graphen
 baut und wie die Zelle ihn abläuft, verständlich auch für Zuschauer ohne Robotik-Hintergrund.
 
-- [ ] Grundlage: Muster von `orchestrator/board.py` (stdlib-HTTP-Server auf localhost, keine neue
+- [x] Grundlage: Muster von `orchestrator/board.py` (stdlib-HTTP-Server auf localhost, keine neue
   Abhängigkeit, darf den Arm nie aufhalten); statt Polling Server-Sent Events für flüssige Updates
-- [ ] Eine Ereignisquelle für alles: Planer und Walker schreiben dieselben Ereignisse (Phase E),
+- [x] Eine Ereignisquelle für alles: Planer und Walker schreiben dieselben Ereignisse (Phase E),
   die GUI liest nur; dieselben Daten lassen sich später als Aufzeichnung abspielen
-- [ ] **Planungsphase live:** Aufgabe → Zerlegung in Subgraphen (erscheinen nacheinander) → gewählter
+- [x] **Planungsphase live:** Aufgabe → Zerlegung in Subgraphen (erscheinen nacheinander) → gewählter
   Skill pro Subgraph mit kurzer Begründung (inkl. VLA oder Graph-Skill, Phase L) → Validator-Ergebnis
   (rot/grün, Fix-Runden sichtbar) → Dry-Run-Pfad
-- [ ] **Ausführung live:** aktiver Knoten hervorgehoben, durchlaufener Pfad eingefärbt, Exit-Wert an
+- [x] **Ausführung live:** aktiver Knoten hervorgehoben, durchlaufener Pfad eingefärbt, Exit-Wert an
   jeder Kante, Recovery-Pfade sichtbar
-- [ ] **Was die Zelle sieht:** Jev-Foto mit SAM-Maske, OBB, Gierwinkel und Konfidenz; Wrist/Overview
-  bei VLA-Knoten; Zielpunkt und TCP-Abweichung
-- [ ] **Bediener im Bild:** wartende Freigabe groß sichtbar (Leertaste/`q`), `ask_operator`-Fragen und
+- [x] **Was die Zelle sieht:** Jev-Foto mit Box, Konfidenz und Zielpunkt
+- [ ] … SAM-Maske, OBB und Gierwinkel (nach Phase B); Wrist/Overview bei VLA-Knoten; TCP-Abweichung
+- [x] **Bediener im Bild:** wartende Freigabe groß sichtbar (Leertaste/`q`), `ask_operator`-Fragen und
   Antworten im Modus kollaborativ deutlich anders markiert als Sensor-Knoten
-- [ ] **Checkpoints und Kennzahlen:** Ergebnis jeder Nachbedingung, Laufzeit pro Knoten, Gesamtzeit,
-  Erfolgsrate aus dem Benchmark (Phase I)
+- [x] Gesamtzeit und Laufzeit pro Knoten (Ablauf-Spalte)
+- [ ] **Checkpoints und Kennzahlen:** Ergebnis jeder Nachbedingung, Erfolgsrate aus dem Benchmark (Phase I)
 - [ ] **Vergleichsansicht:** autonom vs. kollaborativ vs. Handgraph nebeneinander (Phase J);
   Self-Learning-Iterationen als Diff zwischen Graph-Versionen (Phase H)
-- [ ] Demo-tauglich: Vollbild, großer Text, Deutsch/Englisch umschaltbar, läuft ohne Internet
+- [x] Demo-tauglich: Vollbild, großer Text, Deutsch/Englisch umschaltbar, läuft ohne Internet
   (keine CDN-Abhängigkeit an der Station)
+- [x] Start: `uv run python -m rio.apps.kassow.graph --command view` → http://127.0.0.1:8766
+  (`?run=<ordner>`, `?plan=<task>`, `?lang=en`; `--view-host 0.0.0.0` für einen zweiten Bildschirm)
+- [x] Export eines Laufs als eigenständige HTML-Datei: `uv run python -m rio.graph.live --root experiments/graph --export lauf.html`
+- [ ] Erster Einsatz an der Zelle: Planung + Live-Lauf auf zweitem Bildschirm
 - [ ] Prüfen, ob GaPs Trace-Browser (`gap viz`, FastAPI + React) für die Nachbetrachtung reicht und
   unsere GUI sich auf die Live-Ansicht beschränken kann
 

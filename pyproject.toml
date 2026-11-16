@@ -96,7 +96,8 @@ rio_hw = { path = "../rio-hw", editable = true }
 include = ["rio*"]
 
 [tool.setuptools.package-data]
-"rio.apps.kassow" = ["homes/*.json", "inlay/*.jpg"]
+"rio.apps.kassow" = ["homes/*.json", "inlay/*.jpg", "graph/*.json", "graph/workflows/*.json"]
+"rio.graph" = ["live_view.html"]
 
 [tool.setuptools.dynamic]
 version = { file = ["VERSION"] }

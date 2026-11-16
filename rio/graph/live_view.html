@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graph as Policy</title>
+<style>
+  :root {
+    --bg: #0e1320; --panel: #161e30; --panel2: #1d2740; --line: #2c3a5c;
+    --text: #e9eef8; --dim: #8d9bb8; --accent: #4da3ff;
+    --ok: #3ecf8e; --bad: #ff5d6c; --wait: #ffb020; --human: #ff9f43; --rec: #b48cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 17px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 18px;
+    background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 22px; margin: 0 8px 0 0; font-weight: 650; }
+  #task { font-size: 20px; flex: 1 1 320px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { padding: 4px 12px; border-radius: 999px; font-weight: 600; font-size: 15px; background: var(--panel2); border: 1px solid var(--line); }
+  .badge.ok { background: rgba(62,207,142,.18); border-color: var(--ok); color: var(--ok); }
+  .badge.bad { background: rgba(255,93,108,.18); border-color: var(--bad); color: var(--bad); }
+  .badge.run { background: rgba(77,163,255,.18); border-color: var(--accent); color: var(--accent); }
+  .badge.human { background: rgba(255,159,67,.18); border-color: var(--human); color: var(--human); }
+  #timer { font-variant-numeric: tabular-nums; font-size: 22px; min-width: 70px; text-align: right; }
+  select, button { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 5px 10px; font: inherit; font-size: 15px; cursor: pointer; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  main { display: grid; grid-template-columns: minmax(300px, 27%) 1fr; gap: 12px; padding: 12px;
+    height: calc(100% - 58px); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+    display: flex; flex-direction: column; min-height: 0; }
+  .panel h2 { margin: 0; padding: 10px 14px; font-size: 15px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--dim); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+  #plan { overflow-y: auto; padding: 10px 14px; flex: 1; }
+  .ev { padding: 8px 10px; margin: 0 0 8px; border-radius: 8px; background: var(--panel2); border-left: 4px solid var(--line); }
+  .ev .k { font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
+  .ev.human { border-left-color: var(--human); }
+  .ev.rec { border-left-color: var(--rec); }
+  .ev.ok { border-left-color: var(--ok); }
+  .ev.bad { border-left-color: var(--bad); }
+  .ev.stage { border-left-color: var(--accent); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .chip { background: #24304d; border-radius: 6px; padding: 2px 8px; font-size: 15px; }
+  .why { color: var(--dim); font-size: 15px; }
+  #right { display: grid; grid-template-rows: minmax(0, 1.7fr) minmax(0, 1fr); gap: 12px; min-height: 0; }
+  #graphwrap { position: relative; flex: 1; min-height: 0; }
+  #graph { width: 100%; height: 100%; }
+  #banner { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); max-width: 90%;
+    padding: 12px 22px; border-radius: 12px; font-size: 22px; font-weight: 650; display: none;
+    box-shadow: 0 8px 30px rgba(0,0,0,.5); z-index: 2; text-align: center; }
+  #banner.wait { display: block; background: #3a2a05; border: 2px solid var(--wait); color: #ffe2a3; animation: pulse 1.4s infinite; }
+  #banner.human { display: block; background: #3a2208; border: 2px solid var(--human); color: #ffd7b0; animation: pulse 1.4s infinite; }
+  #banner .sub { font-size: 17px; font-weight: 450; margin-top: 4px; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 8px rgba(255,176,32,.12); } }
+  #bottom { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; min-height: 0; }
+  #cam { flex: 1; display: flex; flex-direction: column; padding: 10px 14px; gap: 8px; min-height: 0; }
+  #photo { position: relative; flex: 1; min-height: 0; background: #0a0f1a; border-radius: 8px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center; color: var(--dim); }
+  #photo img { max-width: 100%; max-height: 100%; display: block; }
+  #photo .frame { position: relative; display: inline-block; max-height: 100%; }
+  #photo .box { position: absolute; border: 3px solid var(--ok); border-radius: 4px; box-shadow: 0 0 0 2px rgba(0,0,0,.5); }
+  #photo .box.bad { border-color: var(--bad); }
+  #photo .box span { position: absolute; left: -3px; top: -28px; background: var(--ok); color: #04130c;
+    font-size: 14px; font-weight: 700; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
+  #photo .box.bad span { background: var(--bad); color: #fff; }
+  #camtext { font-size: 17px; }
+  #log { overflow-y: auto; padding: 8px 14px; font-size: 16px; flex: 1; }
+  #log div { padding: 3px 0; border-bottom: 1px solid #1f2942; }
+  #log .t { color: var(--dim); font-variant-numeric: tabular-nums; margin-right: 8px; }
+  svg text { fill: var(--text); font-family: inherit; }
+  .node rect { fill: var(--panel2); stroke: var(--line); stroke-width: 2; }
+  .node.active rect.card { stroke: var(--accent); stroke-width: 4; filter: drop-shadow(0 0 10px rgba(77,163,255,.7)); }
+  .node.ok rect.card { stroke: var(--ok); stroke-width: 3; }
+  .node.bad rect.card { stroke: var(--bad); stroke-width: 3; }
+  .node.wait rect.card { stroke: var(--wait); stroke-width: 4; }
+  .node.sketch rect.card { stroke-dasharray: 8 6; fill: transparent; }
+  .node .title { font-size: 20px; font-weight: 650; }
+  .node .skill { font-size: 15px; fill: var(--dim); }
+  .node .inner { font-size: 15px; fill: #c3cde3; }
+  .node .exit { font-size: 15px; font-weight: 700; }
+  .end rect.card { rx: 22; }
+  .edge { fill: none; stroke: #3b4b72; stroke-width: 2; }
+  .edge.taken { stroke: var(--accent); stroke-width: 4; }
+  .edge.back { stroke-dasharray: 6 5; }
+  .edge.tofail { stroke: rgba(255,93,108,.35); }
+  .edge.tosucc { stroke: rgba(62,207,142,.45); }
+  .edge.taken.tofail { stroke: var(--bad); }
+  .elabel { font-size: 15px; fill: var(--dim); }
+  .elabel.taken { fill: var(--accent); font-weight: 700; font-size: 16px; }
+  .dot.ok { fill: var(--ok); } .dot.bad { fill: var(--bad); } .dot.active { fill: var(--accent); }
+  .dot.wait { fill: var(--wait); } .dot.idle { fill: #4a5878; }
+  .empty { color: var(--dim); padding: 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } #right { grid-template-rows: 60vh auto; } #bottom { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Graph as Policy</h1>
+  <div id="task">–</div>
+  <span id="mode" class="badge" hidden></span>
+  <span id="status" class="badge">–</span>
+  <span id="timer">0:00</span>
+  <select id="runsel" title="Run"></select>
+  <button id="lang">EN</button>
+  <button id="full">⛶</button>
+</header>
+<main>
+  <section class="panel">
+    <h2><span data-t="planning"></span><span id="planname" style="text-transform:none"></span></h2>
+    <div id="plan"></div>
+  </section>
+  <div id="right">
+    <section class="panel">
+      <h2><span data-t="graph"></span>
+        <span><button data-view="auto">Auto</button> <button data-view="plan" data-t="plan"></button> <button data-view="run" data-t="run"></button></span></h2>
+      <div id="graphwrap"><div id="banner"></div><svg id="graph"></svg></div>
+    </section>
+    <div id="bottom">
+      <section class="panel"><h2 data-t="sees"></h2>
+        <div id="cam"><div id="photo"></div><div id="camtext"></div></div></section>
+      <section class="panel"><h2 data-t="events"></h2><div id="log"></div></section>
+    </div>
+  </div>
+</main>
+<script>
+"use strict";
+const T = {
+  de: { planning: "Planung", graph: "Graph", plan: "Plan", run: "Lauf", sees: "Was die Zelle sieht", events: "Ablauf",
+        noplan: "Noch kein Planungsprotokoll.", nograph: "Noch kein Graph.", nophoto: "Kein Foto (Dry-Run)",
+        waitphoto: "Noch keine Wahrnehmung.", approve: "Wartet auf Freigabe", approveSub: "Leertaste: los · q: stopp",
+        operator: "Frage an den Bediener", running: "läuft", success: "erfolgreich", failure: "fehlgeschlagen",
+        stopped: "gestoppt", error: "Fehler", limit: "Schleifenlimit", idle: "bereit",
+        autonomous: "autonom", collaborative: "kollaborativ", inventory: "Bestand", observe: "Beobachtet",
+        operatorAsked: "Bediener als Sensor", decompose: "Zerlegung", choose: "Wahl", recommend: "Empfehlung",
+        write: "Graph geschrieben", check: "Prüfung", dry_run: "Dry-Run", approveEv: "Freigabe", runEv: "Lauf",
+        diagnose: "Diagnose", revise: "Überarbeitung", task: "Aufgabe", tools: "Tools", ok: "ok", issues: "Probleme",
+        found: "gefunden", latest: "neuester Lauf" },
+  en: { planning: "Planning", graph: "Graph", plan: "Plan", run: "Run", sees: "What the cell sees", events: "Events",
+        noplan: "No planning log yet.", nograph: "No graph yet.", nophoto: "No photo (dry run)",
+        waitphoto: "Nothing perceived yet.", approve: "Waiting for approval", approveSub: "space: go · q: stop",
+        operator: "Question for the operator", running: "running", success: "success", failure: "failed",
+        stopped: "stopped", error: "error", limit: "loop limit", idle: "ready",
+        autonomous: "autonomous", collaborative: "collaborative", inventory: "Inventory", observe: "Observed",
+        operatorAsked: "Operator as sensor", decompose: "Decomposition", choose: "Choice", recommend: "Recommendation",
+        write: "Graph written", check: "Check", dry_run: "Dry run", approveEv: "Approval", runEv: "Run",
+        diagnose: "Diagnosis", revise: "Revision", task: "Task", tools: "tools", ok: "ok", issues: "issues",
+        found: "found", latest: "latest run" },
+};
+const params = new URLSearchParams(location.search);
+let lang = params.get("lang") || "de";
+const S = {
+  view: params.get("view") || "auto",
+  plan: { name: null, events: [], workflow: null, last: 0 },
+  run: { name: null, workflow: null, events: [], status: "idle", t0: null, t1: null, last: 0,
+         node: {}, inner: {}, exits: {}, taken: new Set(), pending: null, asking: null, camera: null, log: [] },
+};
+const t = (k) => (T[lang] && T[lang][k]) || k;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const short = (v, n = 90) => { const s = typeof v === "string" ? v : JSON.stringify(v); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+const clock = (sec) => { sec = Math.max(0, Math.floor(sec)); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`; };
+const hhmmss = (epoch) => new Date(epoch * 1000).toLocaleTimeString(lang === "de" ? "de-DE" : "en-GB");
+const isoSec = (s) => { const v = Date.parse(s); return isNaN(v) ? 0 : v / 1000; };
+
+// ---------- events from the server ----------
+function onMessage(msg) {
+  if (msg.kind === "plan_reset") { S.plan = { name: msg.name, events: [], workflow: null, last: 0 }; }
+  else if (msg.kind === "plan") { S.plan.events.push(msg.event); S.plan.last = Math.max(S.plan.last, isoSec(msg.event.t)); }
+  else if (msg.kind === "plan_workflow") { S.plan.workflow = msg.workflow; S.plan.changed = msg.workflow ? msg.stamp || 0 : 0; }
+  else if (msg.kind === "run_reset") { resetRun(msg); }
+  else if (msg.kind === "run") { onRunEvent(msg.event, msg.photo); }
+  schedule();
+}
+function resetRun(msg) {
+  S.run = { name: msg.name, workflow: msg.workflow, events: [], status: "idle", t0: null, t1: null, last: 0,
+            node: {}, inner: {}, exits: {}, taken: new Set(), pending: null, asking: null, camera: null, log: [] };
+  const sel = $("runsel"); sel.innerHTML = "";
+  const pinned = params.get("run");
+  const opt0 = document.createElement("option"); opt0.value = ""; opt0.textContent = t("latest"); sel.appendChild(opt0);
+  for (const name of (msg.runs || []).slice().reverse()) {
+    const o = document.createElement("option"); o.value = name; o.textContent = name; sel.appendChild(o);
+  }
+  sel.value = pinned || "";
+}
+function onRunEvent(e, photo) {
+  const R = S.run; R.events.push(e); R.last = e.t || R.last;
+  const path = e.node || ""; const top = path.split("/")[0];
+  switch (e.event) {
+    case "run_start": R.t0 = e.t; R.t1 = null; R.status = "running"; break;
+    case "subgraph_start": R.node[top] = "active"; break;
+    case "confirm": R.pending = e; setState(path, "wait"); break;
+    case "declined": R.pending = null; setState(path, "bad"); break;
+    case "tool_start":
+      R.pending = null; setState(path, "active");
+      if (e.tool === "operator.ask") R.asking = e;
+      break;
+    case "tool_end": {
+      setState(path, "ok"); if (e.outputs && e.outputs.exit) R.exits[path] = e.outputs.exit;
+      if (e.tool === "operator.ask") R.asking = null;
+      if (e.tool === "jev.locate" || e.tool === "jev.ask") R.camera = { e, photo, start: lastStart(path) };
+      break;
+    }
+    case "tool_error": setState(path, "bad"); break;
+    case "route": if (!path.includes("/")) R.taken.add(`${path}->${e.to}`); else R.inner[`${top}->${e.to}`] = true; break;
+    case "subgraph_end": R.exits[top] = e.exit; R.node[top] = e.error_path || leadsToFailure(R.workflow, top, e.exit) ? "bad" : "ok"; break;
+    case "end": R.node[path] = e.status === "success" ? "ok" : "bad"; break;
+    case "run_end": R.status = e.status; R.t1 = e.t; R.pending = null; R.asking = null; break;
+  }
+  R.log.push(e); if (R.log.length > 200) R.log.shift();
+}
+function setState(path, st) {
+  const R = S.run; const parts = path.split("/");
+  if (parts.length > 1) { R.inner[path] = st; if (st !== "ok") R.node[parts[0]] = st === "bad" ? "active" : st; }
+  else R.node[path] = st;
+}
+function lastStart(path) { for (let i = S.run.events.length - 1; i >= 0; i--) { const e = S.run.events[i]; if (e.event === "tool_start" && e.node === path) return e; } return null; }
+function leadsToFailure(wf, node, exit) {
+  const dst = wf && wf.conditional_edges && wf.conditional_edges[node] && wf.conditional_edges[node].mapping[exit];
+  const n = dst && wf.nodes[dst]; return !!(n && n.type === "end" && n.status === "failure");
+}
+
+// ---------- rendering ----------
+let pending = false;
+function schedule() { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; render(); }); } }
+function render() {
+  document.documentElement.lang = lang;
+  document.querySelectorAll("[data-t]").forEach((el) => { el.textContent = t(el.dataset.t); });
+  $("lang").textContent = lang === "de" ? "EN" : "DE";
+  document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === S.view));
+  renderHeader(); renderPlan(); renderGraph(); renderBanner(); renderCamera(); renderLog();
+}
+function taskEvent() { return S.plan.events.slice().reverse().find((e) => e.event === "task"); }
+function renderHeader() {
+  const te = taskEvent(); const wf = S.run.workflow || S.plan.workflow;
+  $("task").textContent = (te && te.task) || (wf && wf.meta && (wf.meta.description || wf.meta.name)) || "–";
+  const mode = $("mode");
+  if (te && te.mode) { mode.hidden = false; mode.textContent = t(te.mode); mode.className = "badge" + (te.mode === "collaborative" ? " human" : ""); }
+  else mode.hidden = true;
+  const st = S.run.status; const b = $("status");
+  b.textContent = S.run.name ? `${t(st === "idle" ? "idle" : st === "running" ? "running" : st)}` : t("idle");
+  b.className = "badge " + (st === "success" ? "ok" : st === "running" ? "run" : ["failure", "stopped", "error", "limit"].includes(st) ? "bad" : "");
+  const t0 = S.run.t0; const end = S.run.t1 || Date.now() / 1000;
+  $("timer").textContent = t0 ? clock(end - t0) : "0:00";
+  $("planname").textContent = S.plan.name || "";
+}
+function renderPlan() {
+  const box = $("plan");
+  if (!S.plan.events.length) { box.innerHTML = `<div class="empty">${esc(t("noplan"))}</div>`; return; }
+  const choices = {};
+  for (const e of S.plan.events) if (e.event === "choose") choices[e.stage] = e;
+  const html = [];
+  for (const e of S.plan.events) {
+    const k = (key, cls = "") => `<div class="ev ${cls}"><div class="k">${esc(t(key))}</div>`;
+    switch (e.event) {
+      case "task": html.push(`${k("task", "stage")}<b>${esc(e.task)}</b> <span class="why">${esc(t(e.mode || ""))}</span></div>`); break;
+      case "inventory": html.push(`${k("inventory")}${esc((e.tools || []).length)} ${esc(t("tools"))} · VLA: ${esc((e.vla || []).join(", ") || "–")}</div>`); break;
+      case "observe": html.push(`${k("observe")}${(e.objects || []).map((o) => `<div>${esc(o.object)}: <b>${esc(o.confidence ?? "?")}</b>${o.inside_area === false ? " ⚠" : ""}${o.x != null ? ` <span class="why">x=${esc(o.x)} y=${esc(o.y)}</span>` : ""}</div>`).join("")}</div>`); break;
+      case "operator": html.push(`${k("operatorAsked", "human")}<b>${esc(e.question)}</b> → ${esc(e.answer)}${e.why ? `<div class="why">${esc(e.why)}</div>` : ""}</div>`); break;
+      case "decompose": html.push(`${k("decompose", "stage")}<div class="chips">${(e.stages || []).map((s) => { const c = choices[s.name]; return `<span class="chip" title="${esc(s.goal || "")}">${esc(s.name)}${c ? ` · ${esc(c.kind)}` : ""}</span>`; }).join("")}</div></div>`); break;
+      case "choose": html.push(`${k("choose")}<b>${esc(e.stage)}</b>: ${esc(e.kind)} ${esc((e.tools || []).join(", "))}<div class="why">${esc(e.why || "")}</div></div>`); break;
+      case "recommend": html.push(`${k("recommend", "rec")}<b>${esc(e.kind)}</b> ${esc(e.stage || "")}: ${esc(e.instruction || "")}<div class="why">${esc(e.why || "")}</div></div>`); break;
+      case "write": html.push(`${k("write")}${esc(e.file)}${e.version ? ` (v${esc(e.version)})` : ""}</div>`); break;
+      case "check": html.push(`${k("check", e.ok ? "ok" : "bad")}${e.ok ? "✓ " + esc(t("ok")) : "✗ " + (e.issues || []).map(esc).join("<br>")}</div>`); break;
+      case "dry_run": html.push(`${k("dry_run", e.status === "success" ? "ok" : "")}${esc(e.status)} → ${esc(e.end || "")}</div>`); break;
+      case "approve": html.push(`${k("approveEv", "human")}${esc(e.note || e.file || "")}</div>`); break;
+      case "run": html.push(`${k("runEv", e.status === "success" ? "ok" : "bad")}${esc(e.status)} → ${esc(e.end || "")} <div class="why">${esc(e.reason || "")}</div></div>`); break;
+      case "diagnose": html.push(`${k("diagnose", "bad")}<b>${esc(e.node)}</b>: ${esc(e.cause)}</div>`); break;
+      case "revise": html.push(`${k("revise", "stage")}${esc(e.from)} → ${esc(e.to)}: ${esc(e.change)}<div class="why">${esc(e.why || "")}</div></div>`); break;
+      default: html.push(`${k(e.event || "?")}${esc(short(e, 160))}</div>`);
+    }
+  }
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.innerHTML = html.join("");
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+function currentView() {
+  if (S.view !== "auto") return S.view;
+  if (S.run.status === "running") return "run";
+  // the plan's graph wins only when it changed after the run's last event (a new plan in progress)
+  if (S.plan.workflow && (S.plan.changed || 0) > (S.run.last || 0)) return "plan";
+  return S.run.workflow ? "run" : "plan";
+}
+function sketchFromPlan() {
+  const d = S.plan.events.slice().reverse().find((e) => e.event === "decompose");
+  if (!d || !(d.stages || []).length) return null;
+  const nodes = {}; const edges = [["START", d.stages[0].name]];
+  d.stages.forEach((s, i) => { nodes[s.name] = { type: "sketch", skill: s.skill, goal: s.goal }; if (i) edges.push([d.stages[i - 1].name, s.name]); });
+  return { nodes, edges, conditional_edges: {}, subgraphs: {} };
+}
+
+// Layered layout: columns by longest path from START (back edges ignored), end nodes in a bottom row.
+function layout(wf) {
+  const names = Object.keys(wf.nodes || {});
+  const edges = [];
+  for (const [a, b] of wf.edges || []) if (a !== "START") edges.push({ a, b, labels: [] });
+  for (const [a, c] of Object.entries(wf.conditional_edges || {}))
+    for (const [v, b] of Object.entries(c.mapping || {})) {
+      const ex = edges.find((x) => x.a === a && x.b === b);
+      if (ex) ex.labels.push(v); else edges.push({ a, b, labels: [v] });
+    }
+  const starts = (wf.edges || []).filter(([a]) => a === "START").map(([, b]) => b);
+  const out = (n) => edges.filter((e) => e.a === n);
+  const back = new Set(); const seen = new Set(); const stack = new Set(); const order = [];
+  const dfs = (n) => { seen.add(n); stack.add(n); for (const e of out(n)) { if (stack.has(e.b)) back.add(e); else if (!seen.has(e.b)) dfs(e.b); } stack.delete(n); order.push(n); };
+  starts.forEach((s) => { if (!seen.has(s)) dfs(s); });
+  names.forEach((n) => { if (!seen.has(n)) dfs(n); });
+  order.reverse();
+  const layer = {}; order.forEach((n) => { layer[n] ??= 0; for (const e of out(n)) if (!back.has(e)) layer[e.b] = Math.max(layer[e.b] ?? 0, layer[n] + 1); });
+  const isEnd = (n) => wf.nodes[n] && wf.nodes[n].type === "end";
+  const W = 200, GAPX = 72, GAPY = 22, TOP = 30;
+  const box = {}; const cols = {};
+  for (const n of order) {
+    if (isEnd(n)) continue;
+    const node = wf.nodes[n]; const inner = innerNodes(wf, n);
+    const h = node.type === "subgraph" ? 64 + 24 * inner.length : 64;
+    (cols[layer[n]] ??= []).push({ n, h, inner });
+  }
+  let maxBottom = TOP;
+  for (const [c, list] of Object.entries(cols)) {
+    let y = TOP;
+    for (const it of list) { box[it.n] = { x: 30 + c * (W + GAPX), y, w: W, h: it.h, inner: it.inner }; y += it.h + GAPY; }
+    maxBottom = Math.max(maxBottom, y);
+  }
+  const ends = order.filter(isEnd);
+  const endY = maxBottom + 60; const used = [];
+  for (const n of ends) {
+    const preds = edges.filter((e) => e.b === n && box[e.a]).map((e) => box[e.a].x);
+    let x = preds.length ? Math.min(...preds) + 20 : 30;
+    while (used.some((u) => Math.abs(u - x) < 175)) x += 180;
+    used.push(x); box[n] = { x, y: endY, w: 165, h: 48, inner: [] };
+  }
+  const width = Math.max(...Object.values(box).map((b) => b.x + b.w), 300) + 40;
+  const height = Math.max(...Object.values(box).map((b) => b.y + b.h), 200) + 40;
+  return { box, edges, back, width, height };
+}
+function innerNodes(wf, n) {
+  const node = wf.nodes[n]; if (!node || node.type !== "subgraph") return [];
+  const sg = (wf.subgraphs || {})[node.ref]; if (!sg) return [];
+  const list = []; const seen = new Set(); const q = (sg.edges || []).filter(([a]) => a === "START").map(([, b]) => b);
+  while (q.length) {
+    const x = q.shift(); if (seen.has(x) || !sg.nodes[x]) continue; seen.add(x);
+    if (sg.nodes[x].type === "tool") list.push({ name: x, tool: sg.nodes[x].tool });
+    for (const [a, b] of sg.edges || []) if (a === x) q.push(b);
+    const c = (sg.conditional_edges || {})[x]; if (c) q.push(...Object.values(c.mapping));
+  }
+  return list;
+}
+function bez(p0, p1, p2, p3, s = 0.5) {
+  const u = 1 - s; return [0, 1].map((i) => u * u * u * p0[i] + 3 * u * u * s * p1[i] + 3 * u * s * s * p2[i] + s * s * s * p3[i]);
+}
+function renderGraph() {
+  const svg = $("graph"); const view = currentView();
+  let wf = view === "run" ? S.run.workflow : S.plan.workflow;
+  const live = view === "run";
+  if (!wf && view === "plan") wf = sketchFromPlan();
+  if (!wf || !wf.nodes) { svg.innerHTML = `<text x="20" y="40" fill="#8d9bb8" font-size="18">${esc(t("nograph"))}</text>`; svg.removeAttribute("viewBox"); return; }
+  const L = layout(wf); const R = S.run; const parts = [];
+  parts.push(`<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3b4b72"/></marker>
+    <marker id="arrT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4da3ff"/></marker></defs>`);
+  for (const e of L.edges) {
+    const a = L.box[e.a], b = L.box[e.b]; if (!a || !b) continue;
+    const taken = live && R.taken.has(`${e.a}->${e.b}`);
+    let p0, p1, p2, p3; const isBack = L.back.has(e);
+    if (isBack) { const top = Math.min(a.y, b.y) - 45; p0 = [a.x + a.w / 2, a.y]; p1 = [p0[0], top]; p3 = [b.x + b.w / 2 + 12, b.y]; p2 = [p3[0], top]; }
+    else if (b.y > a.y + a.h + 20 && b.x < a.x + a.w + 40) { p0 = [a.x + a.w / 2, a.y + a.h]; p3 = [b.x + b.w / 2, b.y]; p1 = [p0[0], p0[1] + 40]; p2 = [p3[0], p3[1] - 40]; }
+    else { p0 = [a.x + a.w, a.y + Math.min(a.h / 2, 31)]; p3 = [b.x, b.y + Math.min(b.h / 2, 31)]; const dx = Math.max(40, (p3[0] - p0[0]) / 2); p1 = [p0[0] + dx, p0[1]]; p2 = [p3[0] - dx, p3[1]]; }
+    const dst = wf.nodes[e.b] || {};
+    const toEnd = dst.type === "end" ? (dst.status === "success" ? " tosucc" : " tofail") : "";
+    parts.push(`<path class="edge${taken ? " taken" : ""}${isBack ? " back" : ""}${toEnd}" d="M${p0} C${p1} ${p2} ${p3}" marker-end="url(#${taken ? "arrT" : "arr"})"/>`);
+    if (e.labels.length && (!toEnd || taken)) {
+      const m = bez(p0, p1, p2, p3, isBack ? 0.5 : 0.45);
+      const chosen = live && taken ? (R.exits[e.a] || "") : "";
+      const label = e.labels.join(" | ");
+      parts.push(`<text class="elabel${taken ? " taken" : ""}" x="${m[0]}" y="${m[1] - 6}" text-anchor="middle">${esc(chosen && e.labels.includes(chosen) ? chosen : label)}</text>`);
+    }
+  }
+  for (const [n, b] of Object.entries(L.box)) {
+    const node = wf.nodes[n]; const st = live ? (R.node[n] || "idle") : "idle";
+    const cls = node.type === "end" ? "end" : node.type === "sketch" ? "sketch" : "";
+    const color = node.type === "end" ? (node.status === "success" ? "var(--ok)" : "var(--bad)") : null;
+    parts.push(`<g class="node ${cls} ${st}" transform="translate(${b.x},${b.y})">`);
+    parts.push(`<rect class="card" width="${b.w}" height="${b.h}" rx="${node.type === "end" ? 22 : 10}"${color && st === "idle" ? ` style="stroke:${color};stroke-opacity:.45"` : ""}/>`);
+    if (node.type === "end") {
+      parts.push(`<text class="title" x="${b.w / 2}" y="31" text-anchor="middle">${node.status === "success" ? "✓" : "✗"} ${esc(n)}</text>`);
+    } else {
+      const sg = node.type === "subgraph" ? (wf.subgraphs || {})[node.ref] : null;
+      const sub = node.type === "tool" ? node.tool : node.type === "sketch" ? (node.skill || node.goal || "") : (sg ? sg.skill : node.ref);
+      parts.push(`<text class="title" x="14" y="27">${esc(n)}</text>`);
+      parts.push(`<text class="skill" x="14" y="49">${esc(short(sub || "", 24))}</text>`);
+      const ex = live && R.exits[n];
+      if (ex) parts.push(`<text class="exit" x="${b.w - 12}" y="26" text-anchor="end" fill="${st === "bad" ? "var(--bad)" : "var(--ok)"}">${esc(ex)}</text>`);
+      (b.inner || []).forEach((it, i) => {
+        const path = `${n}/${it.name}`; const ist = live ? (R.inner[path] || "idle") : "idle";
+        const y = 70 + i * 24;
+        parts.push(`<circle class="dot ${ist}" cx="20" cy="${y - 5}" r="5"/><text class="inner" x="32" y="${y}">${esc(short(it.tool, 19))}</text>`);
+        const iex = live && R.exits[path];
+        if (iex) parts.push(`<text class="inner" x="${b.w - 12}" y="${y}" text-anchor="end" fill="#8d9bb8">${esc(iex)}</text>`);
+      });
+    }
+    parts.push(`</g>`);
+  }
+  svg.setAttribute("viewBox", `0 0 ${L.width} ${L.height}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  svg.innerHTML = parts.join("");
+}
+function describeInputs(inputs) {
+  if (!inputs) return "";
+  const tg = inputs.target;
+  if (tg && typeof tg === "object") return `${tg.name || ""}  x=${Number(tg.x).toFixed(3)} y=${Number(tg.y).toFixed(3)}`;
+  if (inputs.pose) return inputs.pose;
+  if (inputs.experiment) return `${inputs.experiment} “${inputs.instruction || ""}”`;
+  return short(inputs, 80);
+}
+function renderBanner() {
+  const b = $("banner"); const R = S.run;
+  if (R.asking) {
+    const inp = R.asking.inputs || {};
+    const answers = (inp.answers || ["yes", "no"]).map((a, i) => `${i + 1}: ${esc(a)}`).join(" · ");
+    b.className = "human"; b.innerHTML = `${esc(t("operator"))}: ${esc(inp.question || "")}<div class="sub">${answers}</div>`;
+  } else if (R.pending) {
+    b.className = "wait"; b.innerHTML = `${esc(t("approve"))}: ${esc(R.pending.node)} · ${esc(R.pending.tool)}<div class="sub">${esc(describeInputs(R.pending.inputs))} — ${esc(t("approveSub"))}</div>`;
+  } else { b.className = ""; b.innerHTML = ""; }
+}
+function renderCamera() {
+  const c = S.run.camera; const ph = $("photo"); const tx = $("camtext");
+  if (!c) { ph.innerHTML = `<span>${esc(t("waitphoto"))}</span>`; tx.textContent = ""; return; }
+  const out = c.e.outputs || {}; const inp = (c.start && c.start.inputs) || {};
+  const what = inp.object || (inp.question && inp.question.instructions) || c.e.node;
+  const bad = out.exit && out.exit !== "found" && out.exit !== "yes";
+  let boxHtml = "";
+  if (out.box) {
+    const b = out.box;
+    boxHtml = `<div class="box${bad ? " bad" : ""}" style="left:${b.left * 100}%;top:${b.top * 100}%;width:${(b.right - b.left) * 100}%;height:${(b.bottom - b.top) * 100}%"><span>${esc(short(what, 28))} ${Number(out.confidence ?? 0).toFixed(2)}</span></div>`;
+  }
+  const key = (c.photo || "dry") + JSON.stringify(out.box || {});
+  if (ph.dataset.key !== key) {
+    ph.dataset.key = key;
+    ph.innerHTML = c.photo
+      ? `<div class="frame"><img src="/file/${encodeURI(c.photo)}" alt="">${boxHtml}</div>`
+      : `<div class="frame" style="width:min(100%,520px);aspect-ratio:4/3;background:#141b2b;border-radius:6px"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">${esc(t("nophoto"))}</div>${boxHtml}</div>`;
+  }
+  const tg = out.target;
+  tx.innerHTML = `<b>${esc(c.e.node)}</b> · ${esc(what)} → <b style="color:${bad ? "var(--bad)" : "var(--ok)"}">${esc(out.exit || "")}</b>` +
+    (tg ? ` · x=${Number(tg.x).toFixed(3)} y=${Number(tg.y).toFixed(3)} m` : "") +
+    (out.detail && !tg ? ` · <span class="why">${esc(out.detail)}</span>` : "");
+}
+function sentence(e) {
+  const n = esc(e.node || "");
+  switch (e.event) {
+    case "run_start": return `▶ <b>${esc(e.name || "")}</b>`;
+    case "subgraph_start": return `◆ ${n} <span class="why">${esc(e.skill || "")}</span>`;
+    case "confirm": return `⏸ ${n} ${esc(e.tool)} <span class="why">${esc(describeInputs(e.inputs))}</span>`;
+    case "declined": return `✋ ${n} ${esc(e.tool)}`;
+    case "tool_start": return `→ ${n} <b>${esc(e.tool)}</b> <span class="why">${esc(describeInputs(e.inputs))}</span>`;
+    case "tool_end": return `✓ ${n} ${e.outputs && e.outputs.exit ? `<b>${esc(e.outputs.exit)}</b>` : ""} <span class="why">${esc(e.elapsed_s ?? "")} s</span>`;
+    case "tool_error": return `<span style="color:var(--bad)">⚠ ${n} ${esc(e.error)}</span>`;
+    case "route": return e.node.includes("/") ? null : `↳ ${n}: <b>${esc(e.value)}</b> → ${esc(e.to)}`;
+    case "subgraph_error": return `<span style="color:var(--bad)">⚠ ${n} ${esc(e.error)}</span>`;
+    case "end": return `■ ${n} <b>${esc(e.status)}</b>`;
+    case "run_end": return `<b>${esc(t(e.status))}</b> <span class="why">${esc(e.reason || "")}</span>`;
+    default: return null;
+  }
+}
+function renderLog() {
+  const box = $("log"); const rows = [];
+  for (const e of S.run.log) { const s = sentence(e); if (s) rows.push(`<div><span class="t">${e.t ? hhmmss(e.t) : ""}</span>${s}</div>`); }
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.innerHTML = rows.join("");
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+// ---------- controls ----------
+$("lang").onclick = () => { lang = lang === "de" ? "en" : "de"; params.set("lang", lang); history.replaceState(null, "", "?" + params); ph_reset(); render(); };
+function ph_reset() { $("photo").dataset.key = ""; }
+$("full").onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {}); };
+$("runsel").onchange = (ev) => { if (ev.target.value) params.set("run", ev.target.value); else params.delete("run"); location.search = params.toString(); };
+document.querySelectorAll("[data-view]").forEach((b) => (b.onclick = () => { S.view = b.dataset.view; render(); }));
+setInterval(() => { if (S.run.status === "running") renderHeader(); }, 500);
+
+function connect() {
+  const q = new URLSearchParams(); if (params.get("plan")) q.set("plan", params.get("plan")); if (params.get("run")) q.set("run", params.get("run"));
+  const src = new EventSource("/events?" + q);
+  src.onmessage = (m) => { try { onMessage(JSON.parse(m.data)); } catch (err) { console.error(err); } };
+  src.onerror = () => { src.close(); setTimeout(connect, 1500); };
+}
+render();
+if (Array.isArray(window.INITIAL)) { for (const m of window.INITIAL) onMessage(m); render(); }
+if (location.protocol !== "file:" && !params.get("static")) connect();
+</script>
+</body>
+</html>

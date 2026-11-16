@@ -16,6 +16,18 @@ Options that mattered on 2026-11-13: `--gripper-open 0.5` (wider than the
 `open` experiment's 0.3), `--home-joint-speed` 0.2–0.3 rad/s for first runs,
 `--jev.backend local` when photos must stay in the network.
 
+## Live view for the audience
+
+Start it once before planning so the audience sees the plan and the run grow:
+
+```sh
+uv run python -m rio.apps.kassow.graph --command view     # http://127.0.0.1:8766
+```
+
+It reads `plan.jsonl`, `workflow.json` and the run folders; keep logging every
+planning step and it updates by itself. `--view-host 0.0.0.0` puts it on
+another screen in the network.
+
 ## Dry-run script
 
 JSON object keyed by node path (top-level node / inner node):

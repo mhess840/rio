@@ -115,15 +115,20 @@ def cell_tools(
         answers = ask(current_node(), locate_questions(object), note)
         visible = read_noul(answers, VISIBLE_KEY)
         box = read_box(answers, BOX_KEY)
+        seen = {
+            "confidence": box.confidence,
+            "visible": visible,
+            "box": {"left": box.left, "top": box.top, "right": box.right, "bottom": box.bottom},
+        }
         if visible < visible_threshold:
-            return {"exit": "not_found", "detail": f"not visible ({visible:.2f})", "confidence": box.confidence}
+            return {"exit": "not_found", "detail": f"not visible ({visible:.2f})", **seen}
         if box.confidence < threshold:
-            return {"exit": "not_found", "detail": f"box confidence {box.confidence:.2f}", "confidence": box.confidence}
+            return {"exit": "not_found", "detail": f"box confidence {box.confidence:.2f}", **seen}
         target = table.target(box, object)
         if not table.contains(target.x, target.y):
             detail = f"x={target.x:.3f} y={target.y:.3f} is outside the calibrated area"
-            return {"exit": "outside_area", "target": target, "detail": detail, "confidence": box.confidence}
-        return {"exit": "found", "target": target, "detail": json.dumps(target.to_dict()), "confidence": box.confidence}
+            return {"exit": "outside_area", "target": target, "detail": detail, **seen}
+        return {"exit": "found", "target": target, "detail": json.dumps(target.to_dict()), **seen}
 
     def jev_ask(question: dict, threshold: float | None = None, note: str = "") -> dict:
         answers = ask(current_node(), {"q": question}, note)
@@ -228,7 +233,14 @@ def cell_tools(
                     "visible_threshold": Param("float", False, f"visibility noul, default {NOUL_YES}"),
                     "note": Param("str", False, "context for Jev"),
                 },
-                outputs={"exit": "str", "target": TARGET, "detail": "str", "confidence": "float"},
+                outputs={
+                    "exit": "str",
+                    "target": TARGET,
+                    "detail": "str",
+                    "confidence": "float",
+                    "visible": "float",
+                    "box": "dict",
+                },
                 exits=("found", "not_found", "outside_area"),
                 tags=(PERCEPTION,),
                 check=_check_locate,
