@@ -139,6 +139,76 @@ def footprint(xy: np.ndarray) -> tuple[float, float, float | None, float]:
     return length, width, long_angle % period, period
 
 
+TOP_MIN_SATURATION = 90
+"""Coloured object pixels; the table and its holes are grey."""
+SQUARE_SIDES = 0.7
+"""Top-face rectangle sides at least this similar: square (yaw period 90)."""
+
+
+def top_face_yaw(
+    image_bgr: np.ndarray,
+    box: tuple[float, float, float, float],
+    handeye: HandEye,
+    top_z: float,
+    *,
+    margin_px: int = 6,
+) -> dict | None:
+    """Yaw of a coloured object's top face from the colour image, in the base frame.
+
+    Depth is too smeared at the edges of a 4 cm cube to give its yaw. In colour the
+    top face is the brighter part of the object (the side faces are in shade):
+    coloured pixels in the box, split by Otsu on brightness, largest bright blob,
+    minimum-area rectangle, corners projected onto the plane ``z = top_z``. A side
+    face that leaks in makes the rectangle longer but does not turn it.
+
+    Returns:
+        ``yaw_deg`` (in [0, period); None for a round face), ``period_deg``, ``sides_m``,
+        ``fill`` (blob / rectangle) and ``pixels``; or None when the box holds no coloured blob.
+    """
+    h, w = image_bgr.shape[:2]
+    x1, y1, x2, y2 = (round(v) for v in box)
+    cx1, cy1 = max(0, x1 - margin_px), max(0, y1 - margin_px)
+    crop = image_bgr[cy1 : min(h, y2 + margin_px + 1), cx1 : min(w, x2 + margin_px + 1)]
+    if crop.size == 0:
+        return None
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    coloured = hsv[..., 1] > TOP_MIN_SATURATION
+    if coloured.sum() < 20:
+        return None
+    value = hsv[..., 2][coloured].reshape(-1, 1).astype(np.uint8)
+    threshold, _ = cv2.threshold(value, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    bright = (coloured & (hsv[..., 2] > threshold)).astype(np.uint8)
+    bright = cv2.morphologyEx(bright, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(bright)
+    if count < 2:
+        return None
+    blob = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    ys, xs = np.nonzero(labels == blob)
+    if len(xs) < 20:
+        return None
+    rect = cv2.minAreaRect(np.column_stack([xs + cx1, ys + cy1]).astype(np.float32))
+    fill = len(xs) / max(1.0, rect[1][0] * rect[1][1])
+    corners = cv2.boxPoints(rect)
+    hits = [handeye.pixel_to_plane(float(u), float(v), top_z) for u, v in corners]
+    if any(hit is None for hit in hits):
+        return None
+    xy = np.array([hit[:2] for hit in hits if hit is not None])
+    a, b = xy[1] - xy[0], xy[2] - xy[1]
+    sides = sorted((float(np.linalg.norm(a)), float(np.linalg.norm(b))))
+    period = 90.0 if sides[0] >= SQUARE_SIDES * sides[1] else 180.0
+    long_edge = a if np.linalg.norm(a) >= np.linalg.norm(b) else b
+    yaw: float | None = math.degrees(math.atan2(long_edge[1], long_edge[0])) % period
+    if fill < ROUND_FILL:  # a disc fills about 79 % of its rectangle
+        yaw, period = None, 180.0
+    return {
+        "yaw_deg": yaw,
+        "period_deg": period,
+        "sides_m": [round(s, 4) for s in sides],
+        "fill": round(fill, 3),
+        "pixels": len(xs),
+    }
+
+
 def fit_table_plane(depth_m: np.ndarray, handeye: HandEye, *, stride: int = 4, rounds: int = 4) -> dict:
     """Plane ``z = a x + b y + c`` through the table seen by the camera, robust to objects on it.
 

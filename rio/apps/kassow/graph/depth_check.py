@@ -94,7 +94,7 @@ def main(args: Args) -> dict:
             objects[prompt] = {
                 "score": best.score,
                 "image_target": {"x": round(target.x, 4), "y": round(target.y, 4)},
-                "measured": _measure(depth_m, best.box, handeye, table, target),
+                "measured": _measure(depth_m, best.box, handeye, table, target, jpeg),
             }
         report["objects"] = objects
         if args.jaw_reference:

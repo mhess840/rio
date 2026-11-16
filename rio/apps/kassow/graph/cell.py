@@ -192,7 +192,7 @@ def cell_tools(
             target = table.target(Box(left, top, right, bottom, score), prompt)
             measured = None
             if depth is not None and handeye is not None:
-                measured = _measure(depth, best.box, handeye, table, target)
+                measured = _measure(depth, best.box, handeye, table, target, jpeg)
                 if use_depth and measured is not None:
                     target = _depth_target(measured, prompt, score)
                 if measured is not None and measured.get("yaw_deg") is not None:
@@ -454,20 +454,44 @@ def _tool_xy(table: TableMap) -> np.ndarray:
     return Rotation.from_rotvec(table.rotvec).apply([0.0, 0.0, offset])[:2]
 
 
-def _measure(depth: np.ndarray, box: tuple, handeye: HandEye, table: TableMap, target: Target) -> dict | None:
-    """Depth measurement of the object in ``box``, with its TCP target and distance to the image target."""
-    from .depth import measure
+def _measure(
+    depth: np.ndarray, box: tuple, handeye: HandEye, table: TableMap, target: Target, jpeg: bytes | None = None
+) -> dict | None:
+    """Depth measurement of the object in ``box``, with its TCP target and distance to the image target.
+
+    With the colour photo, the yaw comes from the top face in colour (``yaw_source: colour``):
+    depth edges are too smeared for small objects. Round objects (no yaw in depth) keep none.
+    """
+    from .depth import measure, top_face_yaw
 
     m = measure(depth, box, handeye)
     if m is None:
         return None
     tcp = np.array([m.x, m.y]) - _tool_xy(table)
-    return {
+    out = {
         **m.to_dict(),
         "tcp_x": round(float(tcp[0]), 4),
         "tcp_y": round(float(tcp[1]), 4),
         "d_image_mm": round(float(np.hypot(tcp[0] - target.x, tcp[1] - target.y)) * 1000, 1),
+        "yaw_source": "depth",
     }
+    image = _decode(jpeg)
+    face = top_face_yaw(image, box, handeye, m.top_z) if image is not None else None
+    if face is not None:
+        out["depth_yaw_deg"] = out["yaw_deg"]
+        out["top_face"] = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in face.items()}
+        yaw = face["yaw_deg"]
+        out |= {"yaw_deg": None if yaw is None else round(yaw, 2), "period_deg": face["period_deg"], "yaw_source": "colour"}
+    return out
+
+
+def _decode(jpeg: bytes | None) -> np.ndarray | None:
+    if not jpeg:
+        return None
+    import cv2
+
+    image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    return image if image is not None and image.size else None
 
 
 def _depth_target(measured: dict, name: str, score: float) -> Target:

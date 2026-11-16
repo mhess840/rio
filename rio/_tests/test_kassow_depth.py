@@ -144,3 +144,54 @@ def test_jaw_yaw_round_trip(tmp_path):
     assert load_jaw_yaw(path) is None
     save_jaw_yaw(97.5, "look/x", path)
     assert load_jaw_yaw(path) == pytest.approx(7.5)
+
+
+def paint(he: HandEye, shapes: list[dict]) -> np.ndarray:
+    """Colour image of the grey table with lit top faces (and a shaded side band) projected by ``he``."""
+    import cv2
+
+    intr, inv = he.intrinsics, np.linalg.inv(he.transform)
+    image = np.full((480, 640, 3), (120, 130, 120), np.uint8)
+
+    def pixel(p):
+        c = inv @ np.array([*p, 1.0])
+        return [intr.fx * c[0] / c[2] + intr.cx, intr.fy * c[1] / c[2] + intr.cy]
+
+    for s in shapes:
+        z = TABLE_Z + s["h"]
+        if s.get("round"):
+            ring = [(s["x"] + s["r"] * math.cos(a), s["y"] + s["r"] * math.sin(a), z) for a in np.linspace(0, 2 * math.pi, 64)]
+            cv2.fillPoly(image, [np.int32([pixel(p) for p in ring])], (40, 120, 230))
+            continue
+        c, d, half = math.cos(math.radians(s["yaw"])), math.sin(math.radians(s["yaw"])), s["side"] / 2
+        corners = [
+            (s["x"] + c * a - d * b, s["y"] + d * a + c * b)
+            for a, b in ((-half, -half), (half, -half), (half, half), (-half, half))
+        ]
+        side = [corners[0], corners[1]]
+        band = [pixel((*side[0], z)), pixel((*side[1], z)), pixel((*side[1], TABLE_Z)), pixel((*side[0], TABLE_Z))]
+        cv2.fillPoly(image, [np.int32(band)], (30, 60, 200))  # shaded side face: darker, more red
+        cv2.fillPoly(image, [np.int32([pixel((*p, z)) for p in corners])], (90, 170, 255))  # lit top face
+    return image
+
+
+@pytest.mark.parametrize("yaw", [5.0, 25.0, 50.0, 80.0])
+def test_top_face_yaw_of_a_cube_in_colour(yaw):
+    from rio.apps.kassow.graph.depth import top_face_yaw
+
+    he = camera()
+    image = paint(he, [{"x": -0.42, "y": 0.68, "h": 0.04, "side": 0.04, "yaw": yaw}])
+    box = box_of(he, np.zeros((480, 640)), -0.42, 0.68, 0.035)
+    face = top_face_yaw(image, box, he, TABLE_Z + 0.04)
+    assert face is not None and face["period_deg"] == 90.0
+    error = abs(face["yaw_deg"] - yaw % 90.0)
+    assert min(error, 90.0 - error) < 3.0
+
+
+def test_top_face_of_a_disc_has_no_yaw():
+    from rio.apps.kassow.graph.depth import top_face_yaw
+
+    he = camera()
+    image = paint(he, [{"x": -0.50, "y": 0.69, "h": 0.05, "r": 0.025, "round": True}])
+    face = top_face_yaw(image, box_of(he, np.zeros((480, 640)), -0.50, 0.69, 0.03), he, TABLE_Z + 0.05)
+    assert face is not None and face["yaw_deg"] is None

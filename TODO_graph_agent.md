@@ -87,7 +87,10 @@ andere Applikateure Aufgaben automatisieren.
 - [x] `pick_at align_yaw` (Code): Gierwinkel aus der Tiefe am `Target`; Handgelenk dreht höchstens ±45°
   (Quadrat, kürzester Weg); TCP wird verschoben, weil das Werkzeug schräg steht (Objektmitte bleibt);
   IK offline an 4 Tischpunkten für −45…+45° erreichbar. Längliche Objekte abgelehnt (Schließrichtung fehlt)
-- [ ] Schritt 1: Gierwinkel am echten Würfel prüfen (0°, 20°, 45°, 70°, nur Kamera)
+- [x] Gierwinkel aus der Tiefe am echten Würfel unbrauchbar (16.11.): Kanten eines 4-cm-Würfels in der D435i-Tiefe
+  verschmiert, Grundfläche 74 × 47 mm statt ≈ 40 mm, Winkel springt. Jetzt aus dem **Farbbild**: helle Oberseite
+  (Otsu auf Helligkeit), Rechteck, Ecken auf die Höhe der Oberseite projiziert; Füllgrad trennt rund/eckig
+- [ ] Schritt 1: Gierwinkel am echten Würfel prüfen: „gerade“ → 5,2°; noch ≈ 20°, 45°, 70° drehen
 - [ ] Schritt 2: Bezugswinkel der Backen: Würfel mit mittlerer Orientierung greifen und abstellen, dann
   `depth_check --sam "red object" --jaw-reference "red object"` → `jaw_yaw.json`
 - [ ] Schritt 4: Würfel bei ≈ 30° und ≈ 45° mit `align_yaw` greifen, abstellen, Winkel nachmessen
