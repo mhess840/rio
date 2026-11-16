@@ -2,6 +2,9 @@
 
 **Project map:** for the Kassow crate-loading pilot (orchestrator, VLAs, Jev, DAgger) start at `docs/architecture.md`.
 
+**Graph as Policy:** plan and roadmap in `TODO_graph_agent.md`; planner skill `.claude/skills/gap-planner/`; core `rio/graph/`.
+SAM 3.1 segmentation API (Meta, key in `~/.config/rio/sam.env`): `docs/sam-api.md`.
+
 **Always use `uv run`, not python**.
 
 We've bundled common commands into a Makefile for convenience.

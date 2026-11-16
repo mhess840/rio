@@ -47,7 +47,9 @@ andere Applikateure Aufgaben automatisieren.
 
 ## B. Wahrnehmung (SAM 3.1 + Tiefe)
 
-- [ ] SAM-3.1-API-Doku prüfen: Text-Prompt → Instanzmasken + Scores? Latenz?
+- [x] SAM-3.1-API-Doku geprüft → `docs/sam-api.md` (Text-Prompt → Instanzen mit Box + Maske, Score per
+  `include_confidence`; $2,50 / 1000 Bilder). Key in `~/.config/rio/sam.env` (`SAM_API_KEY`)
+- [ ] Latenz pro Bild messen
 - [ ] Offline-Vergleich ohne Roboter: SAM 3.1 gegen Jev auf den Fotos der gescheiterten Läufe
   (`experiments/graph/20261113_*/find_*.jpg`); Erkennungsrate und Box-Lage notieren
 - [ ] Tiefe an der Jev-Kamera aktivieren (`jev_camera()`: `enable_depth=False`, D435i an USB 2 mit 6 fps);
