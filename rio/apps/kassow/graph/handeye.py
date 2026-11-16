@@ -32,7 +32,7 @@ from __future__ import annotations
 import importlib
 import json
 import multiprocessing as mp
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -386,13 +386,13 @@ def save_handeye(fit: HandEye, path: Path) -> Path:
     return path
 
 
-def load_handeye(path: Path | None = None) -> HandEye:
+def load_handeye(path: Path | None = None, camera: str = "jev") -> HandEye:
     """Stored calibration of the Jev camera (or ``path``).
 
     Raises:
         FileNotFoundError: If no calibration was accepted yet.
     """
-    data = json.loads((path or result_path()).read_text())
+    data = json.loads((path or result_path(camera)).read_text())
     data["intrinsics"] = Intrinsics(**data["intrinsics"])
     return HandEye(**data)
 
@@ -482,7 +482,21 @@ class Args(GotoArgs):
     """ArUco id on the wrist link behind the gripper rotation; None when there is none."""
     session: str | None = None
     """``fit``: session folder to fit again."""
+    start_xyz: tuple[float, float, float] | None = None
+    """Drive the TCP here first, keeping its current orientation (so markers turned toward the camera stay
+    turned), and run the pattern around it; the arm returns to where it was. Needs ``--no-dry-run``."""
+    camera: Literal["jev", "overview"] = "jev"
+    """Which fixed camera to calibrate; its result is stored as ``<camera>.json`` (the Jev map reads ``jev.json``)."""
     cameras: dict[str, Camera] = field(default_factory=lambda: {CAMERA_KEY: jev_camera()})
+
+    def __post_init__(self) -> None:
+        if self.camera == "overview":
+            from .observe import look_cameras
+
+            self.cameras = {CAMERA_KEY: replace(look_cameras()["overview"], addr=self.cameras[CAMERA_KEY].addr)}
+        super_post = getattr(super(), "__post_init__", None)
+        if super_post is not None:
+            super_post()
 
 
 def _capture(env, wanted: set[int], after: float) -> tuple[np.ndarray, dict[int, np.ndarray], dict]:
@@ -518,7 +532,7 @@ def load_session(folder: Path) -> tuple[list[Sample], Intrinsics, dict]:
     return samples, Intrinsics(**meta["intrinsics"]), meta
 
 
-def report_and_store(fit: HandEye) -> bool:
+def report_and_store(fit: HandEye, camera: str = "jev") -> bool:
     """Log the fit; store it as the Jev calibration when it passes ``fit_problems``."""
     s = fit.stats
     for name, markers in s["samples"].items():
@@ -539,10 +553,10 @@ def report_and_store(fit: HandEye) -> bool:
     )
     problems = fit_problems(fit)
     if problems:
-        path = save_handeye(fit, result_path().with_suffix(".rejected.json"))
+        path = save_handeye(fit, result_path(camera).with_suffix(".rejected.json"))
         logger.error("Calibration not stored: {} (kept for inspection in {})", "; ".join(problems), path)
         return False
-    logger.success("Stored {}", save_handeye(fit, result_path()))
+    logger.success("Stored {}", save_handeye(fit, result_path(camera)))
     return True
 
 
@@ -550,7 +564,9 @@ def run(args: Args) -> None:
     serial = str(args.cameras[CAMERA_KEY].serial or JEV_SERIAL)
     intr = realsense_intrinsics(serial)
     wanted = {args.gripper_marker} | ({args.back_marker} if args.back_marker is not None else set())
-    logger.info("Jev camera {}: fx={:.1f} fy={:.1f} cx={:.1f} cy={:.1f}", serial, intr.fx, intr.fy, intr.cx, intr.cy)
+    logger.info(
+        "{} camera {}: fx={:.1f} fy={:.1f} cx={:.1f} cy={:.1f}", args.camera, serial, intr.fx, intr.fy, intr.cx, intr.cy
+    )
     servers, _clients, env = make_env(args)
     with ServerManager(args.mw, list(servers.values())), env:
         arm = env.robot.arm
@@ -560,7 +576,23 @@ def run(args: Args) -> None:
         state = arm.get_state()
         q0 = np.asarray(state["joint_q"], dtype=float)
         anchor = np.asarray(state["eef_pose"], dtype=float)
+        home = {"joint_q": q0.copy(), "eef_pose": anchor.copy()}
         logger.info("Start pose tcp={} (the arm returns here)", np.round(anchor[:3], 3).tolist())
+        moved = False
+        if args.start_xyz is not None:
+            if args.dry_run:
+                raise SystemExit("--start-xyz moves the arm before the markers can be checked; add --no-dry-run")
+            rotvec = anchor[3:6].copy()
+            logger.info("Moving the TCP to the start {} for the {} camera", list(args.start_xyz), args.camera)
+            start = np.asarray(args.start_xyz, dtype=float)
+            status = move_tcp(env, start, rotvec, home_joint_speed=args.home_joint_speed)
+            if status is not MoveStatus.LANDED:
+                raise RuntimeError(f"start pose not reached: {status.name}")
+            moved = True
+            time.sleep(SETTLE_S)
+            state = arm.get_state()
+            q0 = np.asarray(state["joint_q"], dtype=float)
+            anchor = np.asarray(state["eef_pose"], dtype=float)
         _image, found, _ = _capture(env, wanted, time.now())
         for marker in sorted(wanted):
             if marker in found:
@@ -568,7 +600,11 @@ def run(args: Args) -> None:
             else:
                 logger.warning("marker {} not seen from the start pose", marker)
         if not found:
-            raise RuntimeError("no marker visible from the start pose; turn the gripper marker toward the Jev camera")
+            if moved:
+                goto_home(env, home, home_joint_speed=args.home_joint_speed, set_gripper=False)
+            raise RuntimeError(
+                f"no marker visible from the start pose; turn the gripper marker toward the {args.camera} camera"
+            )
         checked = check_poses(kin, q0, anchor, calibration_poses(anchor))
         goals = [pose for pose, problem in checked if not problem]
         for i, (pose, problem) in enumerate(checked):
@@ -578,7 +614,7 @@ def run(args: Args) -> None:
         if args.dry_run:
             logger.info("Dry run: {} of {} poses would be driven. Add --no-dry-run to drive them.", len(goals), len(checked))
             return
-        folder = handeye_root() / "jev" / datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder = handeye_root() / args.camera / datetime.now().strftime("%Y%m%d_%H%M%S")
         folder.mkdir(parents=True)
         meta = {
             "camera_serial": serial,
@@ -618,7 +654,7 @@ def run(args: Args) -> None:
                 logger.info("pose {} markers {} ({} samples)", name, sorted(found), len(samples))
         finally:
             logger.info("Returning to the start pose")
-            goto_home(env, {"joint_q": q0, "eef_pose": anchor}, home_joint_speed=args.home_joint_speed, set_gripper=False)
+            goto_home(env, home, home_joint_speed=args.home_joint_speed, set_gripper=False)
         logger.info("Session {}", folder)
         if len(samples) < MIN_SAMPLES:
             logger.error("{} samples are too few to fit", len(samples))
@@ -626,7 +662,7 @@ def run(args: Args) -> None:
         fit = fit_best_back_link(
             samples, intr, gripper_marker=args.gripper_marker, back_marker=args.back_marker, camera_serial=serial
         )
-        report_and_store(fit)
+        report_and_store(fit, args.camera)
 
 
 def main(args: Args) -> None:
@@ -641,7 +677,7 @@ def main(args: Args) -> None:
             back_marker=meta.get("back_marker"),
             camera_serial=str(meta["camera_serial"]),
         )
-        report_and_store(fit)
+        report_and_store(fit, args.camera)
         return
     run(args)
 
