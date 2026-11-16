@@ -49,9 +49,19 @@ andere Applikateure Aufgaben automatisieren.
 
 - [x] SAM-3.1-API-Doku geprüft → `docs/sam-api.md` (Text-Prompt → Instanzen mit Box + Maske, Score per
   `include_confidence`; $2,50 / 1000 Bilder). Key in `~/.config/rio/sam.env` (`SAM_API_KEY`)
-- [ ] Latenz pro Bild messen
-- [ ] Offline-Vergleich ohne Roboter: SAM 3.1 gegen Jev auf den Fotos der gescheiterten Läufe
-  (`experiments/graph/20261113_*/find_*.jpg`); Erkennungsrate und Box-Lage notieren
+- [x] Latenz: 0,5–1,2 s pro Bild
+- [x] Offline-Vergleich SAM 3.1 gegen Jev (`graph/sam_compare.py`, 11 Fotos vom 13.11., 44 Anfragen, $0,11;
+  Bericht `experiments/graph/sam_compare/20261116_135119/`):
+  - Jev übersah 3 sichtbare Objekte (Würfel 210328, Teller 210801 und 211350); SAM fand alle mit dem
+    passenden Wort (Score 0,75–0,98)
+  - Wiederholgenauigkeit bei unbewegtem Objekt: SAM < 1 mm (Teller 4×, Zylinder 3×), Jev ≈ 10 mm
+  - Abweichung SAM–Jev bei gefundenen Objekten 2,5–14 mm
+  - **Wortwahl entscheidet:** „blue cylinder“, „red plate“, „red cube“ → 0 Treffer; „blue cap“/„blue object“,
+    „orange plate“, „red object“ → Treffer. Teller und Würfel sind orange; SAM nimmt Farben wörtlich
+  - Falsch positiv: Teller unter dem Arm verdeckt → „orange plate“ 0,69 auf den orangen Greiferteilen.
+    Schwelle ≥ 0,8 und vor `locate` parken
+- [ ] Tool `sam.locate`: Liste von Prompts (erster Treffer ≥ Schwelle gewinnt), genau eine Instanz oder die
+  beste, Box + Maske in den Ausgaben; der Planer testet die Prompts im Schritt „Look“ am Foto
 - [ ] Tiefe an der Jev-Kamera aktivieren (`jev_camera()`: `enable_depth=False`, D435i an USB 2 mit 6 fps);
   prüfen, ob Farbe + Tiefe über USB 2 laufen, sonst USB-3-Port. Tiefe auf Farbe ausrichten
 - [ ] Gegenprobe: gemessene Tischebene aus der Tiefe gegen die kalibrierte Ebene
