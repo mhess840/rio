@@ -106,7 +106,9 @@ andere Applikateure Aufgaben automatisieren.
   ab (`calibration/table/calibrated_area.jpg`); zwei Läufe endeten deshalb korrekt mit `nothing_to_do`
   - [x] `plan` (16.11.): 32 neue Punkte (Tiefe: freier, ebener Tisch relativ zur gefitteten Tiefenebene; IK bei
     15 cm, Greifhöhe, ±45°) → 0,075 → 0,172 m². Obere Bildhälfte mit dieser Greiforientierung nicht erreichbar
-  - [ ] `survey` (Arm fährt die Punkte 8 cm über Greifhöhe ab), dann `write`, dann Greiftest am Rand
+  - [x] `survey` (16.11.): 32/32 Punkte erreicht, TCP-Fehler ≤ 1,2 mm; `write`: 47 IK-Seeds, alte Karte gesichert
+    (`table_map.20261116_150318.json`), Bild `calibration/table/calibrated_area.jpg`
+  - [ ] Greiftest am neuen Rand
   - [ ] 12 Punkte nur ohne volle ±45° erreichbar: ortsabhängige Drehgrenze für `align_yaw` (Würfel: t, t±90 wählen)
 
 ## N. Tempo (Messung 16.11., `cube_to_plate`, ohne Planung, `--no-confirm`)
