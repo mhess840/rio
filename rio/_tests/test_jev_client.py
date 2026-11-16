@@ -260,7 +260,8 @@ def test_reply_flags_a_text_only_token_count():
     ("answers", "decision", "space"),
     [
         (_answers(0.1, "three", 0.9, 0.9), "organize", None),
-        (_answers(0.5, "zero", 0.95, 0.1), "organize", None),
+        (_answers(0.49, "zero", 0.95, 0.1), "organize", None),
+        (_answers(0.5, "zero", 0.95, 0.1), "open", 1),
         (_answers(0.9, "zero", 0.95, 0.1), "open", 1),
         (_answers(0.9, "two", 0.9, 0.95), "open", 3),
         (_answers(0.9, "two", 0.52, 0.95), "open", 3),
@@ -365,17 +366,19 @@ def test_a_middling_organized_noul_is_straightened():
     """The question is whether 0.55 still opens a space.
 
     View and count are held fixed at a clear empty crate. Only the organized
-    noul changes. 0.55 is below the yes gate 0.70, so the arm straightens the
-    inlay. 0.24 still organizes, 0.90 still opens space 1, and a blocked view
-    still holds before the inlay is read.
+    noul changes. The rib gate is 0.50, so 0.55 opens space 1. 0.49 is still
+    straightened. 0.24 still organizes, 0.90 still opens space 1, and a blocked
+    view still holds before the inlay is read.
     """
     spaces = {1, 2, 3}
     limits = CrateThresholds()
     middle = read_crate(_answers(0.55, "zero", 0.95, 0.1), available_spaces=spaces, thresholds=limits)
-    assert middle.decision == "organize"
+    assert middle.decision == "open"
+    assert middle.space == 1
     assert middle.organized_q == pytest.approx(0.55)
-    assert middle.organized_p == pytest.approx(0.55)
-    assert "not clearly upright" in middle.reason
+    just_under = read_crate(_answers(0.49, "zero", 0.95, 0.1), available_spaces=spaces, thresholds=limits)
+    assert just_under.decision == "organize"
+    assert "not clearly upright" in just_under.reason
     sure_no = read_crate(_answers(0.24, "zero", 0.95, 0.1), available_spaces=spaces, thresholds=limits)
     assert sure_no.decision == "organize"
     standing = read_crate(_answers(0.90, "zero", 0.95, 0.1), available_spaces=spaces, thresholds=limits)
