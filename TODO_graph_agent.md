@@ -90,10 +90,17 @@ andere Applikateure Aufgaben automatisieren.
 - [x] Gierwinkel aus der Tiefe am echten Würfel unbrauchbar (16.11.): Kanten eines 4-cm-Würfels in der D435i-Tiefe
   verschmiert, Grundfläche 74 × 47 mm statt ≈ 40 mm, Winkel springt. Jetzt aus dem **Farbbild**: helle Oberseite
   (Otsu auf Helligkeit), Rechteck, Ecken auf die Höhe der Oberseite projiziert; Füllgrad trennt rund/eckig
-- [ ] Schritt 1: Gierwinkel am echten Würfel prüfen: „gerade“ → 5,2°; noch ≈ 20°, 45°, 70° drehen
-- [ ] Schritt 2: Bezugswinkel der Backen: Würfel mit mittlerer Orientierung greifen und abstellen, dann
-  `depth_check --sam "red object" --jaw-reference "red object"` → `jaw_yaw.json`
-- [ ] Schritt 4: Würfel bei ≈ 30° und ≈ 45° mit `align_yaw` greifen, abstellen, Winkel nachmessen
+- [x] Schritt 1: Gierwinkel am echten Würfel: 5,2° → 31,1° → 74,1°; Kantenwinkel im Bild bestätigen die Schritte auf 2–3°
+- [x] Schritt 2: Bezugswinkel der Backen **31,1°** (`jaw_yaw.json`). Lehre: Die Annahme „der Würfel richtet sich
+  beim Schließen aus“ stimmt nicht; ein Griff über die Diagonale ist auch stabil. Erst gemessen 76,1° (Diagonale),
+  der Bediener sah beide Testgriffe an den Kanten → −45°. Besser künftig: Bediener bestätigt flache Anlage,
+  oder die Backen direkt von oben im Jev-Bild messen
+- [x] Live: `align_yaw` drehte das Handgelenk −22,3° (IK ok, TCP-Versatz 9 mm wie berechnet)
+- [x] Aufgabe „roter Würfel auf roten Teller“ (16.11., `experiments/graph/20261116_144653`): success, Würfel mittig
+  auf dem Teller; Handgelenk −1,5° (Würfel stand schon fast passend). Lauf ohne Zwischenfragen auf Wunsch des
+  Bedieners (Not-Aus in der Hand), Freigaben automatisch nur für geplante Schritte mit Zielen im Tischbereich
+- [ ] Würfel bei ≈ 45° zu den Backen mit `align_yaw` (größte Drehung) und Abstellen mit gedrehtem Handgelenk
+  (`place_at` behält die Drehung), um den Bezugswinkel direkt zu bestätigen
 
 ## C. Graph-Format nach GaP v3
 
