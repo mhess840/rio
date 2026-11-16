@@ -52,7 +52,8 @@ Keep a task folder `experiments/graph/plans/<task>/` and log each step to its
    destination → grasp → transport → park. Repeated work ("all items") is a
    loop: a conditional back edge, not copied nodes.
 4. **Choose per stage** between graph tools and a VLA with
-   `references/vla_or_graph.md`. If no tool and no usable VLA fits, do not
+   `references/vla_or_graph.md`, and the sensor with `references/perception.md`
+   (SAM finds, Jev judges; jev / overview / wrist camera; search). If no tool and no usable VLA fits, do not
    improvise: write a recommendation (`recommend` event) and stop.
 5. **Fill each subgraph** (subgraph agent) from the catalog, following the
    patterns in `references/workflow_v3.md`. Name success exits after what

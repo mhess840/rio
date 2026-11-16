@@ -109,7 +109,7 @@ Full example that ran on the cell (v1 form) and dry-runs in v3:
   are refused. Not yet checked on the cell.
 - **Transport**: `kassow.place_at` (raises when nothing is held) → `placed`;
   `z_offset_m` is the height of what the object is set on (plate: 0.03).
-- **Check with Jev**: `jev.ask` with one question
+- **Check with Jev** (Jev judges, SAM finds: `perception.md`): `jev.ask` with one question
   (`{"type": "noul", "instructions": "Is the cube on the plate in `crate`?"}`),
   exits `yes`/`no`; choice questions exit with the criterion name.
 - **Operator as sensor** (collaborative only): `operator.ask`
