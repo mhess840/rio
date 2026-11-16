@@ -49,7 +49,7 @@ class Arm:
     def gripper(self, state):
         return self._do(f"gripper {state}")
 
-    def pick_at(self, target, *, approach_m, z_offset_m, yaw_offset_deg=0.0):
+    def pick_at(self, target, *, approach_m, z_offset_m, yaw_offset_deg=0.0, outside_area=False):
         self.turns.append(yaw_offset_deg)
         return self._do("pick_at")
 

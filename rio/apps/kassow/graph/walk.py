@@ -44,7 +44,15 @@ class Skills(Protocol):
     def pick(self) -> object: ...
     def place(self) -> object: ...
     def gripper(self, state: str) -> object: ...
-    def pick_at(self, target: Target, *, approach_m: float, z_offset_m: float, yaw_offset_deg: float = 0.0) -> object: ...
+    def pick_at(
+        self,
+        target: Target,
+        *,
+        approach_m: float,
+        z_offset_m: float,
+        yaw_offset_deg: float = 0.0,
+        outside_area: bool = False,
+    ) -> object: ...
     def place_at(
         self,
         target: Target,

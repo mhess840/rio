@@ -149,7 +149,13 @@ def cell_tools(
         _alarm(held)
         return {"exit": "held" if held is True else "empty"}
 
-    def pick_at(target: Target, approach_m: float = APPROACH_M, z_offset_m: float = 0.0, align_yaw: bool = False) -> dict:
+    def pick_at(
+        target: Target,
+        approach_m: float = APPROACH_M,
+        z_offset_m: float = 0.0,
+        align_yaw: bool = False,
+        outside_area: bool = False,
+    ) -> dict:
         turn = 0.0
         if align_yaw and target.yaw_deg is not None:
             from .table_map import load_jaw_closing, load_jaw_yaw, wrist_turn_deg
@@ -158,8 +164,10 @@ def cell_tools(
             if reference is None:
                 raise RuntimeError("align_yaw needs the jaw reference (depth_check --jaw-reference after one mean grasp)")
             turn = wrist_turn_deg(target.yaw_deg, target.yaw_period_deg, reference, load_jaw_closing())
-        if turn:
-            held = skills.pick_at(target, approach_m=approach_m, z_offset_m=z_offset_m, yaw_offset_deg=turn)
+        if turn or outside_area:
+            held = skills.pick_at(
+                target, approach_m=approach_m, z_offset_m=z_offset_m, yaw_offset_deg=turn, outside_area=outside_area
+            )
         else:
             held = skills.pick_at(target, approach_m=approach_m, z_offset_m=z_offset_m)
         _alarm(held)
@@ -465,6 +473,9 @@ def cell_tools(
                         False,
                         "turn the wrist (at most 45 deg) to square the jaws to a square object's yaw from "
                         "sam.locate depth; round objects grasp as usual; default false",
+                    ),
+                    "outside_area": Param(
+                        "bool", False, "allow a target just outside the calibrated grasp area (IK still checked)"
                     ),
                 },
                 outputs={"exit": "str", "wrist_turn_deg": "float"},

@@ -196,7 +196,15 @@ class KassowSkills:
         point, table = found
         return self._reach(point, table, table.seed_q(target.x, target.y))
 
-    def pick_at(self, target: Target, *, approach_m: float, z_offset_m: float, yaw_offset_deg: float = 0.0) -> Outcome:
+    def pick_at(
+        self,
+        target: Target,
+        *,
+        approach_m: float,
+        z_offset_m: float,
+        yaw_offset_deg: float = 0.0,
+        outside_area: bool = False,
+    ) -> Outcome:
         """Open, ``moveJ`` above ``target``, descend, close, and lift by ``approach_m``.
 
         Height, orientation, and the allowed area come from the table map; ``z_offset_m``
@@ -209,7 +217,7 @@ class KassowSkills:
         if not APPROACH_M_RANGE[0] <= approach_m <= APPROACH_M_RANGE[1]:
             logger.error("approach {} m is outside {}", approach_m, APPROACH_M_RANGE)
             return False
-        found = self._table_point(target, z_offset_m, Z_OFFSET_M_RANGE, "pick_at")
+        found = self._table_point(target, z_offset_m, Z_OFFSET_M_RANGE, "pick_at", outside_area)
         if found is None:
             return False
         point, table = found
@@ -288,7 +296,15 @@ class DrySkills:
         term("[dry run] would place")
         return True
 
-    def pick_at(self, target: Target, *, approach_m: float, z_offset_m: float, yaw_offset_deg: float = 0.0) -> Outcome:
+    def pick_at(
+        self,
+        target: Target,
+        *,
+        approach_m: float,
+        z_offset_m: float,
+        yaw_offset_deg: float = 0.0,
+        outside_area: bool = False,
+    ) -> Outcome:
         turn = f", wrist {yaw_offset_deg:+.1f} deg" if yaw_offset_deg else ""
         term(f"[dry run] would pick {target.name} at x={target.x:.3f} y={target.y:.3f} (approach {approach_m:.2f} m{turn})")
         return True
