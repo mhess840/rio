@@ -42,7 +42,9 @@ andere Applikateure Aufgaben automatisieren.
 - [x] `kassow-hand` in `graph-handeye` gemergt (statt Rebase, damit kein Force-Push nötig ist; enthält `a86d619`)
 - [x] Arbeit im Worktree `../rio-graph-handeye` (eigene `.venv`, `experiments` als Symlink auf `../rio/experiments`);
   der Haupt-Checkout bleibt auf `kassow-hand` für Demos. `../rio-hw` teilen sich beide: dort nichts ändern
-- [ ] Beim Start des Arms die Log-Zeile `FK vs measured TCP` prüfen: unter 5 mm
+- [x] Beim Start des Arms die Log-Zeile `FK vs measured TCP` prüfen: 3,1 mm (16.11.)
+- [x] Worktree-`.venv`: das native `_kord_bridge` kommt nicht über `uv sync`; erprobte Kopie aus
+  `../rio/.venv/lib/python3.12/site-packages/` übernehmen (nicht die abweichende aus `rio-hw/kord_bridge/build/`)
 - [x] `graph/*.json`, `graph/workflows/*.json` und `live_view.html` in `package-data`
 
 ## B. Wahrnehmung (SAM 3.1 + Tiefe)
@@ -64,7 +66,7 @@ andere Applikateure Aufgaben automatisieren.
   `target`, `prompt`, `confidence`, `box`, `count`, `tried`; Prüfung „ein Begriff pro Prompt“. Live-GUI zeigt es
 - [x] `--command ask --sam "a|b"` für den Look-Schritt; `--command run --image <jev.jpg>` = Dry-Run mit echtem SAM
 - [x] `cylinder_to_plate` (v3) lokalisiert mit `sam.locate`; Dry-Run mit echtem SAM auf dem Foto vom 13.11. grün
-- [ ] Live-Lauf mit `sam.locate` an der Zelle
+- [x] Live-Lauf mit `sam.locate` an der Zelle: beide Objekte im ersten Versuch, Bild vs. Tiefe 1,5 / 4,1 mm
 - [x] Tiefe an der Jev-Kamera: `jev_camera(depth=True)`, auf Farbe ausgerichtet (rio-hw unverändert); läuft
   über USB 2 mit 6 fps (99,8 % gültige Pixel). Live-Läufe streamen sie (`--no-jev-depth` schaltet ab) und
   speichern `<node>.depth.npz` (mm) neben dem Foto
@@ -98,7 +100,8 @@ andere Applikateure Aufgaben automatisieren.
   (`graph/cell.py`, inkl. `operator.ask`, `jev.ask`, `vla.run`); `run` erkennt `"version": 3`;
   `describe` liefert unter `v3` den Tool-Katalog
 - [x] `cylinder_to_plate` migriert (`graph/workflows/cylinder_to_plate.json`), Dry-Run grün
-- [ ] Live-Lauf des v3-`cylinder_to_plate` an der Zelle (Vergleich mit dem Lauf vom 13.11.)
+- [x] Live-Lauf des v3-`cylinder_to_plate` an der Zelle (16.11., `experiments/graph/20261116_141537`): success,
+  Zylinder steht 22 mm neben der Tellermitte (13.11.: Jev, mehrere Fehlversuche bei `locate`)
 - [ ] Restliche Graphen migrieren (`pick_place`, `pick_cube`, `example`, `plans/*`), dann v1 (`walk.py`,
   `check.py`) entfernen
 - [x] Kern ohne Kassow-Importe halten (Format, Validator, Walker, Tracing), siehe Phase K
@@ -144,7 +147,8 @@ steht, was Claude als Planer/Orchestrator braucht. Ersetzt `.github/agents/robot
   `plan_log`); Katalog live aus `describe` (`v3.tools`); `.github/agents/robot.agent.md` verweist nur noch darauf
 - [x] Aufgabenordner `experiments/graph/plans/<task>/` mit `plan.jsonl` (Planungsereignisse für GUI und
   Vergleich), Versionen `workflow.v<n>.json`, Dry-Run-Skripte, `report.md`
-- [ ] Erster Probelauf des Skills an der Zelle (nach der Demo): „Leg den Würfel auf den Teller“, autonom
+- [x] Erster Probelauf des Skills an der Zelle, autonom: „Zylinder auf den Teller“ (16.11.), Planung in
+  `experiments/graph/plans/cylinder_to_plate_live/` (plan.jsonl, report.md). Bediener schob vorab den Teller ins Bild
 - [ ] Ablauf wie GaP: Coordinator (Aufgabe in Subgraphen zerlegen, Skills wählen) → Subgraph-Agent
   (nach `SKILL.md` füllen) → Checkpoint-Agent → Validator → höchstens 2 Fix-Runden
 - [x] Modus **autonom**: nur Sensoren der Zelle; der Bediener gibt nur Bewegungen frei
@@ -226,7 +230,7 @@ baut und wie die Zelle ihn abläuft, verständlich auch für Zuschauer ohne Robo
 - [x] Start: `uv run python -m rio.apps.kassow.graph --command view` → http://127.0.0.1:8766
   (`?run=<ordner>`, `?plan=<task>`, `?lang=en`; `--view-host 0.0.0.0` für einen zweiten Bildschirm)
 - [x] Export eines Laufs als eigenständige HTML-Datei: `uv run python -m rio.graph.live --root experiments/graph --export lauf.html`
-- [ ] Erster Einsatz an der Zelle: Planung + Live-Lauf auf zweitem Bildschirm
+- [x] Erster Einsatz an der Zelle: Planung + Live-Lauf (16.11.)
 - [ ] Prüfen, ob GaPs Trace-Browser (`gap viz`, FastAPI + React) für die Nachbetrachtung reicht und
   unsere GUI sich auf die Live-Ansicht beschränken kann
 
