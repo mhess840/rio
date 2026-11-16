@@ -54,11 +54,14 @@ class Args:
     confirm: bool = True
     """On the cell, wait for space before each move to a located target and each VLA; q ends the walk."""
     image: Path | None = None
-    """``ask``: a saved photo. Unset: a fresh Jev photo. Targets are mapped only for ``jev.jpg`` photos."""
+    """``ask``: a saved photo. Unset: a fresh Jev photo. Targets are mapped only for ``jev.jpg`` photos.
+    ``run`` (dry): ``sam.locate`` asks the real SAM about this Jev photo; the arm does not move."""
     questions: Path | None = None
     """``ask``: JSON file with a Jev question map."""
     locate: str = ""
     """``ask``: describe one object; Jev boxes it and the table map places it."""
+    sam: str = ""
+    """``ask``: SAM noun phrases separated by ``|`` (e.g. ``"orange plate|plate"``); SAM instead of Jev."""
     device: str = "cuda:1"
     """GPU of the VLA residents."""
     single_slot: bool = False
@@ -171,6 +174,8 @@ def observe(args: Args) -> dict:
             table = load_table(args)
         except GraphError as error:
             logger.warning("No target coordinates: {}", error)
+    if args.sam:
+        return {"image": str(image), "sam": sam_photo(image.read_bytes(), args.sam.split("|"), image.stem == "jev", args)}
     client = JevClient(args.jev)
     result = ask_photo(
         encode_jpeg(image.read_bytes()),
@@ -180,6 +185,33 @@ def observe(args: Args) -> dict:
         table=table,
     )
     return {"image": str(image), **result}
+
+
+def sam_photo(jpeg: bytes, prompts: list[str], mapped: bool, args: Args) -> dict:
+    """Every SAM instance per prompt with score, box and, on a Jev photo, table ``x, y``."""
+    from rio.sam import SamClient
+
+    table = None
+    if mapped:
+        try:
+            table = load_table(args)
+        except GraphError as error:
+            logger.warning("No target coordinates: {}", error)
+    client = SamClient()
+    out = {}
+    for prompt in (p.strip() for p in prompts):
+        if not prompt:
+            continue
+        reply = client.segment(jpeg, prompt)
+        found = []
+        for inst in reply.instances:
+            item: dict = {"score": inst.score, "box": [round(v) for v in inst.box]}
+            if table is not None:
+                x, y = table.to_xy(*inst.centre)
+                item |= {"x": round(float(x), 4), "y": round(float(y), 4), "inside_area": table.contains(float(x), float(y))}
+            found.append(item)
+        out[prompt] = {"instances": found, "elapsed_s": round(reply.elapsed_s, 2)}
+    return out
 
 
 def _print_graph(graph: Graph) -> None:
@@ -248,6 +280,8 @@ class LiveCell:
     run_vla: Callable[[str, str, float], object]
     confirm: Callable[[str], bool]
     choose: Callable[[str, list[str]], str | None]
+    photo: Callable[[str], bytes]
+    """A fresh Jev photo, saved as ``<node>.jpg`` in the run folder."""
 
 
 @contextmanager
@@ -286,11 +320,13 @@ def live_cell(args: Args, table: TableMap | None, root: Path) -> Generator[LiveC
         skills = KassowSkills(env, home_joint_speed=args.home_joint_speed, gripper_open=args.gripper_open, table=table)
         logger.info("Gripper opens to {:.2f}", skills.gripper_open)
 
-        def ask(node: str, questions: dict, note: str) -> dict:
+        def photo(node: str) -> bytes:
             jpeg = encode_jpeg(fresh_frame(camera, 0.5))
             (root / f"{node.replace('/', '__')}.jpg").write_bytes(jpeg)
-            reply = client.ask(jpeg, questions, note)
-            return reply.answers
+            return jpeg
+
+        def ask(node: str, questions: dict, note: str) -> dict:
+            return client.ask(photo(node), questions, note).answers
 
         def space_or_q(message: str) -> bool:
             term(f"{message}\n  space: go    q: stop")
@@ -315,7 +351,7 @@ def live_cell(args: Args, table: TableMap | None, root: Path) -> Generator[LiveC
                 time.sleep(0.05)
 
         run_vla = make_run_vla(env, keys, skills, root / "vla", device=args.device, single_slot=args.single_slot, mw=args.mw)
-        yield LiveCell(skills, ask, keys, run_vla, space_or_q, choose)
+        yield LiveCell(skills, ask, keys, run_vla, space_or_q, choose, photo)
 
 
 def cli() -> None:

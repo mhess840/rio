@@ -75,10 +75,13 @@ Full example that ran on the cell (v1 form) and dry-runs in v3:
 - **Park** (keep the arm out of the Jev photo before locating, and at the end):
   `kassow.move_to {"pose": "home_organize.json"}` → `parked`; `on_error: stuck`.
   One `park_sg` may be used by two top-level nodes.
-- **Perceive**: `jev.locate` → noops `found` / `not_found` / `outside_area`;
-  `on_error: no_answer`; output the target. Thresholds that worked on
-  2026-11-13: `threshold 0.4`, `visible_threshold 0.0` (Jev's visibility noul
-  is unstable).
+- **Perceive**: `sam.locate {"prompts": ["orange plate", "plate"]}` → noops
+  `found` / `not_found` / `outside_area`; `on_error: no_answer`; output
+  `find.target`. Default threshold 0.8 (0.69 was a false hit on the orange
+  gripper). Prompts come from the Look step. Words that matched on 2026-11-13:
+  plate "orange plate", cylinder "blue cap"/"blue object", cube "red object";
+  "red plate", "red cube", "blue cylinder" found nothing. Park the arm first.
+  `jev.locate` still exists (Jev box, less repeatable: ≈10 mm vs < 1 mm).
 - **Grasp**: `kassow.pick_at` (exits `held`/`missed`). `z_offset_m` 0.02 and
   `approach_m` 0.15 worked for the cylinder.
 - **Transport**: `kassow.place_at` (raises when nothing is held) → `placed`;

@@ -39,9 +39,12 @@ Keep a task folder `experiments/graph/plans/<task>/` and log each step to its
    outputs, exits, tags), `v3.rules`, `poses`, `vla` (usable + instructions)
    and `table_map.ready`. Use nothing that is not listed there.
 2. **Look.** `--command look`, then view the `jev`, `overview` and `wrist` photos.
-   Ground every object the task names: `--command ask --locate "<object>"
-   --image <look folder>/jev.jpg`; note `visible`, the box confidence and
-   `target.inside_area`.
+   Ground every object the task names with SAM: `--command ask --image
+   <look folder>/jev.jpg --sam "orange plate|plate|red object"`. Name the colour
+   you see in the photo (the "red" plate is orange; SAM takes colours literally;
+   from above a cylinder is a "cap"/"circle"). Keep the 1–3 phrases that score
+   ≥ 0.8 on the right object with `inside_area` true; they become the
+   `sam.locate` prompts. Jev (`--locate`) stays for questions about the scene.
 3. **Decompose** (coordinator). Split the task into 2–6 stages, each one
    subgraph owned by one skill: e.g. park → perceive object → perceive
    destination → grasp → transport → park. Repeated work ("all items") is a
@@ -56,9 +59,10 @@ Keep a task folder `experiments/graph/plans/<task>/` and log each step to its
    (`gripper.open`, then `kassow.move_to` a free pose).
 6. **Check** (validator): write `workflow.json`, run `--command check --graph
    <file>`, fix every error, at most two fix rounds, then report.
-7. **Dry-run**: write `dry_script.json` (answers keyed by node path, e.g.
-   `"cube/find"`) and run every path you expect at least once: the success
-   path and each failure exit. `--command run --graph <file> --script <script>`.
+7. **Dry-run**: first `--command run --graph <file> --image <look>/jev.jpg`
+   (real SAM on the photo, the arm stays still); then write `dry_script.json`
+   (answers keyed by node path, e.g. `"cube/find"`) for each failure exit and
+   run it: `--command run --graph <file> --script <script>`.
 8. **Ask for the go.** Show the graph as stages with their tools and targets,
    the expected path, and what the operator must watch. Wait for an explicit
    go in chat for this exact file.

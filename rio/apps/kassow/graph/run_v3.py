@@ -8,8 +8,9 @@ writes ``workflow.json`` and ``events.jsonl`` (one executor event per line)
 into ``experiments/graph/<time>/``.
 
 Dry-run script (``--script``): a JSON object keyed by node path
-(``"cube/find"``). Jev nodes take Jev's ``answers`` object, ``operator.ask``
-nodes take the answer string.
+(``"cube/find"``). Jev nodes take Jev's ``answers`` object, ``sam.locate``
+nodes a map of prompt to ``[[x1, y1, x2, y2, score]]`` in 640x480 pixels,
+``operator.ask`` nodes the answer string.
 """
 
 from __future__ import annotations
@@ -62,6 +63,7 @@ def run_workflow(args: Args, path: Path) -> str:
             table=table,
             run_vla=dry_run_vla,
             ask_operator=_scripted_operator(canned),
+            **_dry_perception(args, canned),
         )
         result = execute(workflow, tools, root)
     else:
@@ -75,7 +77,17 @@ def run_workflow(args: Args, path: Path) -> str:
                     raise Stopped(f"operator stopped at {node}")
                 return reply
 
-            tools = cell_tools(cell.skills, cell.ask, table=table, run_vla=cell.run_vla, ask_operator=ask_operator)
+            from rio.sam import SamClient
+
+            tools = cell_tools(
+                cell.skills,
+                cell.ask,
+                table=table,
+                run_vla=cell.run_vla,
+                ask_operator=ask_operator,
+                photo=cell.photo,
+                segment=SamClient().segment,
+            )
 
             def confirm(node: str, tool: Tool, inputs: dict[str, Any]) -> bool:
                 return cell.confirm(f"{node}: {tool.name} {_brief(inputs)}")
@@ -108,7 +120,7 @@ def execute(workflow: Workflow, tools: ToolRegistry, root: Path, **kwargs: Any) 
 def uses_table(workflow: Workflow) -> bool:
     """True when a node locates an object (the table map is then required)."""
     scopes = [workflow, *workflow.subgraphs.values()]
-    return any(node.tool == "jev.locate" for scope in scopes for node in scope.nodes.values())
+    return any(node.tool in ("jev.locate", "sam.locate") for scope in scopes for node in scope.nodes.values())
 
 
 def jsonable(value: Any) -> Any:
@@ -143,6 +155,36 @@ def _scripted_jev(canned: dict) -> Any:
         return canned[node]
 
     return ask
+
+
+def _dry_perception(args: Args, canned: dict) -> dict:
+    """``--image``: real SAM on that saved Jev photo (no arm moves); else the scripted answers."""
+    if args.image is None:
+        return {"photo": lambda node: b"", "segment": scripted_sam(canned)}
+    from rio.sam import SamClient
+
+    jpeg = args.image.read_bytes()
+    term(f"[dry run] sam.locate uses SAM on {args.image}")
+    return {"photo": lambda node: jpeg, "segment": SamClient().segment}
+
+
+def scripted_sam(canned: dict) -> Any:
+    """Dry-run SAM: ``{"<node>": {"<prompt>": [[x1, y1, x2, y2, score], ...]}}`` on a 640x480 photo.
+
+    A prompt the script does not list finds nothing.
+    """
+    from rio.graph import current_node
+    from rio.sam import Instance, SamReply
+
+    def segment(jpeg: bytes, prompt: str) -> SamReply:
+        node = current_node()
+        if node not in canned:
+            raise RuntimeError(f"dry-run has no scripted SAM answer for {node!r}")
+        boxes = canned[node].get(prompt, [])
+        found = [Instance(i, (b[0], b[1], b[2], b[3]), (640, 480), float(b[4])) for i, b in enumerate(boxes)]
+        return SamReply(found, "", 0.0)
+
+    return segment
 
 
 def _scripted_operator(canned: dict) -> Any:

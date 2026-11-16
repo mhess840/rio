@@ -60,8 +60,12 @@ andere Applikateure Aufgaben automatisieren.
     „orange plate“, „red object“ → Treffer. Teller und Würfel sind orange; SAM nimmt Farben wörtlich
   - Falsch positiv: Teller unter dem Arm verdeckt → „orange plate“ 0,69 auf den orangen Greiferteilen.
     Schwelle ≥ 0,8 und vor `locate` parken
-- [ ] Tool `sam.locate`: Liste von Prompts (erster Treffer ≥ Schwelle gewinnt), genau eine Instanz oder die
-  beste, Box + Maske in den Ausgaben; der Planer testet die Prompts im Schritt „Look“ am Foto
+- [x] Tool `sam.locate` (`graph/cell.py`): Prompts der Reihe nach, erster Treffer ≥ 0,8 gewinnt; Ausgaben
+  `target`, `prompt`, `confidence`, `box`, `count`, `tried`; Prüfung „ein Begriff pro Prompt“. Live-GUI zeigt es
+- [x] `--command ask --sam "a|b"` für den Look-Schritt; `--command run --image <jev.jpg>` = Dry-Run mit echtem SAM
+- [x] `cylinder_to_plate` (v3) lokalisiert mit `sam.locate`; Dry-Run mit echtem SAM auf dem Foto vom 13.11. grün
+- [ ] Live-Lauf mit `sam.locate` an der Zelle
+- [ ] Maske dekodieren (für Tiefe/OBB)
 - [ ] Tiefe an der Jev-Kamera aktivieren (`jev_camera()`: `enable_depth=False`, D435i an USB 2 mit 6 fps);
   prüfen, ob Farbe + Tiefe über USB 2 laufen, sonst USB-3-Port. Tiefe auf Farbe ausrichten
 - [ ] Gegenprobe: gemessene Tischebene aus der Tiefe gegen die kalibrierte Ebene

@@ -6,9 +6,11 @@
 G="uv run python -m rio.apps.kassow.graph"
 $G --command describe
 $G --command look                                   # photos: experiments/graph/look/<time>/
-$G --command ask --locate "the red cube" --image <look>/jev.jpg
+$G --command ask --image <look>/jev.jpg --sam "orange plate|plate"   # SAM: score, box, x/y, inside_area
+$G --command ask --locate "the red cube" --image <look>/jev.jpg       # Jev
 $G --command check --graph experiments/graph/plans/<task>/workflow.json
-$G --command run   --graph <file> --script <dry_script.json>          # dry run (default)
+$G --command run   --graph <file> --image <look>/jev.jpg               # dry run, real SAM on the photo
+$G --command run   --graph <file> --script <dry_script.json>          # dry run, scripted answers
 $G --command run   --graph <file> --no-dry-run --gripper-open 0.5 --home-joint-speed 0.3
 ```
 
@@ -42,7 +44,9 @@ JSON object keyed by node path (top-level node / inner node):
 }
 ```
 
-`jev.locate` nodes take a `visible` noul and a `where` box (image fractions;
+`sam.locate` nodes take a map of prompt to `[[x1, y1, x2, y2, score]]` in
+640x480 pixels (`{"plate/find": {"orange plate": [[370, 270, 400, 300, 0.98]]}}`);
+a prompt that is not listed finds nothing. `jev.locate` nodes take a `visible` noul and a `where` box (image fractions;
 the box above maps inside the calibrated area). `jev.ask` nodes take
 `{"q": <answer>}`. `operator.ask` nodes take the answer string. Write one
 script per path you want to test (success, not found, missed).

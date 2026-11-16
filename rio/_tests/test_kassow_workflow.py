@@ -13,6 +13,7 @@ from rio._tests.test_kassow_graph import _box_answers, _table
 from rio.apps.kassow.graph.cell import cell_tools
 from rio.apps.kassow.graph.run import Args, main
 from rio.graph import Executor, errors, load_workflow, parse_workflow, validate_workflow
+from rio.sam import Instance, SamReply
 
 pytestmark = pytest.mark.unit
 
@@ -59,7 +60,14 @@ def jev(*_):
     return _box_answers(0.5, 0.5)
 
 
+def sam_hit(score=0.95):
+    """A SAM segmenter that finds one instance in the middle of a 640x480 photo for every prompt."""
+    return lambda jpeg, prompt: SamReply([Instance(0, (300, 220, 340, 260), (640, 480), score)], "", 0.0)
+
+
 def tools(arm=None, **kwargs):
+    kwargs.setdefault("photo", lambda node: b"jpeg")
+    kwargs.setdefault("segment", sam_hit())
     return cell_tools(arm or Arm(), jev, table=_table(), pose_exists=lambda name: True, **kwargs)
 
 
@@ -168,7 +176,14 @@ def test_main_dry_runs_a_v3_file_and_logs_events(tmp_path, monkeypatch):
     table = tmp_path / "table_map.json"
     _table().save(table)
     script = tmp_path / "script.json"
-    script.write_text(json.dumps({"cylinder/find": _box_answers(0.4, 0.4), "plate/find": _box_answers(0.6, 0.6)}))
+    script.write_text(
+        json.dumps(
+            {
+                "cylinder/find": {"blue cap": [[246, 182, 266, 202, 0.95]]},
+                "plate/find": {"orange plate": [[370, 270, 400, 300, 0.98]]},
+            }
+        )
+    )
     assert main(Args(command="check", graph=CYLINDER, table=table)) == "ok"
     assert main(Args(command="run", graph=CYLINDER, table=table, script=script)) == "success"
     (run,) = [path for path in (tmp_path / "graph").iterdir() if path.is_dir()]
@@ -181,19 +196,47 @@ def test_loop_over_items_through_subgraphs():
     raw = json.loads(CYLINDER.read_text())
     raw["conditional_edges"]["cylinder"]["mapping"]["not_found"] = "park"
     raw["conditional_edges"]["transport"]["mapping"]["placed"] = "cylinder"
-    seen = []
+    photos = []
 
-    def ask(node, questions, note):
-        seen.append(node)
-        cylinders = sum(1 for n in seen if n == "cylinder/find")
-        if node == "cylinder/find" and cylinders > 2:
-            return _box_answers(0.4, 0.4, visible=0.0, confidence=0.1)
-        return _box_answers(0.4, 0.4)
+    def photo(node):
+        photos.append(node)
+        return node.encode()
+
+    def segment(jpeg, prompt):
+        if jpeg == b"cylinder/find" and photos.count("cylinder/find") > 2:
+            return SamReply([], "", 0.0)
+        return sam_hit()(jpeg, prompt)
 
     arm = Arm()
-    registry = cell_tools(arm, ask, table=_table(), pose_exists=lambda name: True)
     workflow = parse_workflow(raw)
+    registry = tools(arm, photo=photo, segment=segment)
     assert errors(validate_workflow(workflow, registry)) == []
     result = Executor(workflow, registry).run()
     assert result.end == "done"
     assert arm.calls.count("pick_at") == 2 and arm.calls.count("place_at") == 2
+
+
+def test_sam_locate_tries_prompts_in_order_and_reports_them():
+    asked = []
+
+    def segment(jpeg, prompt):
+        asked.append(prompt)
+        score = 0.6 if prompt == "red plate" else 0.98
+        return SamReply([Instance(0, (300, 220, 340, 260), (640, 480), score)], "", 0.0)
+
+    registry = tools(segment=segment)
+    out = registry.get("sam.locate").fn(prompts=["red plate", "orange plate", "plate"])
+    assert asked == ["red plate", "orange plate"]
+    assert out["exit"] == "found" and out["prompt"] == "orange plate"
+    assert out["tried"] == {"red plate": 0.6, "orange plate": 0.98}
+    assert out["target"].name == "orange plate"
+    missing = tools(segment=lambda jpeg, prompt: SamReply([], "", 0.0)).get("sam.locate").fn(prompts=["cube"])
+    assert missing["exit"] == "not_found"
+
+
+def test_sam_prompts_are_checked():
+    check = tools().get("sam.locate").check
+    assert check({"prompts": ["orange plate"]}) == []
+    assert check({"prompts": []})
+    assert any("one noun phrase" in p for p in check({"prompts": ["cube and plate"]}))
+    assert any("one noun phrase" in p for p in check({"prompts": ["cube, plate"]}))

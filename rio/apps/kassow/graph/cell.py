@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from rio.graph import MOTION, OPERATOR, PERCEPTION, Param, Tool, ToolRegistry, current_node
 
 from .check import BOX_YES, NOUL_YES, _check_question, pose_is_file, resolve_pose
-from .locate import BOX_KEY, VISIBLE_KEY, locate_questions, read_box, read_noul
+from .locate import BOX_KEY, VISIBLE_KEY, Box, locate_questions, read_box, read_noul
 from .model import (
     APPROACH_M,
     APPROACH_M_RANGE,
@@ -36,6 +36,8 @@ from .model import (
 )
 
 if TYPE_CHECKING:
+    from rio.sam import SamReply
+
     from .table_map import TableMap, Target
     from .walk import Skills
 
@@ -44,11 +46,19 @@ Ask = Callable[[str, dict, str], dict]
 AskOperator = Callable[[str, str, list[str]], str]
 """``ask_operator(node_path, question, answers)`` returns one of ``answers``."""
 RunVla = Callable[[str, str, float], object]
+Photo = Callable[[str], bytes]
+"""``photo(node_path)`` takes a fresh Jev photo (JPEG) and keeps it with the run."""
+Segment = Callable[[bytes, str], "SamReply"]
+"""``segment(jpeg, noun_phrase)`` asks SAM for every instance."""
 
 TARGET = "Target"
 LIFT_M = 0.1
 OPERATOR_MAX_ANSWERS = 9
 """The operator answers with one key, 1 to 9."""
+SAM_YES = 0.8
+"""SAM score that counts as found; 0.69 was a false hit on the orange gripper (2026-11-16)."""
+SAM_MAX_PROMPTS = 6
+SAM_PROMPT_MAX_CHARS = 60
 
 
 class SkillAlarm(RuntimeError):
@@ -62,6 +72,8 @@ def cell_tools(
     table: TableMap | None = None,
     run_vla: RunVla | None = None,
     ask_operator: AskOperator | None = None,
+    photo: Photo | None = None,
+    segment: Segment | None = None,
     pose_exists: Callable[[str], bool] = pose_is_file,
 ) -> ToolRegistry:
     """Every tool of the cell, bound to live or dry-run parts.
@@ -72,6 +84,8 @@ def cell_tools(
         table: Image-to-table map; ``jev.locate`` needs it.
         run_vla: ``run_vla(experiment, instruction, timeout_s)``; ``vla.run`` needs it.
         ask_operator: Asks the human at the cell; ``operator.ask`` needs it.
+        photo: Fresh Jev photo; ``sam.locate`` needs it.
+        segment: SAM on one photo and one noun phrase; ``sam.locate`` needs it.
         pose_exists: Whether a home file exists (tests pass a stub).
     """
 
@@ -129,6 +143,36 @@ def cell_tools(
             detail = f"x={target.x:.3f} y={target.y:.3f} is outside the calibrated area"
             return {"exit": "outside_area", "target": target, "detail": detail, **seen}
         return {"exit": "found", "target": target, "detail": json.dumps(target.to_dict()), **seen}
+
+    def sam_locate(prompts: list[str], threshold: float = SAM_YES) -> dict:
+        if table is None:
+            raise RuntimeError("sam.locate needs a table map")
+        if photo is None or segment is None:
+            raise RuntimeError("sam.locate needs the Jev camera and SAM")
+        jpeg = photo(current_node())
+        tried: dict[str, float] = {}
+        for prompt in prompts:
+            reply = segment(jpeg, prompt)
+            best = reply.best()
+            score = float(best.score or 0.0) if best is not None else 0.0
+            tried[prompt] = round(score, 3)
+            if best is None or score < threshold:
+                continue
+            left, top, right, bottom = best.fractions()
+            target = table.target(Box(left, top, right, bottom, score), prompt)
+            seen = {
+                "prompt": prompt,
+                "confidence": score,
+                "box": {"left": left, "top": top, "right": right, "bottom": bottom},
+                "count": sum(1 for i in reply.instances if (i.score or 0.0) >= threshold),
+                "tried": tried,
+                "target": target,
+            }
+            if not table.contains(target.x, target.y):
+                detail = f"{prompt}: x={target.x:.3f} y={target.y:.3f} is outside the calibrated area"
+                return {"exit": "outside_area", "detail": detail, **seen}
+            return {"exit": "found", "detail": json.dumps(target.to_dict()), **seen}
+        return {"exit": "not_found", "detail": f"no prompt reached {threshold}: {tried}", "tried": tried}
 
     def jev_ask(question: dict, threshold: float | None = None, note: str = "") -> dict:
         answers = ask(current_node(), {"q": question}, note)
@@ -246,6 +290,33 @@ def cell_tools(
                 check=_check_locate,
             ),
             Tool(
+                "sam.locate",
+                sam_locate,
+                "find one object in a fresh Jev photo with SAM 3.1 and map it onto the table; tries the noun "
+                "phrases in order and takes the first whose best instance reaches the threshold",
+                inputs={
+                    "prompts": Param(
+                        "list",
+                        doc=f"1 to {SAM_MAX_PROMPTS} short noun phrases with the colour SAM sees, e.g. "
+                        "['orange plate', 'plate']; test them with --command ask --sam first",
+                    ),
+                    "threshold": Param("float", False, f"SAM score, default {SAM_YES}"),
+                },
+                outputs={
+                    "exit": "str",
+                    "target": TARGET,
+                    "detail": "str",
+                    "prompt": "str",
+                    "confidence": "float",
+                    "box": "dict",
+                    "count": "int",
+                    "tried": "dict",
+                },
+                exits=("found", "not_found", "outside_area"),
+                tags=(PERCEPTION,),
+                check=_check_sam,
+            ),
+            Tool(
                 "jev.ask",
                 jev_ask,
                 "ask Jev one typed question about a fresh Jev photo; exit yes/no (noul, box), "
@@ -319,6 +390,21 @@ def _check_locate(inputs: dict[str, Any]) -> list[str]:
     what = inputs.get("object")
     if what is not None and (not isinstance(what, str) or not what.strip() or len(what) > OBJECT_MAX_CHARS or "`" in what):
         problems.append(f"object must be text of at most {OBJECT_MAX_CHARS} characters without backticks")
+    return problems
+
+
+def _check_sam(inputs: dict[str, Any]) -> list[str]:
+    problems = _ranges({"threshold": (0.0, 1.0)})(inputs)
+    prompts = inputs.get("prompts")
+    if prompts is None:
+        return problems
+    if not isinstance(prompts, list) or not 1 <= len(prompts) <= SAM_MAX_PROMPTS:
+        return [*problems, f"prompts must be a list of 1 to {SAM_MAX_PROMPTS} noun phrases"]
+    for prompt in prompts:
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > SAM_PROMPT_MAX_CHARS:
+            problems.append(f"prompt {prompt!r} must be text of at most {SAM_PROMPT_MAX_CHARS} characters")
+        elif any(mark in prompt for mark in (",", ";", "+", "<|")) or " and " in f" {prompt} ":
+            problems.append(f"prompt {prompt!r} must be one noun phrase (SAM returns nothing for lists)")
     return problems
 
 

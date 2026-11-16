@@ -198,7 +198,7 @@ function onRunEvent(e, photo) {
     case "tool_end": {
       setState(path, "ok"); if (e.outputs && e.outputs.exit) R.exits[path] = e.outputs.exit;
       if (e.tool === "operator.ask") R.asking = null;
-      if (e.tool === "jev.locate" || e.tool === "jev.ask") R.camera = { e, photo, start: lastStart(path) };
+      if (e.tool === "jev.locate" || e.tool === "jev.ask" || e.tool === "sam.locate") R.camera = { e, photo, start: lastStart(path) };
       break;
     }
     case "tool_error": setState(path, "bad"); break;
@@ -410,6 +410,7 @@ function describeInputs(inputs) {
   if (tg && typeof tg === "object") return `${tg.name || ""}  x=${Number(tg.x).toFixed(3)} y=${Number(tg.y).toFixed(3)}`;
   if (inputs.pose) return inputs.pose;
   if (inputs.experiment) return `${inputs.experiment} “${inputs.instruction || ""}”`;
+  if (inputs.prompts) return inputs.prompts.join(" / ");
   return short(inputs, 80);
 }
 function renderBanner() {
@@ -426,7 +427,7 @@ function renderCamera() {
   const c = S.run.camera; const ph = $("photo"); const tx = $("camtext");
   if (!c) { ph.innerHTML = `<span>${esc(t("waitphoto"))}</span>`; tx.textContent = ""; return; }
   const out = c.e.outputs || {}; const inp = (c.start && c.start.inputs) || {};
-  const what = inp.object || (inp.question && inp.question.instructions) || c.e.node;
+  const what = out.prompt || inp.object || (inp.question && inp.question.instructions) || (inp.prompts || []).join(" / ") || c.e.node;
   const bad = out.exit && out.exit !== "found" && out.exit !== "yes";
   let boxHtml = "";
   if (out.box) {
