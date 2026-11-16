@@ -300,7 +300,9 @@ def cell_tools(
             raise RuntimeError(f"camera {camera!r} gave no calibrated view")
         return _find_in_shot(shot, camera, prompts, threshold, height_m)
 
-    def _find_in_shot(shot: Shot, camera: str, prompts: list[str], threshold: float, height_m: float) -> dict:
+    def _find_in_shot(
+        shot: Shot, camera: str, prompts: list[str], threshold: float, height_m: float, yaw_from: str = "auto"
+    ) -> dict:
         """The first prompt whose best instance reaches ``threshold``, located through the shot's camera pose."""
         assert table is not None and segment is not None and shot.view is not None
         view = shot.view
@@ -330,7 +332,7 @@ def cell_tools(
                 if measured is not None and measured.get("yaw_deg") is not None:
                     target = replace(target, yaw_deg=measured["yaw_deg"], yaw_period_deg=measured["period_deg"])
             else:
-                yaw, period, how = _image_yaw(shot.jpeg, best.box, view, TABLE_Z_M + height_m)
+                yaw, period, how = _image_yaw(shot.jpeg, best.box, view, TABLE_Z_M + height_m, yaw_from)
                 if yaw is not None:
                     target = replace(target, yaw_deg=yaw, yaw_period_deg=period)
                     measured = {"yaw_deg": round(yaw, 1), "period_deg": period, "yaw_source": how}
@@ -370,6 +372,7 @@ def cell_tools(
         object_height_m: float = OBJECT_HEIGHT_M,
         max_views: int = SEARCH_VIEWS,
         threshold: float = SAM_YES,
+        yaw_from: str = "auto",
     ) -> dict:
         """Look around a rough hint with the wrist camera until SAM finds the object, then look again from straight above."""
         if wrist is None or table is None:
@@ -389,11 +392,12 @@ def cell_tools(
         found: dict | None = None
         for spot in search_spots(hint, radius_m, max_views):
             try:
-                look_at(float(spot[0]), float(spot[1]), height_m)
+                look_at(float(spot[0]), float(spot[1]), height_m, object_height_m)
             except RuntimeError as error:
                 looked.append({"x": round(float(spot[0]), 3), "y": round(float(spot[1]), 3), "skipped": str(error)})
                 continue
-            result = _find_in_shot(_calibrated(take(current_node()), "wrist"), "wrist", prompts, threshold, object_height_m)
+            shot = _calibrated(take(current_node()), "wrist")
+            result = _find_in_shot(shot, "wrist", prompts, threshold, object_height_m, yaw_from)
             looked.append({"x": round(float(spot[0]), 3), "y": round(float(spot[1]), 3), "tried": result.get("tried")})
             if result["exit"] != "not_found":
                 found = result
@@ -402,9 +406,9 @@ def cell_tools(
             return {"exit": "not_found", "detail": f"{len(looked)} views around {hint.round(3).tolist()}", "views": looked}
         centre = np.asarray(found["object_xyz"][:2])
         try:  # sharpen: look again from straight above the object
-            look_at(float(centre[0]), float(centre[1]), height_m)
+            look_at(float(centre[0]), float(centre[1]), height_m, object_height_m)
             shot = _calibrated(take(current_node()), "wrist")
-            again = _find_in_shot(shot, "wrist", [found["prompt"]], threshold * 0.8, object_height_m)
+            again = _find_in_shot(shot, "wrist", [found["prompt"]], threshold * 0.8, object_height_m, yaw_from)
             if again["exit"] != "not_found" and (not again.get("clipped") or found.get("clipped")):
                 found = again
         except RuntimeError as error:
@@ -413,12 +417,28 @@ def cell_tools(
             found = {**found, "detail": f"{found['detail']} (object cut by the image border: centre uncertain)"}
         return {**found, "views": looked, "camera_height_m": round(height_m, 3)}
 
-    def look_at(x: float, y: float, height_m: float = LOOK_HEIGHT_M) -> dict:
-        """Move so the wrist camera looks straight at table point ``x, y`` from ``height_m`` above it."""
+    def look_at(x: float, y: float, height_m: float = LOOK_HEIGHT_M, aim_height_m: float = 0.0) -> dict:
+        """Move so the wrist camera looks at ``x, y`` from ``height_m`` above the table.
+
+        ``aim_height_m`` aims the optical axis at that height above the table (an object's top),
+        so a tall object lands in the image centre even though the camera looks 8 deg off the tool axis.
+        """
         if wrist is None or table is None:
             raise RuntimeError("kassow.look_at needs the wrist calibration and the table map")
-        xyz, rotvec = wrist_view_pose(wrist, table.rotvec, np.array([x, y, TABLE_Z_M]), height_m)
+        aim = np.array([x, y, TABLE_Z_M + aim_height_m])
+        xyz, rotvec = wrist_view_pose(wrist, table.rotvec, aim, height_m - aim_height_m)
         _must(skills.move_tcp(xyz, rotvec), f"look_at x={x:.3f} y={y:.3f}")
+        return {"tcp": [round(float(v), 4) for v in xyz]}
+
+    def carry_to(x: float, y: float, height_m: float) -> dict:
+        """Move the TCP to ``height_m`` above the grasp height at object point ``x, y``, keeping the current
+        orientation (a turned wrist and its load stay as they are); e.g. away from the camera before lifting."""
+        if table is None:
+            raise RuntimeError("kassow.carry_to needs the table map")
+        current = skills.tcp_pose()
+        tcp = np.array([x, y]) - table.tool_xy(current[3:6])
+        xyz = np.array([tcp[0], tcp[1], table.z_at(float(tcp[0]), float(tcp[1])) + height_m])
+        _must(skills.move_tcp(xyz, current[3:6]), f"carry_to x={x:.3f} y={y:.3f}")
         return {"tcp": [round(float(v), 4) for v in xyz]}
 
     def jev_ask(question: dict, threshold: float | None = None, note: str = "") -> dict:
@@ -631,6 +651,9 @@ def cell_tools(
                     "object_height_m": Param("float", False, f"object height, default {OBJECT_HEIGHT_M}"),
                     "max_views": Param("int", False, f"views at most (centre + ring), default {SEARCH_VIEWS}"),
                     "threshold": Param("float", False, f"SAM score, default {SAM_YES}"),
+                    "yaw_from": Param(
+                        "str", False, "auto (default), colour (plain coloured object) or edges (printed or dark box)"
+                    ),
                 },
                 outputs={
                     "exit": "str",
@@ -650,6 +673,20 @@ def cell_tools(
                 exits=("found", "not_found", "outside_area"),
                 tags=(MOTION, PERCEPTION),
                 check=_check_search,
+            ),
+            Tool(
+                "kassow.carry_to",
+                carry_to,
+                "move the held object to height_m above the grasp height at object point x, y, keeping the wrist as "
+                "it is (e.g. away from the Jev camera before lifting over walls)",
+                inputs={
+                    "x": Param("float", doc="object point x (base frame)"),
+                    "y": Param("float", doc="object point y"),
+                    "height_m": Param("float", doc="above the calibrated grasp height"),
+                },
+                outputs={"tcp": "list"},
+                tags=(MOTION,),
+                check=_ranges({"height_m": (0.0, 0.45)}),
             ),
             Tool(
                 "kassow.look_at",
@@ -795,14 +832,15 @@ def _measure(
     return out
 
 
-def _image_yaw(jpeg: bytes, box: tuple, view: HandEye, top_z: float) -> tuple[float | None, float, str]:
-    """Yaw from a photo without depth: colour top face first (cube), else the longest straight edges (dark box)."""
+def _image_yaw(jpeg: bytes, box: tuple, view: HandEye, top_z: float, yaw_from: str = "auto") -> tuple[float | None, float, str]:
+    """Yaw from a photo without depth: ``colour`` top face (plain coloured objects such as the cube),
+    ``edges`` (longest straight edges; printed or dark boxes), or ``auto`` (colour, else edges)."""
     from .depth import edge_long_axis_yaw, top_face_yaw
 
     image = _decode(jpeg)
     if image is None:
         return None, 180.0, ""
-    face = top_face_yaw(image, box, view, top_z)
+    face = top_face_yaw(image, box, view, top_z) if yaw_from in ("auto", "colour") else None
     if face is not None and face["yaw_deg"] is not None:
         return float(face["yaw_deg"]), float(face["period_deg"]), "colour"
     yaw = edge_long_axis_yaw(image, box, view, top_z)

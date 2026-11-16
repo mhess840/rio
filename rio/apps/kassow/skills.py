@@ -207,6 +207,10 @@ class KassowSkills:
             return False
         return self._command_gripper(self.gripper_open if state == "open" else self.gripper_close)
 
+    def tcp_pose(self) -> np.ndarray:
+        """Measured TCP pose6 (position, rotation vector)."""
+        return np.asarray(self.env.robot.arm.get_state()["eef_pose"], dtype=float)[:6]
+
     def move_tcp(self, xyz: np.ndarray, rotvec: np.ndarray) -> Outcome:
         """``moveJ`` so the TCP lands at ``xyz`` with ``rotvec`` (IK-checked; e.g. a wrist-camera view pose)."""
         from rio.apps.kassow import goto
@@ -359,6 +363,10 @@ class DrySkills:
             term(f"[dry run] wrist turned {yaw_offset_deg:+.1f} deg for placing")
         term(f"[dry run] would place at {target.name} x={target.x:.3f} y={target.y:.3f} (+{z_offset_m:.2f} m)")
         return True
+
+    def tcp_pose(self) -> np.ndarray:
+        last = getattr(self, "last_tcp", None)
+        return np.asarray(last if last is not None else [-0.2, 0.342, 0.466, np.pi, 0.0, 0.0], dtype=float)
 
     def move_tcp(self, xyz: np.ndarray, rotvec: np.ndarray) -> Outcome:
         term(f"[dry run] would moveJ the TCP to x={xyz[0]:.3f} y={xyz[1]:.3f} z={xyz[2]:.3f}")

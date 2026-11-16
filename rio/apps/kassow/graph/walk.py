@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+import numpy as np
+
 from .check import BOX_YES, NOUL_YES
 from .locate import BOX_KEY, VISIBLE_KEY, locate_questions, read_box, read_noul
 from .model import (
@@ -64,6 +66,7 @@ class Skills(Protocol):
     ) -> object: ...
     def move_above(self, target: Target, *, height_m: float) -> object: ...
     def move_tcp(self, xyz, rotvec) -> object: ...
+    def tcp_pose(self) -> np.ndarray: ...
 
 
 class Keys(Protocol):
