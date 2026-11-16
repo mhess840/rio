@@ -221,8 +221,14 @@ def move_tcp(
     *,
     home_joint_speed: float,
     seed_q: np.ndarray | None = None,
+    max_travel_rad: float | None = None,
+    keep_out: list[tuple[np.ndarray, float]] | None = None,
 ) -> MoveStatus:
     """``moveJ`` so that the measured TCP lands on ``xyz`` with orientation ``rotvec``.
+
+    ``max_travel_rad`` tightens the per-joint travel limit; ``keep_out`` lists spheres
+    ``(centre, radius)`` in the base frame that no arm joint may enter anywhere along
+    the joint-space path (e.g. the Jev camera). Either refusal returns ``MISSED`` without moving.
 
     IK runs on the URDF, whose TCP differs from the controller's by a few millimetres.
     That difference at the current joints is added to the goal.
@@ -270,10 +276,58 @@ def move_tcp(
         logger.error("IK answer for {} leaves the joint limits", np.round(xyz, 3).tolist())
         return MoveStatus.MISSED
     travel = float(np.max(np.abs(q_goal - q)))
-    if travel > MAX_JOINT_TRAVEL_RAD:
+    if travel > (MAX_JOINT_TRAVEL_RAD if max_travel_rad is None else max_travel_rad):
         logger.error("IK answer for {} turns a joint by {:.0f} deg", np.round(xyz, 3).tolist(), np.degrees(travel))
         return MoveStatus.MISSED
+    if keep_out:
+        clash = path_clearance_problem(kin, q, q_goal, keep_out)
+        if clash:
+            logger.error("Move to {} refused: {}", np.round(xyz, 3).tolist(), clash)
+            return MoveStatus.MISSED
     return goto_home(env, {"joint_q": q_goal, "eef_pose": goal}, home_joint_speed=home_joint_speed, set_gripper=False)
+
+
+ESCAPE_SLACK_M = 0.005
+GRIPPER_LENGTH_M = 0.23
+"""Reported TCP to the fingertips along the tool axis (AG95, cf. the 233 mm tool offset)."""
+
+
+def path_clearance_problem(
+    kin, q_start: np.ndarray, q_goal: np.ndarray, keep_out: list[tuple[np.ndarray, float]], steps: int = 24
+) -> str:
+    """Empty when the arm's centre line stays outside every keep-out sphere along the straight joint-space path.
+
+    The centre line runs through every joint origin to the TCP and on along the tool axis
+    over the gripper (``GRIPPER_LENGTH_M``); the sphere radius must cover the links'
+    thickness and the obstacle's size.
+    """
+    import importlib
+    from itertools import pairwise
+
+    from scipy.spatial.transform import Rotation
+
+    pin = importlib.import_module("pinocchio")
+    model, data = kin.model, kin.data
+    start_gap: dict[int, float] = {}
+    for k in range(steps + 1):
+        q = q_start + (q_goal - q_start) * (k / steps)
+        pin.forwardKinematics(model, data, q)
+        pin.updateFramePlacements(model, data)
+        origins = [np.asarray(data.oMi[i].translation, dtype=float) for i in range(1, model.njoints)]
+        tcp = np.asarray(kin.fk(q), dtype=float)
+        origins.append(tcp[:3])
+        points = [a + (b - a) * s for a, b in pairwise(origins) for s in np.linspace(0.0, 1.0, 8)]
+        tool = Rotation.from_rotvec(tcp[3:6]).apply([0.0, 0.0, 1.0])
+        points += [tcp[:3] + tool * s for s in np.linspace(0.0, GRIPPER_LENGTH_M, 6)]
+        for n, (centre, radius) in enumerate(keep_out):
+            gap = min(float(np.linalg.norm(p - centre)) for p in points)
+            start_gap.setdefault(n, gap)
+            # A move that starts inside the sphere (after a stop) may only lead away from it.
+            if gap < radius and gap < start_gap[n] - ESCAPE_SLACK_M:
+                return f"the arm passes {gap * 1000:.0f} mm from a keep-out point ({radius * 1000:.0f} mm) at {k}/{steps}"
+            if gap < radius and start_gap[n] >= radius:
+                return f"the arm passes {gap * 1000:.0f} mm from a keep-out point ({radius * 1000:.0f} mm) at {k}/{steps}"
+    return ""
 
 
 WAIT_SHIFT_Y_M = -0.10

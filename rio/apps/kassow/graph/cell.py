@@ -128,6 +128,9 @@ def cell_tools(
         pose_exists: Whether a home file exists (tests pass a stub).
     """
 
+    holding = {"turn": 0.0}
+    """Wrist turn of the last successful pick_at (placing keeps the wrist near it)."""
+
     def move_to(pose: str) -> dict:
         _must(skills.move_to(resolve_pose(pose)), f"move_to {pose}")
         return {}
@@ -171,6 +174,7 @@ def cell_tools(
         else:
             held = skills.pick_at(target, approach_m=approach_m, z_offset_m=z_offset_m)
         _alarm(held)
+        holding["turn"] = turn if held is True else 0.0
         return {"exit": "held" if held is True else "missed", "wrist_turn_deg": round(turn, 1)}
 
     def place_at(
@@ -186,6 +190,8 @@ def cell_tools(
 
             reference = (jaw_yaw or load_jaw_yaw)()
             turn = wrist_turn_deg(float(align_to_deg), 180.0, reference or 0.0, load_jaw_closing())
+            # The parallel jaws look the same turned by 180 deg: keep the wrist near the grasp turn.
+            turn = min((turn - 180.0, turn, turn + 180.0), key=lambda t: abs(t - holding["turn"]))
         if turn or outside_area:
             done = skills.place_at(
                 target, approach_m=approach_m, z_offset_m=z_offset_m, yaw_offset_deg=turn, outside_area=outside_area

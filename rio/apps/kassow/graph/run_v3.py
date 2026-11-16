@@ -126,7 +126,7 @@ def uses_table(workflow: Workflow) -> bool:
     """True when a node locates an object (the table map is then required)."""
     scopes = [workflow, *workflow.subgraphs.values()]
     return any(
-        node.tool in ("jev.locate", "sam.locate", "kassow.search", "kassow.look_at")
+        node.tool in ("jev.locate", "sam.locate", "kassow.search", "kassow.look_at", "table.point")
         for scope in scopes
         for node in scope.nodes.values()
     )

@@ -369,6 +369,8 @@ def test_search_walks_views_until_the_wrist_camera_sees_the_object():
 
 
 def test_elongated_objects_are_grasped_and_placed_across_their_long_axis(monkeypatch):
+    from dataclasses import replace
+
     from rio.apps.kassow.graph.table_map import Target
 
     monkeypatch.setattr("rio.apps.kassow.graph.table_map.load_jaw_closing", lambda path=None: 30.0)
@@ -379,8 +381,12 @@ def test_elongated_objects_are_grasped_and_placed_across_their_long_axis(monkeyp
     assert out["wrist_turn_deg"] == pytest.approx(80.0)  # closing axis 30 -> 110, across the long axis 20
     slot = registry.get("table.point").fn(x=-0.37, y=0.76, name="slot")["target"]
     placed = registry.get("kassow.place_at").fn(target=slot, align_to_deg=31.0, outside_area=True)
-    assert placed["wrist_turn_deg"] == pytest.approx(-89.0)  # closing axis 30 -> 121, across the slot axis 31
-    assert arm.place_turns[-1] == (pytest.approx(-89.0), True)
+    assert placed["wrist_turn_deg"] == pytest.approx(91.0)  # 121 across the slot axis 31; +91 is nearest the grasp's +80
+    assert arm.place_turns[-1] == (pytest.approx(91.0), True)
+    near_minus = tools(Arm(), jaw_yaw=lambda: 30.0)
+    near_minus.get("kassow.pick_at").fn(target=replace(bar, yaw_deg=-60.0 + 180.0), align_yaw=True)  # turn -80
+    again = near_minus.get("kassow.place_at").fn(target=slot, align_to_deg=31.0, outside_area=True)
+    assert again["wrist_turn_deg"] == pytest.approx(-89.0)
 
 
 def test_edge_yaw_of_a_dark_box_from_above():

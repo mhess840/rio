@@ -33,6 +33,11 @@ _ORGANIZE = "organize"
 # Gripper feedback arrives at about 2 Hz, so wait for at least one fresh reading.
 GRIPPER_SETTLE_S = 1.5
 LIFT_M = 0.10
+TARGET_MAX_TRAVEL_RAD = np.radians(100.0)
+"""Target moves (grasp, place, look) turn no joint further than this in one moveJ (2026-11-16: a 178 deg wrist flip)."""
+CAMERA_CLEARANCE_M = 0.28
+"""The arm's centre line stays this far from the Jev camera on a target move. On 2026-11-16 the arm touched
+the camera with its centre line 190 mm away (link thickness, camera housing and mount)."""
 # The measured TCP must land this close to a pick_at waypoint before the next move.
 TCP_TOLERANCE_M = 0.01
 
@@ -46,6 +51,17 @@ class Skills(Protocol):
     def lift(self, meters: float = LIFT_M) -> Outcome: ...
     def pick(self) -> Outcome: ...
     def place(self) -> Outcome: ...
+
+
+def jev_camera_keep_out() -> list[tuple[np.ndarray, float]]:
+    """The Jev camera as a keep-out sphere (from its hand-eye calibration); empty without one."""
+    try:
+        from rio.apps.kassow.graph.handeye import load_handeye
+
+        centre = np.asarray(load_handeye().stats["camera_xyz_m"], dtype=float)
+    except (OSError, ValueError, KeyError):
+        return []
+    return [(centre, CAMERA_CLEARANCE_M)]
 
 
 class KassowSkills:
@@ -69,8 +85,10 @@ class KassowSkills:
         gripper_close: float | None = None,
         gripper_settle_s: float = GRIPPER_SETTLE_S,
         table: TableMap | None = None,
+        keep_out: list[tuple[np.ndarray, float]] | None = None,
     ):
         reference = resolve_experiment(_OPEN)
+        self.keep_out = keep_out if keep_out is not None else jev_camera_keep_out()
         self.env = env
         self.home_joint_speed = home_joint_speed
         self.gripper_open = float(reference.gripper_open if gripper_open is None else gripper_open)
@@ -154,15 +172,28 @@ class KassowSkills:
         from rio.apps.kassow import goto
 
         orientation = table.rotvec if rotvec is None else rotvec
-        status = goto.move_tcp(self.env, goal, orientation, home_joint_speed=self.home_joint_speed, seed_q=seed_q)
+        status = goto.move_tcp(
+            self.env,
+            goal,
+            orientation,
+            home_joint_speed=self.home_joint_speed,
+            seed_q=seed_q,
+            max_travel_rad=TARGET_MAX_TRAVEL_RAD,
+            keep_out=self.keep_out,
+        )
         if status is goto.MoveStatus.ALARM:
             return self._alarm()
         return status is goto.MoveStatus.LANDED and self._tcp_near(goal)
 
     def _down_and_up(self, point: np.ndarray, table: TableMap, approach_m: float, rotvec: np.ndarray | None = None) -> Outcome:
-        """``moveJ`` to ``approach_m`` above ``point``, then down onto it (orientation ``rotvec``, default the mean)."""
+        """``moveJ`` to ``approach_m`` above ``point``, then down onto it (orientation ``rotvec``, default the mean).
+
+        A turned wrist (``rotvec`` given) seeds the IK from the current joints, so the solution
+        stays close to how the arm holds the object instead of a calibration sample.
+        """
         above = point + np.array([0.0, 0.0, approach_m])
-        for goal, seed_q in ((above, table.seed_q(point[0], point[1])), (point, None)):
+        first_seed = None if rotvec is not None else table.seed_q(point[0], point[1])
+        for goal, seed_q in ((above, first_seed), (point, None)):
             reached = self._reach(goal, table, seed_q, rotvec)
             if reached is not True:
                 return reached
@@ -180,7 +211,12 @@ class KassowSkills:
         from rio.apps.kassow import goto
 
         status = goto.move_tcp(
-            self.env, np.asarray(xyz, dtype=float), np.asarray(rotvec, dtype=float), home_joint_speed=self.home_joint_speed
+            self.env,
+            np.asarray(xyz, dtype=float),
+            np.asarray(rotvec, dtype=float),
+            home_joint_speed=self.home_joint_speed,
+            max_travel_rad=TARGET_MAX_TRAVEL_RAD,
+            keep_out=self.keep_out,
         )
         if status is goto.MoveStatus.ALARM:
             return self._alarm()

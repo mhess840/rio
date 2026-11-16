@@ -115,7 +115,7 @@ def _pick_env(monkeypatch, measured: float = 0.3, status: goto.MoveStatus = goto
     env.robot.arm = SimpleNamespace(get_state=lambda: dict(pose))
     moves: list[tuple] = []
 
-    def move_tcp(_env, xyz, rotvec, *, home_joint_speed, seed_q=None):
+    def move_tcp(_env, xyz, rotvec, *, home_joint_speed, seed_q=None, max_travel_rad=None, keep_out=None):
         moves.append((np.round(xyz, 3).tolist(), None if seed_q is None else float(seed_q[0])))
         if track:
             pose["eef_pose"] = np.concatenate([xyz, rotvec])
