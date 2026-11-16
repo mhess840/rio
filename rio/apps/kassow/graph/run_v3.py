@@ -203,8 +203,12 @@ def station_views(env: Any, root: Path) -> dict[str, Any]:
         overview = None
     wrist = _wrist()
 
+    counts: dict[str, int] = {}
+
     def keep(node: str, camera: str, jpeg: bytes) -> None:
-        (root / f"{node.replace('/', '__')}.{camera}.jpg").write_bytes(jpeg)
+        key = f"{node.replace('/', '__')}.{camera}"
+        counts[key] = counts.get(key, 0) + 1
+        (root / f"{key}.{counts[key]:02d}.jpg").write_bytes(jpeg)
 
     if overview is not None and "camera_2" in env.cameras:
 

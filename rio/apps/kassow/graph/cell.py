@@ -78,6 +78,9 @@ TABLE_Z_M = -0.020
 OBJECT_HEIGHT_M = 0.04
 LOOK_HEIGHT_M = 0.30
 SEARCH_RADIUS_M = 0.10
+LOOK_CLEARANCE_M = 0.25
+"""``kassow.search`` keeps the wrist camera at least this far above the object's top."""
+CLIP_PX = 3
 SEARCH_VIEWS = 7
 CAMERAS = ("jev", "overview", "wrist")
 OPERATOR_MAX_ANSWERS = 9
@@ -282,8 +285,10 @@ def cell_tools(
                 if measured is not None and measured.get("yaw_deg") is not None:
                     target = replace(target, yaw_deg=measured["yaw_deg"], yaw_period_deg=measured["period_deg"])
             w, h = best.size
+            clipped = x1 <= CLIP_PX or y1 <= CLIP_PX or x2 >= w - 1 - CLIP_PX or y2 >= h - 1 - CLIP_PX
             seen = {
                 "camera": camera,
+                "clipped": bool(clipped),
                 "object_xyz": [round(float(v), 4) for v in centre],
                 "measured": measured,
                 "source": "image",
@@ -328,6 +333,8 @@ def cell_tools(
             hint = np.array([x, y])
         else:
             raise RuntimeError("kassow.search needs a target or x and y")
+        # Keep the camera well above the object's top: a tall object seen from too close fills the frame.
+        height_m = max(height_m, object_height_m + LOOK_CLEARANCE_M)
         looked: list[dict] = []
         found: dict | None = None
         for spot in search_spots(hint, radius_m, max_views):
@@ -348,11 +355,13 @@ def cell_tools(
             look_at(float(centre[0]), float(centre[1]), height_m)
             shot = _calibrated(take(current_node()), "wrist")
             again = _find_in_shot(shot, "wrist", [found["prompt"]], threshold * 0.8, object_height_m)
-            if again["exit"] != "not_found":
+            if again["exit"] != "not_found" and (not again.get("clipped") or found.get("clipped")):
                 found = again
         except RuntimeError as error:
             looked.append({"x": round(float(centre[0]), 3), "y": round(float(centre[1]), 3), "skipped": str(error)})
-        return {**found, "views": looked}
+        if found.get("clipped"):
+            found = {**found, "detail": f"{found['detail']} (object cut by the image border: centre uncertain)"}
+        return {**found, "views": looked, "camera_height_m": round(height_m, 3)}
 
     def look_at(x: float, y: float, height_m: float = LOOK_HEIGHT_M) -> dict:
         """Move so the wrist camera looks straight at table point ``x, y`` from ``height_m`` above it."""
@@ -553,6 +562,8 @@ def cell_tools(
                     "object_xyz": "list",
                     "camera": "str",
                     "views": "list",
+                    "clipped": "bool",
+                    "camera_height_m": "float",
                     "tried": "dict",
                     "measured": "dict",
                 },
