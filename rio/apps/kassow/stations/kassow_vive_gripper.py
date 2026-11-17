@@ -33,7 +33,7 @@ class KassowViveGripperStation(KassowViveStation):
         timeout: float = 0.5
         ready_timeout: float = 30.0
         max_gripper_speed: float | None = None
-        force: int = 50
+        force: int = 70
         # One full 0xA5 homing at start. Off after a successful home.
         calibrate: bool = False
         startup_position: float | None = 0.7
