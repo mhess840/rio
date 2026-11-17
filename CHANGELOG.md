@@ -15,6 +15,10 @@ Part 1 comes from this chat. Part 2 is reconstructed from the assistant's workin
 
 - Desktop panel in the headset (`--screen`): `rio.xr.screen.ScreenGrabber` copies the X11 root window with `XGetImage` and the XFixes cursor at 15 fps in its own thread; the headset submits it as an OpenXR quad layer with its own swapchain. Left grip held drags the panel with the controller, left trigger hides/shows it. `ScreenCfg` sets width, distance, rate and an optional box downscale against shimmer. No new dependency (ctypes on libX11/libXfixes).
 
+- Rollout overlays in the headset next to the `vla_plan` line (`rio.xr.rollout_view`): executed fingertip trail, fan of earlier chunks (replanning), gripper close/open markers, and a see-through ghost arm at the end of the newest chunk (`rio.xr.ghost`, Pinocchio DLS IK on the arm URDF, stick model; the Kassow URDF has no geometry). The rollout loop only hands over samples; a background thread publishes at 10 Hz. Off when no XR server answers. Verified in a real sort rollout.
+- `--hide table,poses` on the XR app drops scene layers, e.g. for videos.
+- The headset view rebuilds its OpenXR session after a WiVRn loss (session lost, stopping, or controllers gone for more than 10 s), instead of exiting.
+
 ### Changed
 
 - With a saved calibration the headset no longer treats the right trigger and grip as touch-registration capture and undo.

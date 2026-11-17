@@ -127,6 +127,14 @@ class RolloutEpisode:
         )
         self.chunks = ChunkScheduler(settings, runtime)
         self.stream = CommandStreamer(env, settings)
+        self.xr_view = None
+        if not settings.joint_serve:
+            from rio.xr.rollout_view import rollout_view
+
+            self.xr_view = rollout_view(getattr(env.robot, "urdf_path", None))
+            if self.xr_view is not None:
+                self.xr_view.reset()
+            self.chunks.xr_view = self.xr_view
         self.t_start = time.now()
         self.iteration = 0
         env.set_start_time(self.t_start)
@@ -234,6 +242,10 @@ class RolloutEpisode:
         else:
             self.stream.pull(self.chunks.queue)
             self.stream.step(target_time, limits)
+        if self.xr_view is not None:
+            action = np.asarray(self.stream.action, dtype=float).reshape(-1)
+            gripper = float(action[6]) if self.stream.has_action and len(action) > 6 else None
+            self.xr_view.note_step(self.env.robot.arm.get_state()["eef_pose"], gripper)
         if self.dagger is not None and self.dagger.waiting_for_policy and self.stream.following:
             self.dagger.resume_policy()
         if self.stream.has_action:

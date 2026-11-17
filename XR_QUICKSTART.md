@@ -92,6 +92,22 @@ Arbeitsraum haengen.
   Standardraster: 3 cm; Orientierung aus Tischkarte oder `--pose` (Standard: `home_pick.json`).
   Kein Kollisionscheck, kein vollstaendiger Arbeitsraum und keine sichere Bewegungsbahn.
 
+Waehrend eines VLA-Rollouts (XR-Server vorher starten) kommen dazu:
+
+- **VLA-Linie:** Fingerspitzenbahn des aktuellen Chunks.
+- **Spur (tuerkis):** wo die Fingerspitzen tatsaechlich waren, aeltere Abschnitte blasser.
+- **Faecher (lila):** fruehere Chunks; zeigt, wie stark die Policy umplant.
+- **Kugeln:** orange = Greifer schliesst, gruen = Greifer oeffnet.
+- **Geister-Arm:** durchsichtiger Kassow am Ende des neuesten Chunks (IK mit Pinocchio).
+
+Alles wird in einem eigenen Thread mit 10 Hz gesendet und kostet die Regelschleife
+keine Zeit. Jede neue Episode leert die Layer. Fuer Videos blendet
+`--hide table,poses` Tischebene und Posen-Punkte aus.
+
+Faellt WiVRn aus (Headset aus, Verbindung neu), baut die Anzeige ihre Session nach
+3 s selbst neu auf; ebenso, wenn die Controller laenger als 10 s verschwunden sind.
+In der Quest nur WiVRn neu verbinden, den Prozess nicht neu starten.
+
 Ergebnisse liegen im Cache unter `experiments/xr/`. Bei geaendertem Kinematikmodell
 die passenden `reach_*.json` dort entfernen und neu berechnen lassen.
 

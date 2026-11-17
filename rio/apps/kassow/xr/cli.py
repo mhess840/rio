@@ -58,6 +58,8 @@ class Args:
     screen: bool = False
     """With ``--headset``: show this X11 desktop as a panel. Hold left grip to move it, left trigger hides it."""
     screen_cfg: ScreenCfg = field(default_factory=ScreenCfg)
+    hide: str = ""
+    """Comma-separated layers to leave out, e.g. ``table,poses`` for a clean video."""
     anchors: str = ""
     """Comma-separated saved-pose stems, in the order the trigger will record them. Empty: every saved pose."""
     marker: bool = False
@@ -159,6 +161,8 @@ def main(args: Args, stop: threading.Event | None = None) -> XrServer:
     table = load_table(args.table or table_map_path())
     if table is not None:
         hub.put(table_layer(table))
+    for name in filter(None, (part.strip() for part in args.hide.split(","))):
+        hub.remove(name)
     server = XrServer(hub, port=args.port, token=write_token(token_path()))
     server.start()
     print(f"Desktop preview: {server.url}")

@@ -69,6 +69,10 @@ LAYER_SOURCE_ALPHA = 0x2
 PASSTHROUGH_LAYER_TYPE = 1000118003
 READY = 2
 STOPPING = 6
+LOSS_PENDING = 7
+# Controllers seen and then gone this long: rebuild the OpenXR session (WiVRn binds them at connect).
+CONTROLLERS_LOST_S = 10.0
+RESTART_PAUSE_S = 3.0
 EXITING = 8
 COLOR_ATTACHMENT = 0x1
 GL_SRGB8_ALPHA8 = 0x8C43
@@ -565,11 +569,13 @@ def _start_passthrough(xr: _Xr, instance: int, session: int) -> int:
 
 
 def run(hub: XrHub | None = None, *, space: str = "stage", screen: ScreenCfg | None = None) -> None:
-    """Open the WiVRn view and draw ``hub`` until Ctrl-C.
+    """Open the WiVRn view and draw ``hub`` until Ctrl-C, rebuilding the session after a headset drop.
 
     Without a hub, a local one with the robot base axes is served on port 8770.
     Layers stay in front of the head until a calibration is set in ``hub`` or
-    three controller touches fit the registration.
+    three controller touches fit the registration. When the headset sleeps or WiVRn
+    reconnects, the runtime ends the session or the controllers vanish; the view then
+    starts a fresh OpenXR session, keeping ``hub`` and its server.
 
     Args:
         hub: Scene, anchors, and calibration to draw.
@@ -584,6 +590,35 @@ def run(hub: XrHub | None = None, *, space: str = "stage", screen: ScreenCfg | N
         own_server = XrServer(hub, port=8770, token=write_token(token_path()))
         own_server.start()
         logger.info("Desktop preview: {}", own_server.url)
+    stop = False
+
+    def request_stop(signum, _frame) -> None:
+        nonlocal stop
+        stop = True
+        logger.info("Stopping headset view ({})", signum)
+
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+    try:
+        while not stop:
+            try:
+                restart = _run_session(hub, space, screen, lambda: stop)
+            except RuntimeError as error:
+                logger.warning("Headset session failed: {}", error)
+                restart = True
+            if not restart or stop:
+                break
+            logger.warning("Headset view restarts in {:.0f} s; reconnect WiVRn in the Quest if asked", RESTART_PAUSE_S)
+            time.sleep(RESTART_PAUSE_S)
+    finally:
+        if own_server is not None:
+            own_server.stop()
+
+
+def _run_session(hub: XrHub, space: str, screen: ScreenCfg | None, stopped) -> bool:
+    """One OpenXR instance and session. True when the headset dropped and a new session should start."""
+    _FBO.clear()
+    _FBO_OK.clear()
     display, config, drawable, context, visual = _glx_context()
     gl = _Gl()
     lib = ctypes.CDLL(str(_loader()))
@@ -599,29 +634,19 @@ def run(hub: XrHub | None = None, *, space: str = "stage", screen: ScreenCfg | N
     _composite.passthrough = 0
     _composite.blend = _choose_blend(xr, instance, system)
     session = 0
-    stop = False
-
-    def request_stop(signum, _frame) -> None:
-        nonlocal stop
-        stop = True
-        logger.info("Stopping headset view ({})", signum)
-
-    signal.signal(signal.SIGINT, request_stop)
-    signal.signal(signal.SIGTERM, request_stop)
     try:
         session = _session(xr, instance, system, display, config, drawable, context, visual)
         if b"XR_FB_passthrough" in extensions:
             _composite.passthrough = _start_passthrough(xr, instance, session)
         hands = _Hands.try_create(xr, instance, session)
-        with ScreenGrabber(screen.fps, factor=screen.downscale) if screen is not None else contextlib.nullcontext() as grabber:
+        grabber_cm = ScreenGrabber(screen.fps, factor=screen.downscale) if screen is not None else contextlib.nullcontext()
+        with grabber_cm as grabber:
             desktop = None if grabber is None or screen is None else (grabber, screen)
-            _frames(xr, gl, instance, system, session, hub, hands, lambda: stop, space, desktop)
+            return _frames(xr, gl, instance, system, session, hub, hands, stopped, space, desktop)
     finally:
         if session:
             xr.xrDestroySession(session)
         xr.xrDestroyInstance(instance)
-        if own_server is not None:
-            own_server.stop()
         logger.info("Headset session closed")
 
 
@@ -636,7 +661,8 @@ def _frames(
     stopped,
     wanted: str,
     desktop: tuple[ScreenGrabber, ScreenCfg] | None = None,
-) -> None:
+) -> bool:
+    """Render until stopped; True when the headset dropped (session lost, or controllers gone after being seen)."""
     begun = False
     space, hub.space = _reference_space(xr, instance, session, wanted)
     views_info, swapchains, images = _swapchains(xr, instance, system, session)
@@ -653,8 +679,14 @@ def _frames(
         gl.clear_color(0.0, 0.0, 0.0, 0.0)
         logger.info("The room shows through. Graphics stay in front of you until three saved poses are touched.")
     frame = 0
+    controllers_seen = False
+    controllers_gone_at: float | None = None
+    next_check = 0.0
     while not stopped():
         state = _poll(xr, instance, session)
+        if state == LOSS_PENDING:
+            logger.warning("WiVRn is losing the session (headset asleep or disconnected)")
+            return True
         if state == READY and not begun:
 
             class Begin(ctypes.Structure):
@@ -665,17 +697,28 @@ def _frames(
             logger.info("Session begun. Trigger saves the next saved pose, grip removes the last point.")
         if state in (STOPPING, EXITING) and begun:
             xr.xrEndSession(session)
-            return
+            return state == STOPPING
         if not begun:
             time.sleep(0.01)
             continue
         _one_frame(xr, gl, instance, session, space, views_info, swapchains, images, live, panel)
         frame += 1
+        now = time.monotonic()
+        if hands is not None and hands.ready and now >= next_check:
+            next_check = now + 1.0
+            if any(hands.profiles().values()):
+                controllers_seen, controllers_gone_at = True, None
+            elif controllers_seen:
+                controllers_gone_at = controllers_gone_at or now
+                if now - controllers_gone_at > CONTROLLERS_LOST_S:
+                    logger.warning("Controllers gone for {:.0f} s after a headset drop", CONTROLLERS_LOST_S)
+                    return True
         if frame == 1 or frame % 300 == 0:
             logger.info("Submitted frame {}", frame)
             if hands is not None and hands.ready:
                 seen = {name: ("tracked" if ok else "inferred") for name, (_, ok) in hands.devices.items()}
                 logger.info("Controllers: profiles {} poses {}", hands.profiles(), seen or "none")
+    return False
 
 
 def _reference_space(xr: _Xr, instance: int, session: int, wanted: str = "stage") -> tuple[int, str]:
