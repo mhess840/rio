@@ -49,6 +49,9 @@ class Args:
     """Graph JSON. Unset: the shipped example."""
     dry_run: bool = True
     """Print skills and do not move the arm. Pass ``--no-dry-run`` on the cell."""
+    xr_preview: bool = False
+    """Walk on the real cell (cameras, Jev, SAM) but play every arm move as a ghost in the XR headset;
+    the arm and gripper stay still. Needs the XR app running. Implies a cell run without moves."""
     script: Path | None = None
     """Dry-run Jev answers, a JSON object of node name to an ``answers`` object."""
     table: Path | None = None
@@ -153,7 +156,7 @@ def main(args: Args) -> str:
     if args.command == "check":
         term("check ok")
         return "ok"
-    if args.dry_run:
+    if args.dry_run and not args.xr_preview:
         return _dry(args, graph, table)
     return _live(args, graph, table)
 
@@ -268,7 +271,7 @@ def _live(args: Args, graph: Graph, table: TableMap | None) -> str:
     _keep_graph(root, graph)
     logger.info("Graph run log: {}", root)
     with live_cell(args, table, root) as cell:
-        confirm = cell.confirm if args.confirm else None
+        confirm = cell.confirm if args.confirm and not args.xr_preview else None
         reason = walk(graph, cell.skills, cell.ask, log, keys=cell.keys, table=table, confirm=confirm, run_vla=cell.run_vla)
     term(f"stopped: {reason}")
     term(f"log: {root}")
@@ -324,7 +327,13 @@ def live_cell(args: Args, table: TableMap | None, root: Path) -> Generator[LiveC
         stack.enter_context(ServerManager(args.mw, list(servers.values())))
         stack.enter_context(env)
         keys = NodeKeys(stack.enter_context(clients["teleop_keyboard"]()))
-        skills = KassowSkills(env, home_joint_speed=args.home_joint_speed, gripper_open=args.gripper_open, table=table)
+        arm_env = env
+        if args.xr_preview:
+            from .preview import open_preview
+
+            close = KassowSkills(env, home_joint_speed=args.home_joint_speed, table=table).gripper_close
+            arm_env = open_preview(env, gripper_close=close)
+        skills = KassowSkills(arm_env, home_joint_speed=args.home_joint_speed, gripper_open=args.gripper_open, table=table)
         logger.info("Gripper opens to {:.2f}", skills.gripper_open)
 
         def photo(node: str) -> Shot:
@@ -361,7 +370,14 @@ def live_cell(args: Args, table: TableMap | None, root: Path) -> Generator[LiveC
                         return answer
                 time.sleep(0.05)
 
-        run_vla = make_run_vla(env, keys, skills, root / "vla", device=args.device, single_slot=args.single_slot, mw=args.mw)
+        if args.xr_preview:
+            from .preview import preview_run_vla
+
+            run_vla = preview_run_vla(skills)
+        else:
+            run_vla = make_run_vla(
+                env, keys, skills, root / "vla", device=args.device, single_slot=args.single_slot, mw=args.mw
+            )
         yield LiveCell(skills, ask, keys, run_vla, space_or_q, choose, photo, env)
 
 

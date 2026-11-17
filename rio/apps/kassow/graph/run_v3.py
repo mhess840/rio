@@ -55,7 +55,7 @@ def run_workflow(args: Args, path: Path) -> str:
     root = experiments_root() / "graph" / f"{datetime.now():%Y%m%d_%H%M%S}"
     root.mkdir(parents=True, exist_ok=True)
     (root / "workflow.json").write_text(path.read_text())
-    if args.dry_run:
+    if args.dry_run and not args.xr_preview:
         canned = scripted_answers(args.script)
         dry = DrySkills()
         tools = cell_tools(
@@ -101,10 +101,11 @@ def run_workflow(args: Args, path: Path) -> str:
                 workflow,
                 tools,
                 root,
-                confirm=confirm if args.confirm else None,
+                confirm=confirm if args.confirm and not args.xr_preview else None,
                 should_stop=lambda: "q" in cell.keys.pressed(),
             )
-    term(f"{'dry-run ' if args.dry_run else ''}{result.status}: {result.reason}")
+    mode = "xr preview " if args.xr_preview else "dry-run " if args.dry_run else ""
+    term(f"{mode}{result.status}: {result.reason}")
     term(f"log: {root}")
     return result.status
 

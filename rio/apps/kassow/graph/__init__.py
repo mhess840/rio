@@ -20,6 +20,7 @@ Node kinds (``describe`` has the fields; examples: ``example.json``, ``pick_cube
     uv run python -m rio.apps.kassow.graph --command check --graph my_task.json
     uv run python -m rio.apps.kassow.graph --command run --graph my_task.json            # dry run
     uv run python -m rio.apps.kassow.graph --command run --graph my_task.json --no-dry-run
+    uv run python -m rio.apps.kassow.graph --command run --graph my_task.json --xr-preview  # ghost in the headset, arm still
 """
 
 from .check import check_graph, require_graph
