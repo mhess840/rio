@@ -317,6 +317,22 @@ Nicht versucht, keine Bewegung (`experiments/graph/plans/box_into_crate/report.m
 - [ ] Suchblick schneidet die Schachtel noch ab (Gierwinkel aus Kanten trotzdem richtig, 42,8°)
 - [ ] Jev-Kamera höher setzen oder Kiste nicht direkt darunter: größter Engpass für hohe Teile
 
+## Q. XR-Vorschau und Zylinder auf Teller (17.11.)
+
+- [x] `graph --command run --xr-preview [--xr-hold-s 5]`: ganzer Workflow auf der echten Zelle (Kameras, SAM,
+  Tischkarte), jede Fahrt nur als Geist im Quest-Headset (echte Kassow-Formen aus RoboDK, AG95 aus STEP);
+  Arm und Greifer bekommen keinen Befehl. `cylinder_to_plate` läuft als Vorschau bis `success`; Bediener
+  bestätigt im Headset: Bahnen, Greiferdrehung und Ablauf passen
+- [x] Echter Lauf `cylinder_to_plate` (`experiments/graph/20261117_140144`): Zylinder verfehlt, **Greifer zu
+  hoch**. Flansch beim Greifen auf z = 0,263; Zylinder-Oberkante laut Tiefe z = 0,021 (5 cm hoch, Tisch −0,028).
+  Tischkarte rechnet mit `tool_offset_m` = 0,233, gemessene Fingerspitze 185 mm (offen) / 200 mm (zu) ab
+  Flansch: Finger schließen etwa 3–5 cm über dem Zylinder. Erholung (Greifer auf, parken) lief sauber
+- [ ] Greifhöhe korrigieren: `tool_offset_m` der Tischkarte gegen die echte Fingerlänge prüfen, oder
+  `z_offset_m` aus der Tiefenmessung (Oberkante minus halbe Objekthöhe) statt aus der Tischkarte nehmen
+- [ ] Greiferöffnung 0,3 gegen Objektbreite prüfen (Zylinder ≈ 5 cm; 0,3 × 95 mm Hub wären nur 28 mm)
+- [ ] Seitlicher Versatz Richtung Basis im echten Lauf: nach der Höhenkorrektur neu ansehen (Bild- und
+  Tiefenziel lagen nur 4 mm auseinander)
+
 ## K. Später: Harness für Applikateure
 
 - [ ] Aufteilung wie GaP (`gap-core` / `gap` / `open-robot-skills`): Kern (Format, Validator, Walker,

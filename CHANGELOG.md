@@ -11,6 +11,7 @@ Part 1 comes from this chat. Part 2 is reconstructed from the assistant's workin
 
 ### Added
 
+- `--xr-hold-s` keeps the XR dry-run ghost at the end of each move for a closer look. First cylinder_to_plate runs on 2026-11-17: dry run confirmed in the headset; the real run missed because the grasp was too high (see `TODO_graph_agent.md` section Q).
 - GaP XR dry run: `graph --command run --xr-preview` walks a graph or v3 workflow on the real cell (cameras, Jev, SAM, table map) but plays every arm move as a ghost in the headset, at the move's real duration (`rio.apps.kassow.graph.preview`). A stand-in arm answers state from the ghost's joints and only accepts `moveJ_discrete`; the gripper only records its opening and reports a closed gripper as holding; a VLA node drives the ghost to its start pose and counts as done. No confirmations are asked, since nothing moves. Wrist photos still come from where the real arm stands.
 - Right Quest controller as a gripper key source in teleop and DAgger takeover: trigger closes, grip opens, alongside the spare mouse and the keyboard. The headset view publishes the right controller's trigger and grip on `GET /buttons` (`XrHub.set_buttons`); `rio.xr.buttons.XrButtons` polls it and reports the mouse's keyboard-shaped state, nothing for a sample older than 0.25 s. `KassowViveGripperStation.teleop_xr_url` (default `http://127.0.0.1:8770`, empty turns it off). Verified with the headset; not yet with the arm.
 

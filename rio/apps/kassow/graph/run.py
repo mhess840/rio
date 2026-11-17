@@ -52,6 +52,8 @@ class Args:
     xr_preview: bool = False
     """Walk on the real cell (cameras, Jev, SAM) but play every arm move as a ghost in the XR headset;
     the arm and gripper stay still. Needs the XR app running. Implies a cell run without moves."""
+    xr_hold_s: float = 0.0
+    """XR preview: the ghost waits this long at the end of each move, to look at it in the room."""
     script: Path | None = None
     """Dry-run Jev answers, a JSON object of node name to an ``answers`` object."""
     table: Path | None = None
@@ -339,7 +341,7 @@ def live_cell(args: Args, table: TableMap | None, root: Path) -> Generator[LiveC
             from .preview import open_preview
 
             close = KassowSkills(env, home_joint_speed=args.home_joint_speed, table=table).gripper_close
-            arm_env = open_preview(env, gripper_close=close)
+            arm_env = open_preview(env, gripper_close=close, hold_s=args.xr_hold_s)
         skills = KassowSkills(arm_env, home_joint_speed=args.home_joint_speed, gripper_open=args.gripper_open, table=table)
         logger.info("Gripper opens to {:.2f}", skills.gripper_open)
 

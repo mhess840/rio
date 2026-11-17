@@ -21,6 +21,7 @@ arm stands, not from where the ghost looks.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import numpy as np
@@ -53,10 +54,12 @@ class PreviewArm:
         arm: The real arm; only read.
         view: Headset ghost.
         gripper: Opening drawn on the ghost.
+        hold_s: Pause at the end of each move, to look at the ghost in the room.
     """
 
-    def __init__(self, arm: Any, view: Any, gripper: PreviewGripper) -> None:
+    def __init__(self, arm: Any, view: Any, gripper: PreviewGripper, *, hold_s: float = 0.0) -> None:
         self._arm = arm
+        self.hold_s = hold_s
         self._kin = arm._kin
         self.view = view
         self.gripper = gripper
@@ -83,6 +86,8 @@ class PreviewArm:
         term(f"[xr preview] move {self.moves}: {duration_s:.1f} s, largest joint turn {turn:.0f} deg")
         self.view.preview(self.q, target, duration_s, q_now=self.real_q, eef_now=self.real_eef, opening=self.gripper.commanded)
         self.q = target
+        if self.hold_s > 0:
+            time.sleep(self.hold_s)
 
 
 class PreviewRobot:
@@ -106,19 +111,21 @@ class PreviewEnv:
         env: Started environment.
         view: Headset ghost (``rio.xr.move_view.MoveView``).
         gripper_close: Opening of an empty closed gripper.
+        hold_s: Pause after each ghost move.
     """
 
-    def __init__(self, env: Any, view: Any, *, gripper_close: float) -> None:
+    def __init__(self, env: Any, view: Any, *, gripper_close: float, hold_s: float = 0.0) -> None:
         state = {}
         gripper = getattr(env.robot, "gripper", None)
         if gripper is not None and callable(getattr(gripper, "get_state", None)):
             state = gripper.get_state() or {}
         self.gripper = PreviewGripper(float(state.get("gripper_position", 1.0)), gripper_close)
-        self.robot = PreviewRobot(env.robot, PreviewArm(env.robot.arm, view, self.gripper), self.gripper)
+        arm = PreviewArm(env.robot.arm, view, self.gripper, hold_s=hold_s)
+        self.robot = PreviewRobot(env.robot, arm, self.gripper)
         self.cameras = env.cameras
 
 
-def open_preview(env: Any, *, gripper_close: float) -> PreviewEnv:
+def open_preview(env: Any, *, gripper_close: float, hold_s: float = 0.0) -> PreviewEnv:
     """:class:`PreviewEnv` for ``env``; needs the XR app and the arm meshes or stick model.
 
     Raises:
@@ -131,7 +138,7 @@ def open_preview(env: Any, *, gripper_close: float) -> PreviewEnv:
         raise SystemExit("XR preview needs the XR app: uv run python -m rio.apps.kassow.xr --headset --no-reach")
     view.clear_preview()
     logger.info("XR preview: arm moves play as a ghost in the headset; the arm and gripper stay still")
-    return PreviewEnv(env, view, gripper_close=gripper_close)
+    return PreviewEnv(env, view, gripper_close=gripper_close, hold_s=hold_s)
 
 
 def preview_run_vla(skills: Any) -> Any:
