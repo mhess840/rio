@@ -54,6 +54,35 @@ im STAGE-Raum der Quest und wird beim Start von `--headset` automatisch geladen.
 200 mm (zu) bis 185 mm (offen) entfernt (`rio.xr.plan.GRIPPER_TIP_Z_M`).
 Erster Lauf am 16.11.2026: 12 Posen, Restfehler 2,2 mm RMS.
 
+## Greifer mit dem rechten Controller (Teleop und DAgger)
+
+Laeuft die Headset-Anzeige, steuert der rechte Controller den Greifer parallel zu
+Maus und Tastatur: **Trigger schliesst, Grip oeffnet.** Die Headset-App gibt die
+Tasten unter `GET /buttons` aus; `rio.apps.vive.teleop` und die DAgger-Uebernahme
+lesen sie automatisch (`--teleop-xr-url ""` schaltet das ab). Ist der letzte Wert
+aelter als 0,25 s, etwa bei offenem Quest-Menue, kommt keine Taste an. Mit
+gespeicherter Kalibrierung loesen Trigger und Grip keine Touch-Erfassung mehr aus.
+
+Kommen keine Tasten an (Log: `Controllers: profiles {'left': '', ...} poses none`):
+WiVRn hat beim Verbinden keine Controller gesehen, z. B. weil Handtracking aktiv war.
+Controller in die Hand nehmen, WiVRn in der Quest neu verbinden und die Anzeige neu
+starten; beim Start muss `Right: 'WiVRn right controller'` im Log stehen. Haengt
+WiVRn nach einem Neustart in der Quest (Port 9757 nicht offen), den haengenden
+`wivrn-server`-Kindprozess beenden oder WiVRn neu starten.
+
+## Monitor im Headset
+
+`uv run python -m rio.apps.kassow.xr --headset --no-reach --screen` zeigt den
+X11-Desktop dieses Rechners als Panel (15 fps, mit Mauszeiger), zuerst etwa 1 m vor
+dem Kopf. Linker Controller: **Grip halten** greift und verschiebt das Panel,
+**Trigger** blendet es aus und ein. Naeher (60-70 cm) ist deutlich schaerfer; WiVRn
+streamt komprimiertes Video, daher nie ganz so scharf wie Quest-eigene Fenster.
+Mehr Bitrate im WiVRn-Dashboard hilft. Bei Flimmern auf Abstand:
+`--screen-cfg.downscale 2`; Groesse: `--screen-cfg.width-m`.
+
+Das Panel ist undurchsichtig: waehrend der Arm faehrt ausblenden oder neben den
+Arbeitsraum haengen.
+
 ## Was die Layer bedeuten
 
 - **Achsen und Posen:** Basis-Koordinatensystem und gespeicherte TCP-Positionen.

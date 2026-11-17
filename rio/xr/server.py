@@ -12,6 +12,7 @@ Routes:
     GET  /scene           all layers and anchors
     GET  /events          server-sent ``changes`` events after ``?since=<version>``
     GET  /tracked         latest headset device poses (controllers) and their age
+    GET  /buttons         latest controller buttons (trigger, squeeze) and their age
     GET  /calibration     the robot-to-headset fit in use, or null
     POST /register        stateless: point pairs in, ``xr_from_base`` and RMS out
     POST /layers          publish one layer (bearer token)
@@ -152,6 +153,8 @@ class XrServer:
                     self._events(parts.query)
                 elif parts.path == "/tracked":
                     self._json(200, server.hub.tracked())
+                elif parts.path == "/buttons":
+                    self._json(200, server.hub.buttons())
                 elif parts.path == "/calibration":
                     self._json(200, server.hub.calibration())
                 else:

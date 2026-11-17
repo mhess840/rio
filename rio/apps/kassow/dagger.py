@@ -48,6 +48,7 @@ from rio.apps.vive.calibration import resolve_yaw
 from rio.apps.vive.controls import merge_held_keys
 from rio.cleanup import cleanup_step
 from rio.data.dagger import SIDECAR_SUFFIX, ControlSource, control_summary
+from rio.xr.buttons import open_xr_buttons
 
 DISCARDED_DIR = "discarded"
 # Files the recorder writes beside each ``.vla``; they follow a discarded trajectory.
@@ -474,8 +475,9 @@ def open_dagger(args, env, clients):
         with (
             keyboard_client() if keyboard_client else nullcontext() as keyboard,
             clicker_client() if clicker_client else nullcontext() as clicker,
+            open_xr_buttons(args) as xr_buttons,
         ):
-            keyboards = [source for source in (keyboard, clicker) if source is not None]
+            keyboards = [source for source in (keyboard, clicker, xr_buttons) if source is not None]
             session = DaggerSession(args, env, teleop, keyboards, yaw_deg=yaw_deg)
             try:
                 yield session

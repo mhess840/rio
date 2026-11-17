@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +28,7 @@ from rio.workspace import experiments_root
 from rio.xr import XrHub, XrServer
 from rio.xr.auth import token_path, write_token
 from rio.xr.marker import corners_in_base
+from rio.xr.screen import ScreenCfg
 
 from .layers import base_layer, poses_layer, reach_layer, saved_pose_tcps, table_layer, teleop_limits_layer
 from .reach import reach_slices
@@ -54,6 +55,9 @@ class Args:
     min_z: float = KassowViveStation.min_z
     headset: bool = False
     """Draw into the connected WiVRn session instead of waiting on the browser page."""
+    screen: bool = False
+    """With ``--headset``: show this X11 desktop as a panel. Hold left grip to move it, left trigger hides it."""
+    screen_cfg: ScreenCfg = field(default_factory=ScreenCfg)
     anchors: str = ""
     """Comma-separated saved-pose stems, in the order the trigger will record them. Empty: every saved pose."""
     marker: bool = False
@@ -167,7 +171,7 @@ def main(args: Args, stop: threading.Event | None = None) -> XrServer:
         from rio.xr.headset import run as run_headset
 
         try:
-            run_headset(hub, space=args.space)
+            run_headset(hub, space=args.space, screen=args.screen_cfg if args.screen else None)
         finally:
             server.stop()
         return server

@@ -7,6 +7,21 @@ Part 1 comes from this chat. Part 2 is reconstructed from the assistant's workin
 
 ---
 
+## 2026-11-17
+
+### Added
+
+- Right Quest controller as a gripper key source in teleop and DAgger takeover: trigger closes, grip opens, alongside the spare mouse and the keyboard. The headset view publishes the right controller's trigger and grip on `GET /buttons` (`XrHub.set_buttons`); `rio.xr.buttons.XrButtons` polls it and reports the mouse's keyboard-shaped state, nothing for a sample older than 0.25 s. `KassowViveGripperStation.teleop_xr_url` (default `http://127.0.0.1:8770`, empty turns it off). Verified with the headset; not yet with the arm.
+
+- Desktop panel in the headset (`--screen`): `rio.xr.screen.ScreenGrabber` copies the X11 root window with `XGetImage` and the XFixes cursor at 15 fps in its own thread; the headset submits it as an OpenXR quad layer with its own swapchain. Left grip held drags the panel with the controller, left trigger hides/shows it. `ScreenCfg` sets width, distance, rate and an optional box downscale against shimmer. No new dependency (ctypes on libX11/libXfixes).
+
+### Changed
+
+- With a saved calibration the headset no longer treats the right trigger and grip as touch-registration capture and undo.
+- AG95 station jaw force 50% → 70%.
+
+---
+
 ## 2026-11-13
 
 ### Added

@@ -15,6 +15,7 @@ Ctrl-C leaves the session. The headset returns to the WiVRn lobby.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import json
 import os
@@ -46,6 +47,7 @@ from rio.xr.capture import PoseCapture
 from rio.xr.geometry import layer_vertices, layers_from_scene, pose_axes, preview_transform, rotation_matrix
 from rio.xr.hub import XrHub
 from rio.xr.scene import Layer, axes
+from rio.xr.screen import ScreenCfg, ScreenGrabber, matrix_pose, panel_pose, pose_matrix
 from rio.xr.server import XrServer
 
 LOADER_CACHE = Path.home() / ".cache" / "rio" / "openxr" / "libopenxr_loader.so.1"
@@ -95,6 +97,10 @@ GL_LINK_STATUS = 0x8B82
 GL_ARRAY_BUFFER = 0x8892
 GL_STATIC_DRAW = 0x88E4
 GL_FRAMEBUFFER_COMPLETE = 0x8CD5
+GL_BGRA = 0x80E1
+GL_UNSIGNED_BYTE = 0x1401
+GL_UNPACK_ALIGNMENT = 0x0CF5
+QUAD_LAYER_TYPE = 36
 
 
 def _loader() -> Path:
@@ -246,6 +252,11 @@ class _Gl:
         self.blend_func = g("glBlendFunc", None, [c_uint32, c_uint32])
         self.draw_arrays = g("glDrawArrays", None, [c_uint32, c_int, c_int])
         self.line_width = g("glLineWidth", None, [c_float])
+        self.bind_texture = g("glBindTexture", None, [c_uint32, c_uint32])
+        self.pixel_store = g("glPixelStorei", None, [c_uint32, c_int])
+        self.tex_sub_image = g(
+            "glTexSubImage2D", None, [c_uint32, c_int, c_int, c_int, c_int, c_int, c_uint32, c_uint32, c_void_p]
+        )
 
     def shader(self, kind: int, source: str) -> int:
         shader = self.create_shader(kind)
@@ -553,7 +564,7 @@ def _start_passthrough(xr: _Xr, instance: int, session: int) -> int:
     return layer.value
 
 
-def run(hub: XrHub | None = None, *, space: str = "stage") -> None:
+def run(hub: XrHub | None = None, *, space: str = "stage", screen: ScreenCfg | None = None) -> None:
     """Open the WiVRn view and draw ``hub`` until Ctrl-C.
 
     Without a hub, a local one with the robot base axes is served on port 8770.
@@ -563,6 +574,7 @@ def run(hub: XrHub | None = None, *, space: str = "stage") -> None:
     Args:
         hub: Scene, anchors, and calibration to draw.
         space: ``stage`` keeps the fit valid across recentring; falls back to ``local``.
+        screen: Show the X11 desktop as a panel; None leaves it off.
     """
     os.environ["XR_RUNTIME_JSON"] = str(_runtime_json())
     own_server = None
@@ -601,7 +613,9 @@ def run(hub: XrHub | None = None, *, space: str = "stage") -> None:
         if b"XR_FB_passthrough" in extensions:
             _composite.passthrough = _start_passthrough(xr, instance, session)
         hands = _Hands.try_create(xr, instance, session)
-        _frames(xr, gl, instance, system, session, hub, hands, lambda: stop, space)
+        with ScreenGrabber(screen.fps, factor=screen.downscale) if screen is not None else contextlib.nullcontext() as grabber:
+            desktop = None if grabber is None or screen is None else (grabber, screen)
+            _frames(xr, gl, instance, system, session, hub, hands, lambda: stop, space, desktop)
     finally:
         if session:
             xr.xrDestroySession(session)
@@ -612,7 +626,16 @@ def run(hub: XrHub | None = None, *, space: str = "stage") -> None:
 
 
 def _frames(
-    xr: _Xr, gl: _Gl, instance: int, system: int, session: int, hub: XrHub, hands: _Hands | None, stopped, wanted: str
+    xr: _Xr,
+    gl: _Gl,
+    instance: int,
+    system: int,
+    session: int,
+    hub: XrHub,
+    hands: _Hands | None,
+    stopped,
+    wanted: str,
+    desktop: tuple[ScreenGrabber, ScreenCfg] | None = None,
 ) -> None:
     begun = False
     space, hub.space = _reference_space(xr, instance, session, wanted)
@@ -620,6 +643,12 @@ def _frames(
     if hands is not None:
         hands.create_spaces(xr, session, space)
     live = _LiveView(gl, hub, hands)
+    panel = None
+    if desktop is not None:
+        try:
+            panel = _ScreenPanel(xr, gl, instance, session, *desktop)
+        except RuntimeError as error:
+            logger.warning("Desktop panel off: {}", error)
     if _composite.passthrough or _composite.blend == BLEND_ALPHA:
         gl.clear_color(0.0, 0.0, 0.0, 0.0)
         logger.info("The room shows through. Graphics stay in front of you until three saved poses are touched.")
@@ -640,7 +669,7 @@ def _frames(
         if not begun:
             time.sleep(0.01)
             continue
-        _one_frame(xr, gl, instance, session, space, views_info, swapchains, images, live)
+        _one_frame(xr, gl, instance, session, space, views_info, swapchains, images, live, panel)
         frame += 1
         if frame == 1 or frame % 300 == 0:
             logger.info("Submitted frame {}", frame)
@@ -702,15 +731,35 @@ def _swapchains(xr: _Xr, instance: int, system: int, session: int):
         ),
         "views",
     )
+    chosen = _swapchain_format(xr, instance, session)
+    logger.info("Swapchain format {:#x}, {} views", chosen, count.value)
+    swapchains = []
+    images = []
+    described = []
+    for view in config:
+        width, height = view.recommendedImageRectWidth, view.recommendedImageRectHeight
+        swapchain, pics = _make_swapchain(xr, instance, session, chosen, width, height, COLOR_ATTACHMENT)
+        swapchains.append(swapchain)
+        images.append(pics)
+        described.append((width, height))
+    return described, swapchains, images
+
+
+def _swapchain_format(xr: _Xr, instance: int, session: int) -> int:
+    """sRGB RGBA when the runtime offers it, else plain RGBA, else its first format."""
     formats_n = c_uint32()
     _check(xr.lib, instance, xr.xrEnumerateSwapchainFormats(session, 0, byref(formats_n), None), "format count")
     formats = (c_int64 * formats_n.value)()
     listed = xr.xrEnumerateSwapchainFormats(session, formats_n, byref(formats_n), ctypes.cast(formats, c_void_p))
     _check(xr.lib, instance, listed, "formats")
     chosen = GL_SRGB8_ALPHA8 if GL_SRGB8_ALPHA8 in formats else GL_RGBA8
-    if chosen not in formats:
-        chosen = int(formats[0])
-    logger.info("Swapchain format {:#x}, {} views", chosen, count.value)
+    return chosen if chosen in formats else int(formats[0])
+
+
+def _make_swapchain(
+    xr: _Xr, instance: int, session: int, fmt: int, width: int, height: int, usage: int
+) -> tuple[int, list[int]]:
+    """One single-sample 2D swapchain and its GL texture names."""
 
     class SwapCreate(ctypes.Structure):
         _fields_ = [
@@ -730,38 +779,159 @@ def _swapchains(xr: _Xr, instance: int, system: int, session: int):
     class Image(ctypes.Structure):
         _fields_ = [("type", c_uint32), ("next", c_void_p), ("image", c_uint32)]
 
-    swapchains = []
-    images = []
-    described = []
-    for view in config:
-        info = SwapCreate(
-            type=9,
-            usageFlags=COLOR_ATTACHMENT,
-            format=chosen,
-            sampleCount=1,
-            width=view.recommendedImageRectWidth,
-            height=view.recommendedImageRectHeight,
-            faceCount=1,
-            arraySize=1,
-            mipCount=1,
+    info = SwapCreate(
+        type=9,
+        usageFlags=usage,
+        format=fmt,
+        sampleCount=1,
+        width=width,
+        height=height,
+        faceCount=1,
+        arraySize=1,
+        mipCount=1,
+    )
+    swapchain = c_uint64()
+    _check(xr.lib, instance, xr.xrCreateSwapchain(session, byref(info), byref(swapchain)), "xrCreateSwapchain")
+    n_images = c_uint32()
+    _check(xr.lib, instance, xr.xrEnumerateSwapchainImages(swapchain, 0, byref(n_images), None), "image count")
+    pics = (Image * n_images.value)()
+    for pic in pics:
+        pic.type = 1000023004
+    _check(
+        xr.lib,
+        instance,
+        xr.xrEnumerateSwapchainImages(swapchain, n_images, byref(n_images), ctypes.cast(pics, c_void_p)),
+        "images",
+    )
+    return swapchain.value, [pic.image for pic in pics]
+
+
+class _ScreenPanel:
+    """The desktop as a quad layer, first upright in front of the head.
+
+    Holding the left grip drags it with the left controller; the left trigger hides or shows it.
+    """
+
+    def __init__(self, xr: _Xr, gl: _Gl, instance: int, session: int, grabber: ScreenGrabber, cfg: ScreenCfg) -> None:
+        self.xr = xr
+        self.gl = gl
+        self.instance = instance
+        self.grabber = grabber
+        self.cfg = cfg
+        self.width, self.height = grabber.size
+        fmt = _swapchain_format(xr, instance, session)
+        self.swapchain, self.images = _make_swapchain(xr, instance, session, fmt, self.width, self.height, COLOR_ATTACHMENT)
+        self.uploaded = -1
+        self.pose: tuple[np.ndarray, np.ndarray] | None = None
+        self.visible = True
+        self.place_next = True
+        # ``controller⁻¹ · panel`` while the left grip holds the panel.
+        self.grab: np.ndarray | None = None
+        logger.info(
+            "Desktop panel {}x{} px, {:.2f} m wide. Hold left grip to move it, left trigger hides or shows it.",
+            self.width,
+            self.height,
+            cfg.width_m,
         )
-        swapchain = c_uint64()
-        _check(xr.lib, instance, xr.xrCreateSwapchain(session, byref(info), byref(swapchain)), "xrCreateSwapchain")
-        n_images = c_uint32()
-        _check(xr.lib, instance, xr.xrEnumerateSwapchainImages(swapchain, 0, byref(n_images), None), "image count")
-        pics = (Image * n_images.value)()
-        for pic in pics:
-            pic.type = 1000023004
+
+    def update(
+        self,
+        head: tuple[np.ndarray, np.ndarray] | None,
+        left_pressed: set[str],
+        left_held: set[str],
+        left_controller: np.ndarray | None,
+    ) -> None:
+        """Apply the left controller, place the panel if asked, and upload a new frame.
+
+        Args:
+            head: Head position and orientation in the reference space.
+            left_pressed: Left buttons that went down this frame.
+            left_held: Left buttons held now.
+            left_controller: ``4 x 4`` left controller pose, or None when not located.
+        """
+        if "trigger" in left_pressed:
+            self.visible = not self.visible
+            logger.info("Desktop panel {}", "shown" if self.visible else "hidden")
+            if self.visible and self.pose is None:
+                self.place_next = True
+        if self.place_next and head is not None:
+            self.pose = panel_pose(head[0], head[1], self.cfg)
+            self.place_next = False
+        if "squeeze" in left_held and left_controller is not None and self.pose is not None and self.visible:
+            if self.grab is None:
+                self.grab = np.linalg.inv(left_controller) @ pose_matrix(*self.pose)
+            self.pose = matrix_pose(left_controller @ self.grab)
+        else:
+            self.grab = None
+        generation, frame = self.grabber.latest()
+        if frame is None or generation == self.uploaded or not self.visible:
+            return
+
+        class Acquire(ctypes.Structure):
+            _fields_ = [("type", c_uint32), ("next", c_void_p)]
+
+        class WaitImage(ctypes.Structure):
+            _fields_ = [("type", c_uint32), ("next", c_void_p), ("timeout", c_int64)]
+
+        xr, gl = self.xr, self.gl
+        index = c_uint32()
         _check(
-            xr.lib,
-            instance,
-            xr.xrEnumerateSwapchainImages(swapchain, n_images, byref(n_images), ctypes.cast(pics, c_void_p)),
-            "images",
+            xr.lib, self.instance, xr.xrAcquireSwapchainImage(self.swapchain, byref(Acquire(type=55)), byref(index)), "acquire"
         )
-        swapchains.append(swapchain.value)
-        images.append([pic.image for pic in pics])
-        described.append((view.recommendedImageRectWidth, view.recommendedImageRectHeight))
-    return described, swapchains, images
+        waited = xr.xrWaitSwapchainImage(self.swapchain, byref(WaitImage(type=56, timeout=int(1e9))))
+        _check(xr.lib, self.instance, waited, "wait image")
+        gl.bind_texture(GL_TEXTURE_2D, self.images[index.value])
+        gl.pixel_store(GL_UNPACK_ALIGNMENT, 4)
+        gl.tex_sub_image(
+            GL_TEXTURE_2D, 0, 0, 0, self.width, self.height, GL_BGRA, GL_UNSIGNED_BYTE, frame.ctypes.data_as(c_void_p)
+        )
+        gl.bind_texture(GL_TEXTURE_2D, 0)
+        _check(xr.lib, self.instance, xr.xrReleaseSwapchainImage(self.swapchain, byref(Acquire(type=57))), "release")
+        self.uploaded = generation
+
+    def layer(self, space: int):
+        """The quad layer to submit this frame, or None while hidden or before the first frame."""
+        if not self.visible or self.pose is None or self.uploaded < 0:
+            return None
+
+        class Rect(ctypes.Structure):
+            _fields_ = [("x", c_int32), ("y", c_int32), ("width", c_int32), ("height", c_int32)]
+
+        class SubImage(ctypes.Structure):
+            _fields_ = [("swapchain", c_uint64), ("imageRect", Rect), ("imageArrayIndex", c_uint32)]
+
+        class Extent(ctypes.Structure):
+            _fields_ = [("width", c_float), ("height", c_float)]
+
+        class Quad(ctypes.Structure):
+            _fields_ = [
+                ("type", c_uint32),
+                ("next", c_void_p),
+                ("layerFlags", c_uint64),
+                ("space", c_uint64),
+                ("eyeVisibility", c_uint32),
+                ("subImage", SubImage),
+                ("pose", _Pose),
+                ("size", Extent),
+            ]
+
+        centre, quat = self.pose
+        pose = _Pose(_Quat(*[float(v) for v in quat]), _Vec3(*[float(v) for v in centre]))
+        width_m = float(self.cfg.width_m)
+        return Quad(
+            type=QUAD_LAYER_TYPE,
+            space=space,
+            subImage=SubImage(swapchain=self.swapchain, imageRect=Rect(0, 0, self.width, self.height)),
+            pose=pose,
+            size=Extent(width_m, width_m * self.height / self.width),
+        )
+
+
+def _head(located) -> tuple[np.ndarray, np.ndarray]:
+    """Mean eye position and the first eye's orientation, from ``xrLocateViews``."""
+    positions = [np.array([v.pose.position.x, v.pose.position.y, v.pose.position.z]) for v in located]
+    q = located[0].pose.orientation
+    return np.mean(positions, axis=0), rotation_matrix(q.x, q.y, q.z, q.w)
 
 
 class _LiveView:
@@ -792,7 +962,10 @@ class _LiveView:
             edge, markers = self.hands.poll(display_time, local_space)
             for name, (pose, tracked) in self.hands.devices.items():
                 self.hub.set_tracked(name, pose, tracked=tracked)
-            if edge is not None:
+            if self.hands.buttons:
+                self.hub.set_buttons("right", self.hands.buttons)
+            # With a saved calibration the right trigger and grip belong to teleop (gripper), not to touch capture.
+            if edge is not None and self.hub.calibration() is None:
                 kind, point = edge
                 message = self.capture.undo() if kind == "undo" else self.capture.capture(point)
                 logger.info("{}", message)
@@ -860,7 +1033,9 @@ def _poll(xr: _Xr, instance: int, session: int) -> int:
     return state
 
 
-def _one_frame(xr, gl, instance, session, space, described, swapchains, images, live: _LiveView) -> None:
+def _one_frame(
+    xr, gl, instance, session, space, described, swapchains, images, live: _LiveView, panel: _ScreenPanel | None = None
+) -> None:
     class Empty(ctypes.Structure):
         _fields_ = [("type", c_uint32), ("next", c_void_p)]
 
@@ -951,6 +1126,15 @@ def _one_frame(xr, gl, instance, session, space, described, swapchains, images, 
             "xrLocateViews",
         )
         live.before_draw(int(state.predictedDisplayTime), space)
+        if panel is not None:
+            hands = live.hands
+            left = hands.devices.get("left") if hands is not None else None
+            panel.update(
+                _head(located),
+                hands.left_pressed if hands is not None else set(),
+                hands.left_held if hands is not None else set(),
+                None if left is None else left[0],
+            )
         proj_views = (ProjView * len(swapchains))()
         for index, (view, swapchain, pics, size) in enumerate(zip(located, swapchains, images, described, strict=True)):
             image_index = c_uint32()
@@ -987,13 +1171,16 @@ def _one_frame(xr, gl, instance, session, space, described, swapchains, images, 
             ]
 
         pass_layer = None
+        quad = panel.layer(space) if panel is not None else None
+        stack = []
         if _composite.passthrough:
             pass_layer = PassLayer(type=PASSTHROUGH_LAYER_TYPE, space=space, layerHandle=_composite.passthrough)
-            layer_list = (c_void_p * 2)(ctypes.addressof(pass_layer), ctypes.addressof(projection))
-            layer_count = 2
-        else:
-            layer_list = (c_void_p * 1)(ctypes.addressof(projection))
-            layer_count = 1
+            stack.append(ctypes.addressof(pass_layer))
+        stack.append(ctypes.addressof(projection))
+        if quad is not None:
+            stack.append(ctypes.addressof(quad))
+        layer_list = (c_void_p * len(stack))(*stack)
+        layer_count = len(stack)
     end = End(
         type=12,
         displayTime=state.predictedDisplayTime,
@@ -1091,6 +1278,11 @@ class _Hands:
         }
         self._pose: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
         self.devices: dict[str, tuple[np.ndarray, bool]] = {}
+        # Right controller ``trigger`` / ``squeeze`` held state; empty while the app has no input focus.
+        self.buttons: dict[str, bool] = {}
+        # Left controller buttons that went down this frame, and those held now (``trigger``, ``squeeze``).
+        self.left_pressed: set[str] = set()
+        self.left_held: set[str] = set()
         self._said: set[str] = set()
         self.ready = False
 
@@ -1227,6 +1419,9 @@ class _Hands:
             # 8 is XR_SESSION_NOT_FOCUSED, e.g. the system menu is open. Stale poses must not look fresh.
             self._pose.clear()
             self.devices.clear()
+            self.buttons.clear()
+            self.left_pressed = set()
+            self.left_held = set()
             self._say_once(f"xrSyncActions returned {synced}")
             return None, empty
         self._read_poses(display_time, local_space)
@@ -1321,8 +1516,10 @@ class _Hands:
             ]
 
         found: tuple[str, np.ndarray] | None = None
+        self.left_pressed = set()
+        self.left_held = set()
         for name, action in (("trigger", self.trigger), ("squeeze", self.squeeze)):
-            for hand in (self.right,):
+            for hand in (self.right, self.left):
                 state = FloatState(type=24)
                 query = Get(type=58, action=action, subactionPath=hand)
                 result = self.xrGetActionStateFloat(self.session, byref(query), byref(state))
@@ -1330,6 +1527,13 @@ class _Hands:
                 key = (name, hand)
                 rose = down and not self._down[key]
                 self._down[key] = down
+                if hand == self.left:
+                    if rose:
+                        self.left_pressed.add(name)
+                    if down:
+                        self.left_held.add(name)
+                    continue
+                self.buttons[name] = down
                 if not rose or found is not None:
                     continue
                 if name == "squeeze":

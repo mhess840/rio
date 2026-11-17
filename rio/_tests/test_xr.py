@@ -218,3 +218,114 @@ def test_the_publisher_sends_only_the_newest_layer_and_never_raises(server):
     assert "sneaky" not in {layer["name"] for layer in server.hub.scene()["layers"]}
     with pytest.raises(ValueError, match="this machine"):
         XrPublisher("http://10.0.0.5:8770", token=TOKEN)
+
+
+def test_the_server_reports_controller_buttons_with_their_age(server):
+    server.hub.set_buttons("right", {"trigger": True, "squeeze": False})
+    response, payload = _request(server, "GET", "/buttons")
+    assert response.status == 200
+    right = json.loads(payload)["right"]
+    assert right["trigger"] is True and right["squeeze"] is False
+    assert 0.0 <= right["age_s"] < 1.0
+
+
+def test_controller_buttons_map_to_gripper_keys_and_go_quiet_when_stale():
+    from rio.apps.vive.controls import held_keys
+    from rio.xr.buttons import buttons_to_keyboard_state
+
+    def keys(sample):
+        return held_keys(buttons_to_keyboard_state(sample, max_age_s=0.25))
+
+    assert keys({"age_s": 0.01, "trigger": True, "squeeze": False}) == {"pagedown"}
+    assert keys({"age_s": 0.01, "trigger": False, "squeeze": True}) == {"pageup"}
+    assert keys({"age_s": 0.01, "trigger": False, "squeeze": False}) == set()
+    assert keys({"age_s": 1.0, "trigger": True, "squeeze": True}) == set()
+    assert keys(None) == set()
+
+
+def test_the_button_poller_follows_the_server_and_tolerates_a_missing_one(server):
+    import time
+
+    from rio.apps.vive.controls import held_keys
+    from rio.xr.buttons import XrButtons, open_xr_buttons
+
+    def wait_for(poller, expected):
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            server.hub.set_buttons("right", sample)
+            if held_keys(poller.get_state()) == expected:
+                return True
+            time.sleep(0.02)
+        return False
+
+    with XrButtons(f"http://127.0.0.1:{server.port}") as poller:
+        sample = {"trigger": True, "squeeze": False}
+        assert wait_for(poller, {"pagedown"})
+        sample = {"trigger": False, "squeeze": True}
+        assert wait_for(poller, {"pageup"})
+    with XrButtons("http://127.0.0.1:9", freq=100) as missing:
+        time.sleep(0.1)
+        assert held_keys(missing.get_state()) == set()
+
+    class Args:
+        teleop_xr_url = ""
+
+    with open_xr_buttons(Args()) as off:
+        assert off is None
+
+
+def test_the_desktop_panel_hangs_upright_ahead_of_the_head_facing_it():
+    from rio.xr.screen import ScreenCfg, panel_pose
+
+    cfg = ScreenCfg(distance_m=1.0, drop_m=0.1)
+    # Head at 1.6 m looking along -Z, pitched down 30 degrees: the panel stays level.
+    pitch = Rotation.from_euler("x", -30, degrees=True).as_matrix()
+    centre, quat = panel_pose(np.array([0.0, 1.6, 0.0]), pitch, cfg)
+    np.testing.assert_allclose(centre, [0.0, 1.5, -1.0], atol=1e-9)
+    np.testing.assert_allclose(Rotation.from_quat(quat).apply([0, 0, 1]), [0, 0, 1], atol=1e-9)
+    # Head turned 90 degrees left (looking along -X): the panel's front (+Z) points back along +X.
+    yaw = Rotation.from_euler("y", 90, degrees=True).as_matrix()
+    centre, quat = panel_pose(np.zeros(3), yaw, cfg)
+    np.testing.assert_allclose(centre, [-1.0, -0.1, 0.0], atol=1e-9)
+    np.testing.assert_allclose(Rotation.from_quat(quat).apply([0, 0, 1]), [1, 0, 0], atol=1e-9)
+
+
+def test_the_cursor_is_blended_and_clipped_at_the_screen_edge():
+    from rio.xr.screen import paint_cursor
+
+    frame = np.full((4, 4, 4), 100, dtype=np.uint8)
+    # 2 x 2 cursor: opaque white, transparent, half-transparent premultiplied red, opaque black.
+    argb = np.array([[0xFFFFFFFF, 0x00000000], [0x80800000, 0xFF000000]], dtype=np.uint32)
+    paint_cursor(frame, argb, 3, 2)  # only the left column fits
+    np.testing.assert_array_equal(frame[2, 3, :3], [255, 255, 255])
+    np.testing.assert_array_equal(frame[3, 3, :3], [49, 49, 177])
+    assert (frame[:2] == 100).all() and (frame[:, :3] == 100).all()
+    frame[:] = 100
+    paint_cursor(frame, argb, 0, 0)
+    np.testing.assert_array_equal(frame[0, 1, :3], [100, 100, 100])
+    np.testing.assert_array_equal(frame[1, 0, :3], [49, 49, 177])  # BGR: 100 * (1 - 128/255) + red 128
+
+
+def test_panel_pose_round_trips_and_a_grab_keeps_the_offset():
+    from rio.xr.screen import matrix_pose, pose_matrix
+
+    for quat in Rotation.random(20, random_state=3).as_quat():
+        centre = np.array([0.1, 1.2, -0.7])
+        back_centre, back_quat = matrix_pose(pose_matrix(centre, quat))
+        np.testing.assert_allclose(back_centre, centre)
+        assert min(np.abs(back_quat - quat).max(), np.abs(back_quat + quat).max()) < 1e-9
+    controller = pose_matrix(np.array([0.2, 1.0, -0.3]), Rotation.from_euler("y", 20, degrees=True).as_quat())
+    panel = pose_matrix(np.array([0.0, 1.5, -1.0]), np.array([0.0, 0.0, 0.0, 1.0]))
+    grab = np.linalg.inv(controller) @ panel
+    moved = pose_matrix(np.array([0.5, 1.1, -0.2]), Rotation.from_euler("y", 50, degrees=True).as_quat())
+    np.testing.assert_allclose(np.linalg.inv(moved) @ (moved @ grab), grab, atol=1e-12)
+
+
+def test_downscale_averages_blocks_and_drops_partial_edges():
+    from rio.xr.screen import downscale
+
+    frame = np.arange(5 * 4 * 1, dtype=np.uint8).reshape(5, 4, 1)
+    small = downscale(frame, 2)
+    assert small.shape == (2, 2, 1)
+    assert small[0, 0, 0] == (0 + 1 + 4 + 5) // 4
+    assert downscale(frame, 1) is frame

@@ -29,6 +29,7 @@ class XrHub:
         self._removed: dict[str, int] = {}
         self._anchors: dict[str, list[float]] = {}
         self._tracked: dict[str, tuple[float, list[list[float]], bool]] = {}
+        self._buttons: dict[str, tuple[float, dict[str, bool]]] = {}
         self._calibration: dict | None = None
         self.space = ""
 
@@ -87,6 +88,23 @@ class XrHub:
                 name: {"age_s": now - stamp, "matrix": rows, "tracked": ok} for name, (stamp, rows, ok) in self._tracked.items()
             }
             return {"space": self.space, "devices": devices}
+
+    def set_buttons(self, name: str, buttons: dict[str, bool]) -> None:
+        """Latest button state of a controller, e.g. ``right``: ``{"trigger": True, "squeeze": False}``.
+
+        Args:
+            name: Device name.
+            buttons: Pressed state per button name.
+        """
+        clean = {str(button): bool(down) for button, down in buttons.items()}
+        with self._changed:
+            self._buttons[name] = (time.monotonic(), clean)
+
+    def buttons(self) -> dict:
+        """Every controller's pressed buttons with the age of the sample in seconds."""
+        now = time.monotonic()
+        with self._changed:
+            return {name: {"age_s": now - stamp, **pressed} for name, (stamp, pressed) in self._buttons.items()}
 
     def set_calibration(self, calibration: dict | None) -> None:
         """Replace the robot-to-headset fit; the headset draws with it from the next frame.
