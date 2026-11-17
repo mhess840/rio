@@ -327,6 +327,13 @@ def live_cell(args: Args, table: TableMap | None, root: Path) -> Generator[LiveC
         stack.enter_context(ServerManager(args.mw, list(servers.values())))
         stack.enter_context(env)
         keys = NodeKeys(stack.enter_context(clients["teleop_keyboard"]()))
+        from rio.xr.move_view import move_view
+
+        ghost = move_view(getattr(env.robot, "urdf_path", None))
+        if ghost is not None:
+            # A dry run's last ghost would otherwise stand still in the headset during this run.
+            ghost.clear_preview()
+            stack.callback(ghost.clear_preview)
         arm_env = env
         if args.xr_preview:
             from .preview import open_preview
