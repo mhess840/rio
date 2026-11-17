@@ -104,6 +104,19 @@ Alles wird in einem eigenen Thread mit 10 Hz gesendet und kostet die Regelschlei
 keine Zeit. Jede neue Episode leert die Layer. Fuer Videos blendet
 `--hide table,poses` Tischebene und Posen-Punkte aus.
 
+Jede diskrete Fahrt (`goto`, `move_tcp`, Home-Fahrten, GaP-Fahrten) zeigt ihr Ziel als
+gelben Geister-Arm, bis der Arm angekommen ist. Overlays werden nur gebaut, solange die
+Brille auf ist (`GET /headset`).
+
+Echte Roboterformen statt Stabmodell: RoboDK-Bibliotheksdatei des Arms einmal umwandeln,
+
+```sh
+uv run python -m rio.xr.robodk ~/Downloads/Kassow-Robots-KR1018.robot
+```
+
+schreibt `experiments/xr/arm_mesh.npz` (nicht im Repo). Der Konverter prueft die
+DH-Kette gegen die URDF und bricht bei Abweichung ab. Der Greifer bleibt eine Skizze.
+
 Faellt WiVRn aus (Headset aus, Verbindung neu), baut die Anzeige ihre Session nach
 3 s selbst neu auf; ebenso, wenn die Controller laenger als 10 s verschwunden sind.
 In der Quest nur WiVRn neu verbinden, den Prozess nicht neu starten.

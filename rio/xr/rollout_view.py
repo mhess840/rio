@@ -12,7 +12,8 @@ Layers, all in the robot base frame:
 
 The control loop only hands over samples (:meth:`RolloutView.note_step`,
 :meth:`RolloutView.note_chunk`); a background thread builds and publishes at ``rate_hz``,
-so drawing never costs the loop time. Without a running XR server nothing is sent.
+so drawing never costs the loop time. Without a running XR server nothing is sent, and
+while nobody wears the headset nothing is built.
 """
 
 from __future__ import annotations
@@ -26,8 +27,9 @@ from collections import deque
 import numpy as np
 from loguru import logger
 
-from .ghost import GhostArm, ghost_items, merge, sphere
+from .ghost import GhostArm, merge, sphere
 from .plan import GRIPPER_CLOSED_BELOW, gripper_tips
+from .presence import HeadsetPresence
 from .publisher import DEFAULT_URL, XrPublisher
 from .scene import Layer, Lines, Mesh
 
@@ -103,11 +105,20 @@ class RolloutView:
         publisher: Where the layers go.
         ghost: Arm model for ``vla_ghost``; None leaves the ghost out.
         rate_hz: Publish rate of the changing layers.
+        presence: Drawing waits while nobody wears the headset; None always draws.
     """
 
-    def __init__(self, publisher: XrPublisher, ghost: GhostArm | None = None, *, rate_hz: float = 10.0) -> None:
+    def __init__(
+        self,
+        publisher: XrPublisher,
+        ghost: GhostArm | None = None,
+        *,
+        rate_hz: float = 10.0,
+        presence: HeadsetPresence | None = None,
+    ) -> None:
         self.publisher = publisher
         self.ghost = ghost
+        self.presence = presence
         self.period = 1.0 / rate_hz
         self._lock = threading.Lock()
         self._trail: deque[np.ndarray] = deque(maxlen=TRAIL_POINTS)
@@ -180,6 +191,10 @@ class RolloutView:
             self._wake.wait(self.period)
             self._wake.clear()
             started = time.monotonic()
+            if self.presence is not None and not self.presence.worn():
+                # Samples keep arriving and stay marked; they are drawn when the headset is back on.
+                time.sleep(self.period)
+                continue
             try:
                 self._publish_dirty()
             except Exception as error:  # a drawing bug must never reach the rollout
@@ -221,12 +236,8 @@ class RolloutView:
         q = self.ghost.solve(goal, joint_q)
         if q is None:
             return None
-        centres, flange = self.ghost.joints(q)
-        centres = centres - offset
-        flange = flange.copy()
-        flange[:3, 3] -= offset
         opening = float(action[6]) if len(action) > 6 else 1.0
-        return Layer("vla_ghost", "Ghost arm at the end of the chunk", ghost_items(centres, flange, opening))
+        return Layer("vla_ghost", "Ghost arm at the end of the chunk", self.ghost.items_at(q, joint_q, eef_pose, opening))
 
 
 class _Shared:
@@ -258,6 +269,6 @@ def rollout_view(urdf_path: str | None = None, url: str = DEFAULT_URL) -> Rollou
             ghost = GhostArm(urdf_path)
         except (ImportError, ValueError, RuntimeError) as error:
             logger.info("Ghost arm off: {}", error)
-    _Shared.view = RolloutView(publisher, ghost)
+    _Shared.view = RolloutView(publisher, ghost, presence=HeadsetPresence(url))
     logger.info("Rollout overlay on: trail, replanning fan, gripper events{}", ", ghost arm" if ghost else "")
     return _Shared.view

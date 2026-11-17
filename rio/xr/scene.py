@@ -76,19 +76,27 @@ class Lines:
 
 @dataclass(frozen=True)
 class Mesh:
-    """Triangles over ``vertices``; transparent when the color alpha is below 1."""
+    """Triangles over ``vertices``; transparent when the color alpha is below 1.
+
+    ``lit`` darkens faces that turn away from a light above the robot, so a solid shape
+    reads as 3D in a renderer without lighting.
+    """
 
     vertices: np.ndarray
     triangles: np.ndarray
     color: RGBA
+    lit: bool = False
 
     def to_json(self) -> dict:
-        return {
+        payload = {
             "type": "mesh",
             "vertices": _flat(self.vertices),
             "triangles": np.asarray(self.triangles, dtype=int).reshape(-1).tolist(),
             "color": list(self.color),
         }
+        if self.lit:
+            payload["lit"] = True
+        return payload
 
 
 Item = Points | Lines | Mesh
@@ -155,7 +163,7 @@ class Layer:
                     triangles = np.asarray(raw["triangles"], dtype=int).reshape(-1, 3)
                     if triangles.size and (triangles.min() < 0 or triangles.max() >= len(vertices)):
                         raise SceneError("triangle indices must name vertices")
-                    items.append(Mesh(vertices, triangles, _color(raw["color"])))
+                    items.append(Mesh(vertices, triangles, _color(raw["color"]), bool(raw.get("lit", False))))
                 else:
                     raise SceneError(f"unknown item type {kind!r}")
             except (KeyError, TypeError) as error:

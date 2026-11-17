@@ -14,6 +14,7 @@ Routes:
     GET  /tracked         latest headset device poses (controllers) and their age
     GET  /buttons         latest controller buttons (trigger, squeeze) and their age
     GET  /calibration     the robot-to-headset fit in use, or null
+    GET  /headset         session state of the headset view and whether it is worn
     POST /register        stateless: point pairs in, ``xr_from_base`` and RMS out
     POST /layers          publish one layer (bearer token)
     POST /layers/remove   drop a layer by name (bearer token)
@@ -157,6 +158,8 @@ class XrServer:
                     self._json(200, server.hub.buttons())
                 elif parts.path == "/calibration":
                     self._json(200, server.hub.calibration())
+                elif parts.path == "/headset":
+                    self._json(200, server.hub.headset())
                 else:
                     self._json(404, {"error": "not found"})
 

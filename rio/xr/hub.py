@@ -31,6 +31,7 @@ class XrHub:
         self._tracked: dict[str, tuple[float, list[list[float]], bool]] = {}
         self._buttons: dict[str, tuple[float, dict[str, bool]]] = {}
         self._calibration: dict | None = None
+        self._headset: tuple[float, int] = (time.monotonic(), 0)
         self.space = ""
 
     def put(self, layer: Layer) -> int:
@@ -105,6 +106,21 @@ class XrHub:
         now = time.monotonic()
         with self._changed:
             return {name: {"age_s": now - stamp, **pressed} for name, (stamp, pressed) in self._buttons.items()}
+
+    def set_headset_state(self, state: int) -> None:
+        """OpenXR session state of the headset view; 0 when there is no session.
+
+        Args:
+            state: ``XrSessionState`` value (4 visible, 5 focused).
+        """
+        with self._changed:
+            self._headset = (time.monotonic(), int(state))
+
+    def headset(self) -> dict:
+        """Session state, whether the headset is worn (state visible or focused), and the seconds since it changed."""
+        with self._changed:
+            stamp, state = self._headset
+        return {"state": state, "worn": state in (4, 5), "since_s": time.monotonic() - stamp}
 
     def set_calibration(self, calibration: dict | None) -> None:
         """Replace the robot-to-headset fit; the headset draws with it from the next frame.

@@ -49,6 +49,7 @@ from rio.apps.kassow.homing import (
 from rio.apps.kassow.stations import KassowViveGripperStation
 from rio.cfg import Camera
 from rio.envs.env import make_env
+from rio.xr.move_view import move_view
 
 
 def pose_presets(home_file: str | None) -> dict[str, Path]:
@@ -145,7 +146,22 @@ def goto_home(env, home: dict, *, home_joint_speed: float, set_gripper: bool = T
     Returns:
         ``LANDED`` on the target joints, ``ALARM`` when KORD latches an alarm,
         or ``MISSED`` when the move was not queued or did not settle on target.
+
+    With the XR headset on, the goal shows as a ghost arm until the move ends.
     """
+    state = env.robot.arm.get_state()
+    view = move_view(getattr(env.robot, "urdf_path", None))
+    if view is not None and "eef_pose" in state:
+        opening = float(home["gripper"]) if set_gripper and "gripper" in home else None
+        view.show(home["joint_q"], state["joint_q"], state["eef_pose"], opening)
+    try:
+        return _drive_home(env, home, home_joint_speed=home_joint_speed, set_gripper=set_gripper)
+    finally:
+        if view is not None:
+            view.clear()
+
+
+def _drive_home(env, home: dict, *, home_joint_speed: float, set_gripper: bool) -> MoveStatus:
     q_goal = np.asarray(home["joint_q"], dtype=float)
     xyz = np.asarray(home["eef_pose"], dtype=float)[:3]
     arm = env.robot.arm

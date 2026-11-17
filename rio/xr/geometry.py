@@ -25,6 +25,9 @@ YUP_FROM_BASE = np.array(
     dtype=float,
 )
 PREVIEW_FORWARD_M = 1.2
+# Light for ``Mesh.lit``, in the robot base frame: from above, a little to the side.
+LIGHT_FROM_BASE = np.array([0.3, -0.4, 0.87]) / np.linalg.norm([0.3, -0.4, 0.87])
+LIT_AMBIENT = 0.35
 PREVIEW_DOWN_M = 0.4
 Vertex = np.ndarray
 
@@ -72,7 +75,15 @@ def _triangles(mesh: Mesh, matrix: np.ndarray) -> np.ndarray:
     if len(triangles) == 0:
         return np.zeros((0, 7), dtype=np.float32)
     vertices = transform_points(mesh.vertices, matrix)
-    return _paint(vertices[triangles.reshape(-1)], mesh.color)
+    painted = _paint(vertices[triangles.reshape(-1)], mesh.color)
+    if mesh.lit:
+        corners = np.asarray(mesh.vertices, dtype=float)[triangles]
+        normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+        normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
+        # Two-sided: the facing of a triangle soup is not reliable.
+        shade = LIT_AMBIENT + (1.0 - LIT_AMBIENT) * np.abs(normals @ LIGHT_FROM_BASE)
+        painted[:, 3:6] *= np.repeat(shade, 3)[:, None].astype(np.float32)
+    return painted
 
 
 def layer_vertices(layers: tuple[Layer, ...] | list[Layer], matrix: np.ndarray) -> tuple[Vertex, Vertex]:

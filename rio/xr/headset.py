@@ -644,6 +644,7 @@ def _run_session(hub: XrHub, space: str, screen: ScreenCfg | None, stopped) -> b
             desktop = None if grabber is None or screen is None else (grabber, screen)
             return _frames(xr, gl, instance, system, session, hub, hands, stopped, space, desktop)
     finally:
+        hub.set_headset_state(0)
         if session:
             xr.xrDestroySession(session)
         xr.xrDestroyInstance(instance)
@@ -684,6 +685,8 @@ def _frames(
     next_check = 0.0
     while not stopped():
         state = _poll(xr, instance, session)
+        if state:
+            hub.set_headset_state(state)
         if state == LOSS_PENDING:
             logger.warning("WiVRn is losing the session (headset asleep or disconnected)")
             return True
