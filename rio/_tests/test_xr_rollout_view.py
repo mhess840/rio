@@ -228,3 +228,38 @@ def test_lit_meshes_shade_faces_by_their_tilt():
     _, triangles = layer_vertices([Layer("a", "a", (flat, wall))], np.eye(4))
     assert triangles[0, 3] > triangles[3, 3]  # the face looking up at the light is brighter
     assert Layer.from_json(Layer("a", "a", (flat,)).to_json()).items[0].lit
+
+
+def test_the_gripper_model_closes_the_fingers_toward_the_middle(tmp_path):
+    from rio.xr.ghost import GripperModel
+
+    triangle = np.array([[0, 1, 2]], dtype=np.int32)
+
+    def part(centre):
+        return (np.asarray(centre) + np.array([[0, 0, 0], [0.001, 0, 0], [0, 0, 0.001]])).astype(np.float32)
+
+    arrays = {"static_vertices": part([0, 0, 0.05]), "static_triangles": triangle, "stroke_m": np.array(0.095)}
+    for side, sign in (("left", -1.0), ("right", 1.0)):
+        pivot, joint = np.array([sign * 0.0165, 0, 0.111]), np.array([sign * 0.0545, 0, 0.1485])
+        arrays |= {
+            f"{side}_tip_vertices": part(joint + np.array([sign * 0.005, 0, 0.02])),
+            f"{side}_tip_triangles": triangle,
+            f"{side}_turn0_vertices": part(joint),
+            f"{side}_turn0_triangles": triangle,
+            f"{side}_turn0_pivot": pivot,
+            f"{side}_turns": np.array(1),
+            f"{side}_pairs": np.array(0),
+            f"{side}_pivot": pivot,
+            f"{side}_joint": joint,
+        }
+    path = tmp_path / "gripper.npz"
+    np.savez(path, **arrays)
+    model = GripperModel(path)
+    opened, closed = model.parts_at(1.0), model.parts_at(0.0)
+    assert np.allclose(opened[0][0], closed[0][0])  # the housing stays
+    left_tip_open, left_tip_closed = opened[2][0], closed[2][0]
+    # Closed: the tip moved half the stroke toward the middle, and forward along z.
+    assert np.allclose(left_tip_closed[:, 0] - left_tip_open[:, 0], 0.0475, atol=1e-6)
+    assert np.all(left_tip_closed[:, 2] > left_tip_open[:, 2])
+    # The link turned about its pivot and its end now sits where the tip group's joint went.
+    assert np.allclose(closed[1][0][0], np.array([-0.0545 + 0.0475, 0, closed[1][0][0][2]]), atol=1e-6)

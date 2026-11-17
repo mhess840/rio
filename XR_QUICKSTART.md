@@ -115,7 +115,8 @@ uv run python -m rio.xr.robodk ~/Downloads/Kassow-Robots-KR1018.robot
 ```
 
 schreibt `experiments/xr/arm_mesh.npz` (nicht im Repo). Der Konverter prueft die
-DH-Kette gegen die URDF und bricht bei Abweichung ab. Der Greifer bleibt eine Skizze.
+DH-Kette gegen die URDF und bricht bei Abweichung ab. Den AG95 aus der STEP-Datei
+wandelt `scripts/ag95_mesh/` um (siehe README dort); ohne ihn zeigt der Geist eine Greifer-Skizze.
 
 Faellt WiVRn aus (Headset aus, Verbindung neu), baut die Anzeige ihre Session nach
 3 s selbst neu auf; ebenso, wenn die Controller laenger als 10 s verschwunden sind.
