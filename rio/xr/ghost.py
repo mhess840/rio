@@ -27,6 +27,8 @@ JOINT_RADIUS_M = 0.06
 GRIPPER_BODY_M = 0.13
 GRIPPER_FINGER_M = 0.065
 GRIPPER_STROKE_M = 0.095
+# The AG95 sits on the Kassow flange turned by 90 deg: its fingers close along the flange y axis.
+GRIPPER_YAW_DEG = 90.0
 
 
 def tube(a: np.ndarray, b: np.ndarray, radius: float, sides: int = 10) -> tuple[np.ndarray, np.ndarray]:
@@ -175,8 +177,17 @@ class GripperModel:
         return meshes
 
 
+def mount(flange: np.ndarray) -> np.ndarray:
+    """The gripper frame on ``flange``: turned by ``GRIPPER_YAW_DEG`` about the flange z axis."""
+    yaw = np.radians(GRIPPER_YAW_DEG)
+    turn = np.array([[np.cos(yaw), -np.sin(yaw), 0.0], [np.sin(yaw), np.cos(yaw), 0.0], [0.0, 0.0, 1.0]])
+    mounted = np.array(flange, dtype=float).copy()
+    mounted[:3, :3] = mounted[:3, :3] @ turn
+    return mounted
+
+
 def gripper_parts(flange: np.ndarray, opening: float) -> list[tuple[np.ndarray, np.ndarray]]:
-    """AG95 sketch at ``flange``: a body along flange z and two fingers that open along flange x."""
+    """AG95 sketch on the gripper frame ``flange`` (see :func:`mount`): body along z, fingers open along x."""
     origin, x_axis, z_axis = flange[:3, 3], flange[:3, 0], flange[:3, 2]
     palm = origin + z_axis * GRIPPER_BODY_M
     parts = [tube(origin, palm, ARM_RADIUS_M * 1.2)]
@@ -280,7 +291,7 @@ class GhostArm:
         _, flange_now = self.joints(q_now)
         offset = flange_now[:3, 3] - np.asarray(eef_now, dtype=float)[:3]
         centres, flange = self.joints(q)
-        flange = flange.copy()
+        flange = mount(flange)
         flange[:3, 3] -= offset
         if self.links is None:
             return ghost_items(centres - offset, flange, opening, **colors)

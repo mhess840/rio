@@ -119,7 +119,7 @@ DH-Kette gegen die URDF und bricht bei Abweichung ab. Den AG95 aus der STEP-Date
 wandelt `scripts/ag95_mesh/` um (siehe README dort); ohne ihn zeigt der Geist eine Greifer-Skizze.
 
 Faellt WiVRn aus (Headset aus, Verbindung neu), baut die Anzeige ihre Session nach
-3 s selbst neu auf; ebenso, wenn die Controller laenger als 10 s verschwunden sind.
+3 s selbst neu auf. Abgelegte Controller loesen keinen Neustart aus.
 In der Quest nur WiVRn neu verbinden, den Prozess nicht neu starten.
 
 Ergebnisse liegen im Cache unter `experiments/xr/`. Bei geaendertem Kinematikmodell

@@ -71,7 +71,6 @@ READY = 2
 STOPPING = 6
 LOSS_PENDING = 7
 # Controllers seen and then gone this long: rebuild the OpenXR session (WiVRn binds them at connect).
-CONTROLLERS_LOST_S = 10.0
 RESTART_PAUSE_S = 3.0
 EXITING = 8
 COLOR_ATTACHMENT = 0x1
@@ -574,8 +573,8 @@ def run(hub: XrHub | None = None, *, space: str = "stage", screen: ScreenCfg | N
     Without a hub, a local one with the robot base axes is served on port 8770.
     Layers stay in front of the head until a calibration is set in ``hub`` or
     three controller touches fit the registration. When the headset sleeps or WiVRn
-    reconnects, the runtime ends the session or the controllers vanish; the view then
-    starts a fresh OpenXR session, keeping ``hub`` and its server.
+    reconnects, the runtime ends the session; the view then starts a fresh OpenXR
+    session, keeping ``hub`` and its server.
 
     Args:
         hub: Scene, anchors, and calibration to draw.
@@ -663,7 +662,7 @@ def _frames(
     wanted: str,
     desktop: tuple[ScreenGrabber, ScreenCfg] | None = None,
 ) -> bool:
-    """Render until stopped; True when the headset dropped (session lost, or controllers gone after being seen)."""
+    """Render until stopped; True when the headset dropped (session lost or stopped by the runtime)."""
     begun = False
     space, hub.space = _reference_space(xr, instance, session, wanted)
     views_info, swapchains, images = _swapchains(xr, instance, system, session)
@@ -680,9 +679,6 @@ def _frames(
         gl.clear_color(0.0, 0.0, 0.0, 0.0)
         logger.info("The room shows through. Graphics stay in front of you until three saved poses are touched.")
     frame = 0
-    controllers_seen = False
-    controllers_gone_at: float | None = None
-    next_check = 0.0
     while not stopped():
         state = _poll(xr, instance, session)
         if state:
@@ -706,16 +702,8 @@ def _frames(
             continue
         _one_frame(xr, gl, instance, session, space, views_info, swapchains, images, live, panel)
         frame += 1
-        now = time.monotonic()
-        if hands is not None and hands.ready and now >= next_check:
-            next_check = now + 1.0
-            if any(hands.profiles().values()):
-                controllers_seen, controllers_gone_at = True, None
-            elif controllers_seen:
-                controllers_gone_at = controllers_gone_at or now
-                if now - controllers_gone_at > CONTROLLERS_LOST_S:
-                    logger.warning("Controllers gone for {:.0f} s after a headset drop", CONTROLLERS_LOST_S)
-                    return True
+        # Controllers that vanish are not a reason to restart: the Quest drops them whenever they
+        # are put down (hand tracking takes over), and a restart then blanks the headset.
         if frame == 1 or frame % 300 == 0:
             logger.info("Submitted frame {}", frame)
             if hands is not None and hands.ready:

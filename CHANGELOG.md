@@ -19,9 +19,10 @@ Part 1 comes from this chat. Part 2 is reconstructed from the assistant's workin
 - Goal ghost for every discrete move: `goto.goto_home` (and so `move_tcp`, `lift_z`, home moves and the GaP graph moves) draws the goal joints as a ghost arm until the move ends (`rio.xr.move_view`). `MoveView.preview` plays a move with the ghost only, for dry runs.
 - Overlays only while the headset is worn: the headset view publishes its OpenXR session state on `GET /headset`; `rio.xr.presence.HeadsetPresence` gates the rollout overlay and the move ghost.
 - Real Kassow shapes for the ghost: `uv run python -m rio.xr.robodk <file>.robot` decodes a RoboDK library robot file (modified DH rows and per-link triangles), checks the DH chain against the URDF for random joints, places each link on its URDF joint, thins it by vertex clustering and writes `experiments/xr/arm_mesh.npz`. The KR1018 file matches the URDF exactly; ~18k triangles at 6 mm. `Mesh.lit` shades faces by a fixed light so solid shapes read as 3D.
+- The ghost's AG95 is turned 90 deg about the flange z axis (`ghost.GRIPPER_YAW_DEG`), as mounted on the station: its fingers close along flange y. Seen in the headset against the real gripper.
 - Real AG95 on the ghost: `scripts/ag95_mesh/` turns the DH Robotics STEP assembly into `experiments/xr/gripper_mesh.npz` (gmsh and OpenCascade in throwaway `uv run --with` environments, not project dependencies). `rio.xr.ghost.GripperModel` opens and closes it like the parallel linkage: housing fixed, links turn about their pivots, fingertips shift along the arc; the inner drive links are approximate.
 - `--hide table,poses` on the XR app drops scene layers, e.g. for videos.
-- The headset view rebuilds its OpenXR session after a WiVRn loss (session lost, stopping, or controllers gone for more than 10 s), instead of exiting.
+- The headset view rebuilds its OpenXR session after a WiVRn loss (session lost or stopped by the runtime), instead of exiting. Controllers that disappear do not restart it: the Quest drops them whenever they are put down.
 
 ### Changed
 
