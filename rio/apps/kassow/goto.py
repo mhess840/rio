@@ -214,6 +214,36 @@ REACH_ROT_RAD = 0.02
 MAX_JOINT_TRAVEL_RAD = np.pi
 
 
+def solve_ik(kin, goal: np.ndarray, *, seed_q: np.ndarray, from_q: np.ndarray) -> tuple[np.ndarray | None, str]:
+    """IK for a URDF pose6 ``goal``, accepted only if usable for a ``moveJ`` from ``from_q``.
+
+    Returns:
+        ``(q, "")``, or ``(None, reason)`` when IK misses by more than ``REACH_M`` /
+        ``REACH_ROT_RAD``, leaves the joint limits, or turns a joint by more than
+        ``MAX_JOINT_TRAVEL_RAD``.
+    """
+    from typing import cast
+
+    from scipy.spatial.transform import Rotation
+
+    goal = np.asarray(goal, dtype=float)
+    q_goal = np.asarray(kin.ik(np.asarray(seed_q, dtype=float), goal), dtype=float)
+    reached = np.asarray(kin.fk(q_goal), dtype=float)
+    pos_err = float(np.linalg.norm(reached[:3] - goal[:3]))
+    rot_err = float(cast(Rotation, Rotation.from_rotvec(reached[3:]).inv() * Rotation.from_rotvec(goal[3:])).magnitude())
+    if pos_err > REACH_M or rot_err > REACH_ROT_RAD:
+        return None, f"IK off by {pos_err * 1000:.0f} mm, {np.degrees(rot_err):.1f} deg"
+    model = getattr(kin, "model", None)
+    lower = getattr(model, "lowerPositionLimit", None)
+    upper = getattr(model, "upperPositionLimit", None)
+    if lower is not None and upper is not None and (np.any(q_goal < lower) or np.any(q_goal > upper)):
+        return None, "IK answer leaves the joint limits"
+    travel = float(np.max(np.abs(q_goal - np.asarray(from_q, dtype=float))))
+    if travel > MAX_JOINT_TRAVEL_RAD:
+        return None, f"IK answer turns a joint by {np.degrees(travel):.0f} deg"
+    return q_goal, ""
+
+
 def move_tcp(
     env,
     xyz: np.ndarray,
@@ -235,13 +265,8 @@ def move_tcp(
         seed_q: IK start. Unset: the current joints.
 
     Returns:
-        ``MISSED`` without moving when IK misses the goal, leaves the joint limits,
-        or turns a joint by more than ``MAX_JOINT_TRAVEL_RAD``; otherwise as ``goto_home``.
+        ``MISSED`` without moving when :func:`solve_ik` refuses the goal; otherwise as ``goto_home``.
     """
-    from typing import cast
-
-    from scipy.spatial.transform import Rotation
-
     arm = env.robot.arm
     kin = getattr(arm, "_kin", None)
     if kin is None:
@@ -251,27 +276,9 @@ def move_tcp(
     q = np.asarray(state["joint_q"], dtype=float)
     offset = np.asarray(kin.fk(q), dtype=float)[:3] - np.asarray(state["eef_pose"], dtype=float)[:3]
     goal = np.concatenate([np.asarray(xyz, dtype=float) + offset, np.asarray(rotvec, dtype=float)])
-    q_goal = np.asarray(kin.ik(q if seed_q is None else np.asarray(seed_q, dtype=float), goal), dtype=float)
-    reached = np.asarray(kin.fk(q_goal), dtype=float)
-    pos_err = float(np.linalg.norm(reached[:3] - goal[:3]))
-    rot_err = float(cast(Rotation, Rotation.from_rotvec(reached[3:]).inv() * Rotation.from_rotvec(goal[3:])).magnitude())
-    if pos_err > REACH_M or rot_err > REACH_ROT_RAD:
-        logger.error(
-            "TCP {} is not reachable (IK off by {:.0f} mm, {:.1f} deg)",
-            np.round(xyz, 3).tolist(),
-            pos_err * 1000,
-            np.degrees(rot_err),
-        )
-        return MoveStatus.MISSED
-    model = getattr(kin, "model", None)
-    lower = getattr(model, "lowerPositionLimit", None)
-    upper = getattr(model, "upperPositionLimit", None)
-    if lower is not None and upper is not None and (np.any(q_goal < lower) or np.any(q_goal > upper)):
-        logger.error("IK answer for {} leaves the joint limits", np.round(xyz, 3).tolist())
-        return MoveStatus.MISSED
-    travel = float(np.max(np.abs(q_goal - q)))
-    if travel > MAX_JOINT_TRAVEL_RAD:
-        logger.error("IK answer for {} turns a joint by {:.0f} deg", np.round(xyz, 3).tolist(), np.degrees(travel))
+    q_goal, reason = solve_ik(kin, goal, seed_q=q if seed_q is None else seed_q, from_q=q)
+    if q_goal is None:
+        logger.error("TCP {} is not reachable: {}", np.round(xyz, 3).tolist(), reason)
         return MoveStatus.MISSED
     return goto_home(env, {"joint_q": q_goal, "eef_pose": goal}, home_joint_speed=home_joint_speed, set_gripper=False)
 

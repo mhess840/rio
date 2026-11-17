@@ -238,3 +238,7 @@ class ChunkScheduler:
         eef = np.asarray(arm_state.get("eef_pose", ref), dtype=float)
         diag.chunk(self.chunk_idx, first.cpu().numpy(), eef, delay=merge_delay, qsize=self.queue.qsize(), latency_s=latency_s)
         self.chunk_idx += 1
+        if not s.joint_serve:
+            from rio.xr.plan import publish_vla_plan
+
+            publish_vla_plan(first.detach().cpu().numpy())
