@@ -33,7 +33,7 @@ class KassowViveGripperStation(KassowViveStation):
         timeout: float = 0.5
         ready_timeout: float = 30.0
         max_gripper_speed: float | None = None
-        force: int = 50
+        force: int = 70
         # One full 0xA5 homing at start. Off after a successful home.
         calibrate: bool = False
         startup_position: float | None = 0.7
@@ -82,6 +82,9 @@ class KassowViveGripperStation(KassowViveStation):
             device_path="/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-mouse",
         )
     )
+    # Right Quest controller from the running XR headset view: trigger=close, grip=open.
+    # Empty string turns it off; without a running XR server it simply sends no keys.
+    teleop_xr_url: str = "http://127.0.0.1:8770"
 
     recorder_cfg: RecorderCfg = field(
         default_factory=lambda: RecorderCfg(

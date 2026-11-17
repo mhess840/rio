@@ -101,6 +101,8 @@ class ChunkScheduler:
         self.leftover_at_request = False
         self.hold_until: float | None = None
         self.chunk_idx = 0
+        # ``rio.xr.rollout_view.RolloutView`` fed with every merged chunk, when the headset overlay is on.
+        self.xr_view = None
 
     def drop(self) -> None:
         """Forget queued and in-flight plans; the caller resets the policy."""
@@ -238,3 +240,10 @@ class ChunkScheduler:
         eef = np.asarray(arm_state.get("eef_pose", ref), dtype=float)
         diag.chunk(self.chunk_idx, first.cpu().numpy(), eef, delay=merge_delay, qsize=self.queue.qsize(), latency_s=latency_s)
         self.chunk_idx += 1
+        if not s.joint_serve:
+            from rio.xr.plan import publish_vla_plan
+
+            remaining = first.detach().cpu().numpy()
+            publish_vla_plan(remaining)
+            if self.xr_view is not None:
+                self.xr_view.note_chunk(remaining, arm_state.get("joint_q"), arm_state.get("eef_pose"))

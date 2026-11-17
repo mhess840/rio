@@ -7,10 +7,37 @@ Part 1 comes from this chat. Part 2 is reconstructed from the assistant's workin
 
 ---
 
+## 2026-11-17
+
+### Added
+
+- Right Quest controller as a gripper key source in teleop and DAgger takeover: trigger closes, grip opens, alongside the spare mouse and the keyboard. The headset view publishes the right controller's trigger and grip on `GET /buttons` (`XrHub.set_buttons`); `rio.xr.buttons.XrButtons` polls it and reports the mouse's keyboard-shaped state, nothing for a sample older than 0.25 s. `KassowViveGripperStation.teleop_xr_url` (default `http://127.0.0.1:8770`, empty turns it off). Verified with the headset; not yet with the arm.
+
+- Desktop panel in the headset (`--screen`): `rio.xr.screen.ScreenGrabber` copies the X11 root window with `XGetImage` and the XFixes cursor at 15 fps in its own thread; the headset submits it as an OpenXR quad layer with its own swapchain. Left grip held drags the panel with the controller, left trigger hides/shows it. `ScreenCfg` sets width, distance, rate and an optional box downscale against shimmer. No new dependency (ctypes on libX11/libXfixes).
+
+- Rollout overlays in the headset next to the `vla_plan` line (`rio.xr.rollout_view`): executed fingertip trail, fan of earlier chunks (replanning), gripper close/open markers, and a see-through ghost arm at the end of the newest chunk (`rio.xr.ghost`, Pinocchio DLS IK on the arm URDF, stick model; the Kassow URDF has no geometry). The rollout loop only hands over samples; a background thread publishes at 10 Hz. Off when no XR server answers. Verified in a real sort rollout.
+- Goal ghost for every discrete move: `goto.goto_home` (and so `move_tcp`, `lift_z`, home moves and the GaP graph moves) draws the goal joints as a ghost arm until the move ends (`rio.xr.move_view`). `MoveView.preview` plays a move with the ghost only, for dry runs.
+- Overlays only while the headset is worn: the headset view publishes its OpenXR session state on `GET /headset`; `rio.xr.presence.HeadsetPresence` gates the rollout overlay and the move ghost.
+- Real Kassow shapes for the ghost: `uv run python -m rio.xr.robodk <file>.robot` decodes a RoboDK library robot file (modified DH rows and per-link triangles), checks the DH chain against the URDF for random joints, places each link on its URDF joint, thins it by vertex clustering and writes `experiments/xr/arm_mesh.npz`. The KR1018 file matches the URDF exactly; ~18k triangles at 6 mm. `Mesh.lit` shades faces by a fixed light so solid shapes read as 3D.
+- `--hide table,poses` on the XR app drops scene layers, e.g. for videos.
+- The headset view rebuilds its OpenXR session after a WiVRn loss (session lost, stopping, or controllers gone for more than 10 s), instead of exiting.
+
+### Changed
+
+- With a saved calibration the headset no longer treats the right trigger and grip as touch-registration capture and undo.
+- AG95 station jaw force 50% → 70%.
+
+---
+
 ## 2026-11-13
 
 ### Added
 
+- Headset view (Meta Quest over WebXR), display only, nothing in it moves the arm:
+  - `rio/xr/`, robot-independent: `Layer` of `Points`, `Lines`, `Mesh` in the base frame; `XrHub` (latest layers, versions); `XrServer` on `127.0.0.1` with the page, `GET /scene`, server-sent `changes` events, stateless `POST /register` (Kabsch fit of touched points), and token-protected `POST /layers`; `XrPublisher` for other processes, non-blocking, newest layer per name wins, never through an HTTP proxy.
+  - `rio/xr/web/`: plain WebGL2 + WebXR page without third-party code. Desktop preview with orbit view; in the headset, registration by touching the TCP at three or more saved poses (trigger captures, grip undoes). Layer toggles and the registration are kept in the browser.
+  - `uv run python -m rio.apps.kassow.xr`: robot base axes, saved-pose TCPs, teleop limit shells, the calibrated table area, and the area reachable with the gripper pointing down (IK flood fill per height, cached in `experiments/xr/`). The headset connects with `adb reverse tcp:8770 tcp:8770`.
+  - `goto.solve_ik`: the IK acceptance rules of `move_tcp`, shared with the reach computation.
 - Graph as Policy can locate and grasp an object on the table:
   - `rio/apps/kassow/graph/locate.py`: `locate_questions` (Jev noul `visible` plus box `where`), `read_box` and `read_noul` with range and order checks.
   - `rio/apps/kassow/graph/table_map.py`: `TableMap` (homography from Jev image fractions to base `x, y`, grasp-height plane, mean grasp orientation, calibrated area, IK seeds). `label` asks Jev to box the object in each sample photo; `fit` refuses the map above 20 mm leave-one-out error or 10 mm grasp-height deviation.

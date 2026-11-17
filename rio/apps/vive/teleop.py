@@ -41,6 +41,7 @@ from rio.apps.vive.controls import (
     sync_scaled_speeds,
 )
 from rio.envs.env import make_env
+from rio.xr.buttons import open_xr_buttons
 
 
 class SessionHoming(Protocol):
@@ -84,6 +85,7 @@ def teleop_vive_hand(
     teleop2=None,
     teleop_keyboard=None,
     teleop_clicker=None,
+    teleop_xr=None,
     visualizer=None,
     yaw_deg=None,
     wait_for_start=True,
@@ -174,6 +176,8 @@ def teleop_vive_hand(
             print("  Spare Logitech mouse: left close, right open, back finer, forward coarser.")
         else:
             print("  Spare Logitech mouse: back finer, forward coarser.")
+    if teleop_xr is not None and gripper is not None:
+        print("  Right Quest controller: trigger closes, grip opens.")
     print("Keep the e-stop within reach.")
     if wait_for_start:
         input(f"Instruction: {args.instruction}\nPress Enter to start")
@@ -209,6 +213,7 @@ def teleop_vive_hand(
             keys = merge_held_keys(
                 teleop_keyboard.get_state() if teleop_keyboard else None,
                 teleop_clicker.get_state() if teleop_clicker else None,
+                teleop_xr.get_state() if teleop_xr else None,
             )
             if teleop_keyboard or teleop_clicker:
                 recording = handle_recorder_start(env, keys, previous_keys, recording)
@@ -388,6 +393,7 @@ def main(args, homing_factory: HomingFactory | None = None):
                 teleop2_client() if teleop2_client else nullcontext() as teleop2,
                 keyboard_client() if keyboard_client else nullcontext() as teleop_keyboard,
                 clicker_client() if clicker_client else nullcontext() as teleop_clicker,
+                open_xr_buttons(args) as teleop_xr,
                 visualizer_client() if visualizer_client else nullcontext() as visualizer,
             ):
                 try:
@@ -398,6 +404,7 @@ def main(args, homing_factory: HomingFactory | None = None):
                         teleop2=teleop2,
                         teleop_keyboard=teleop_keyboard,
                         teleop_clicker=teleop_clicker,
+                        teleop_xr=teleop_xr,
                         visualizer=visualizer,
                         yaw_deg=yaw_deg,
                         wait_for_start=False,

@@ -98,6 +98,7 @@ include = ["rio*"]
 [tool.setuptools.package-data]
 "rio.apps.kassow" = ["homes/*.json", "inlay/*.jpg", "graph/*.json", "graph/workflows/*.json"]
 "rio.graph" = ["live_view.html"]
+"rio.xr" = ["web/*.html", "web/*.js"]
 
 [tool.setuptools.dynamic]
 version = { file = ["VERSION"] }

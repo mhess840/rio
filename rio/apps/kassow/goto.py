@@ -49,6 +49,7 @@ from rio.apps.kassow.homing import (
 from rio.apps.kassow.stations import KassowViveGripperStation
 from rio.cfg import Camera
 from rio.envs.env import make_env
+from rio.xr.move_view import move_view
 
 
 def pose_presets(home_file: str | None) -> dict[str, Path]:
@@ -145,7 +146,22 @@ def goto_home(env, home: dict, *, home_joint_speed: float, set_gripper: bool = T
     Returns:
         ``LANDED`` on the target joints, ``ALARM`` when KORD latches an alarm,
         or ``MISSED`` when the move was not queued or did not settle on target.
+
+    With the XR headset on, the goal shows as a ghost arm until the move ends.
     """
+    state = env.robot.arm.get_state()
+    view = move_view(getattr(env.robot, "urdf_path", None))
+    if view is not None and "eef_pose" in state:
+        opening = float(home["gripper"]) if set_gripper and "gripper" in home else None
+        view.show(home["joint_q"], state["joint_q"], state["eef_pose"], opening)
+    try:
+        return _drive_home(env, home, home_joint_speed=home_joint_speed, set_gripper=set_gripper)
+    finally:
+        if view is not None:
+            view.clear()
+
+
+def _drive_home(env, home: dict, *, home_joint_speed: float, set_gripper: bool) -> MoveStatus:
     q_goal = np.asarray(home["joint_q"], dtype=float)
     xyz = np.asarray(home["eef_pose"], dtype=float)[:3]
     arm = env.robot.arm
@@ -214,6 +230,36 @@ REACH_ROT_RAD = 0.02
 MAX_JOINT_TRAVEL_RAD = np.pi
 
 
+def solve_ik(kin, goal: np.ndarray, *, seed_q: np.ndarray, from_q: np.ndarray) -> tuple[np.ndarray | None, str]:
+    """IK for a URDF pose6 ``goal``, accepted only if usable for a ``moveJ`` from ``from_q``.
+
+    Returns:
+        ``(q, "")``, or ``(None, reason)`` when IK misses by more than ``REACH_M`` /
+        ``REACH_ROT_RAD``, leaves the joint limits, or turns a joint by more than
+        ``MAX_JOINT_TRAVEL_RAD``.
+    """
+    from typing import cast
+
+    from scipy.spatial.transform import Rotation
+
+    goal = np.asarray(goal, dtype=float)
+    q_goal = np.asarray(kin.ik(np.asarray(seed_q, dtype=float), goal), dtype=float)
+    reached = np.asarray(kin.fk(q_goal), dtype=float)
+    pos_err = float(np.linalg.norm(reached[:3] - goal[:3]))
+    rot_err = float(cast(Rotation, Rotation.from_rotvec(reached[3:]).inv() * Rotation.from_rotvec(goal[3:])).magnitude())
+    if pos_err > REACH_M or rot_err > REACH_ROT_RAD:
+        return None, f"IK off by {pos_err * 1000:.0f} mm, {np.degrees(rot_err):.1f} deg"
+    model = getattr(kin, "model", None)
+    lower = getattr(model, "lowerPositionLimit", None)
+    upper = getattr(model, "upperPositionLimit", None)
+    if lower is not None and upper is not None and (np.any(q_goal < lower) or np.any(q_goal > upper)):
+        return None, "IK answer leaves the joint limits"
+    travel = float(np.max(np.abs(q_goal - np.asarray(from_q, dtype=float))))
+    if travel > MAX_JOINT_TRAVEL_RAD:
+        return None, f"IK answer turns a joint by {np.degrees(travel):.0f} deg"
+    return q_goal, ""
+
+
 def move_tcp(
     env,
     xyz: np.ndarray,
@@ -241,8 +287,8 @@ def move_tcp(
         seed_q: IK start. Unset: the current joints.
 
     Returns:
-        ``MISSED`` without moving when IK misses the goal, leaves the joint limits,
-        or turns a joint by more than ``MAX_JOINT_TRAVEL_RAD``; otherwise as ``goto_home``.
+        ``MISSED`` without moving when IK misses, leaves the limits, or a refusal above applies;
+        otherwise as ``goto_home``.
     """
     from typing import cast
 
