@@ -10,6 +10,7 @@ current joints, and :func:`ghost_items` turns the joint centres into tube and sp
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -83,6 +84,97 @@ def merge(parts: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.nd
     return np.concatenate(vertices), np.concatenate(triangles)
 
 
+def default_gripper_path() -> Path:
+    """Where the converted gripper mesh lives: ``experiments/xr/gripper_mesh.npz``."""
+    return default_mesh_path().with_name("gripper_mesh.npz")
+
+
+class GripperModel:
+    """A parallel-linkage gripper (AG95) from ``scripts/ag95_step_to_mesh.py``, in the flange frame.
+
+    The housing is fixed. Per side, the proximal link turns about ``pivot`` and the parallel
+    rod about ``rod_pivot`` by the same angle; the fingertip group shifts by the arc the
+    link's ``joint`` travels, so the fingertips stay parallel. The angle is chosen so the
+    gap between the fingertips is ``opening * stroke``.
+
+    Args:
+        path: The ``.npz`` file.
+    """
+
+    SIDES = ("left", "right")
+
+    @dataclass(frozen=True)
+    class Finger:
+        """One side: fingertip group, parts turning about a pivot, parts placed by two ends."""
+
+        tip: tuple[np.ndarray, np.ndarray]
+        turns: list[tuple[np.ndarray, np.ndarray, np.ndarray]]
+        pairs: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+        pivot: np.ndarray
+        joint: np.ndarray
+
+    def __init__(self, path: Path) -> None:
+        def mesh(data, prefix: str) -> tuple[np.ndarray, np.ndarray]:
+            return data[f"{prefix}_vertices"].astype(float), data[f"{prefix}_triangles"].astype(int)
+
+        with np.load(path) as data:
+            self.static = mesh(data, "static")
+            self.sides: dict[str, GripperModel.Finger] = {}
+            for side in self.SIDES:
+                turns = [
+                    (*mesh(data, f"{side}_turn{k}"), data[f"{side}_turn{k}_pivot"].astype(float))
+                    for k in range(int(data[f"{side}_turns"]))
+                ]
+                pairs = [
+                    (
+                        *mesh(data, f"{side}_pair{k}"),
+                        data[f"{side}_pair{k}_low"].astype(float),
+                        data[f"{side}_pair{k}_high"].astype(float),
+                    )
+                    for k in range(int(data[f"{side}_pairs"]))
+                ]
+                self.sides[side] = GripperModel.Finger(
+                    tip=mesh(data, f"{side}_tip"),
+                    turns=turns,
+                    pairs=pairs,
+                    pivot=data[f"{side}_pivot"].astype(float),
+                    joint=data[f"{side}_joint"].astype(float),
+                )
+            self.stroke = float(data["stroke_m"])
+
+    @staticmethod
+    def _turn(angle: float) -> np.ndarray:
+        """Rotation in the flange x-z plane, from x toward z (the plane the fingers move in)."""
+        c, s = np.cos(angle), np.sin(angle)
+        return np.array([[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]])
+
+    def parts_at(self, opening: float) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Meshes in the flange frame for ``opening`` (0 closed, 1 as far open as the CAD pose)."""
+        travel = 0.5 * self.stroke * (1.0 - float(np.clip(opening, 0.0, 1.0)))
+        meshes: list[tuple[np.ndarray, np.ndarray]] = [self.static]
+        for side in self.SIDES:
+            finger = self.sides[side]
+            arm = finger.joint - finger.pivot
+            radius = float(np.hypot(arm[0], arm[2]))
+            # Both fingers move toward x = 0 while closing.
+            target = arm[0] - np.sign(finger.joint[0]) * travel
+            angle = float(np.arccos(np.clip(target / radius, -1.0, 1.0)) - np.arctan2(arm[2], arm[0]))
+            turn = self._turn(angle)
+            shift = turn @ arm - arm
+            for vertices, triangles, centre in finger.turns:
+                meshes.append(((vertices - centre) @ turn.T + centre, triangles))
+            for vertices, triangles, low, high in finger.pairs:
+                # Lower end turns with the crank, upper end shifts with the fingertip.
+                new_low = (low - finger.pivot) @ turn.T + finger.pivot
+                new_high = high + shift
+                before, after = high - low, new_high - new_low
+                tilt = self._turn(float(np.arctan2(after[2], after[0]) - np.arctan2(before[2], before[0])))
+                meshes.append(((vertices - low) @ tilt.T + new_low, triangles))
+            vertices, triangles = finger.tip
+            meshes.append((vertices + shift, triangles))
+        return meshes
+
+
 def gripper_parts(flange: np.ndarray, opening: float) -> list[tuple[np.ndarray, np.ndarray]]:
     """AG95 sketch at ``flange``: a body along flange z and two fingers that open along flange x."""
     origin, x_axis, z_axis = flange[:3, 3], flange[:3, 0], flange[:3, 2]
@@ -148,6 +240,8 @@ class GhostArm:
         self.data = self.model.createData()
         name = ee_frame if ee_frame and self.model.existFrame(ee_frame) else self.model.frames[-1].name
         self.ee_id = self.model.getFrameId(name)
+        gripper = default_gripper_path()
+        self.gripper = GripperModel(gripper) if gripper.exists() else None
         self.links: list[tuple[np.ndarray, np.ndarray]] | None = None
         path = mesh_path if mesh_path is not None else default_mesh_path()
         if path.exists():
@@ -196,7 +290,11 @@ class GhostArm:
             placement = np.array(self.data.oMi[index].homogeneous)  # still the FK of ``q``
             parts.append((vertices @ placement[:3, :3].T + placement[:3, 3] - offset, triangles))
         arm_v, arm_t = merge(parts)
-        grip_v, grip_t = merge(gripper_parts(flange, opening))
+        if self.gripper is None:
+            grip_v, grip_t = merge(gripper_parts(flange, opening))
+        else:
+            grip_v, grip_t = merge(self.gripper.parts_at(opening))
+            grip_v = grip_v @ flange[:3, :3].T + flange[:3, 3]
         return Mesh(arm_v, arm_t, color, lit=True), Mesh(grip_v, grip_t, color, lit=True)
 
     def solve(self, goal: np.ndarray, seed_q: np.ndarray, *, iterations: int = 80) -> np.ndarray | None:
